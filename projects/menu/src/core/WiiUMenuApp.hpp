@@ -656,6 +656,13 @@ private:
     std::uint64_t m_lockReturnTitleId = 0;
     int m_lockExitCursorHoldFrames = 0;
     bool m_lockViewActive = false;
+    int m_lastOperationMode = -1;
+    bool m_dockedApplied = false;
+    bool m_dockedNow = false;
+    int m_baseIconScale = 100;
+    int m_baseShortcutScale = 100;
+    bool m_sidebarBootNudge = true;      // pending one-shot startup resize nudge
+    int m_sidebarBootNudgeFrames = 20;   // let the menu settle before nudging
     float m_sleepHoldSec = 0.f;
     std::shared_ptr<TextEntryScreen>      m_textEntry;
 
@@ -957,6 +964,49 @@ private:
     std::string m_loadedSmallFontPath;
     std::string m_loadedGameCardPath;
     std::string m_loadedBackgroundImagePath;
+    // Icon presentation + animated wallpaper plumbing (Settings -> Icons).
+    void applyIconPresentation();
+    // Shortcut buttons (sidebar + top strip): same radius scale as the
+    // tiles, their own size setting.
+    void applySidebarPresentation();
+    void applyGameShortcuts();
+    void toggleGameShortcut(std::uint64_t titleId);
+    bool isGameShortcutPinned(std::uint64_t titleId) const;
+    bool isTitleHidden(std::uint64_t titleId) const;
+    std::string customTitleFor(std::uint64_t titleId) const;
+    void setGameName(std::uint64_t titleId, const std::string& name);
+    void applyDockedMode(bool docked);
+    void hideGameFromHome(std::uint64_t titleId);
+    void restoreGameToHome(std::uint64_t titleId);
+    void refreshHiddenGamesState();
+    void applyHudScale();
+    void applyClockLayout();
+    void applyHudTravel();
+    // Push the strip reserve into the grid so tiles never sit under it.
+    void syncGridShortcutInsets();
+    // Applies the Show game name preference to the title capsule.
+    void applyTitlePillVisibility();
+    // Pushes both title nudges, the strip clearance and visibility at once.
+    void applyTitlePillLayout();
+    // Crisp / Smooth / Springy, pushed to the grid and the focus ring.
+    void applyMotionStyle();
+    // Square tiles are a user override on the theme radius. Every icon creation
+    // path has to go through this: a rebuild (wake from sleep, opening a folder,
+    // a reflow) used to hand the tiles the rounded theme radius back.
+    // Every UI radius is scaled by one setting so tiles, cursor, panels
+    // and folders never disagree about how round the menu looks.
+    float uiRadiusScale() const {
+        return static_cast<float>(std::clamp(m_config.uiRadiusPct, 50, 200)) / 100.f;
+    }
+    float effectiveIconCornerRadius() const {
+        if (m_config.iconCorners == 1)
+            return 0.f;
+        const float pct = static_cast<float>(std::clamp(m_config.iconCornerPct, 0, 100)) / 100.f;
+        return m_theme.iconCornerRadius * pct * uiRadiusScale();
+    }
+    void reloadAnimatedWallpaper();
+    void cycleWallpaper();
+    std::string m_loadedWallpaperPath;
     bool m_backgroundImageLoaded      = false;
     std::string m_pendingBackgroundImagePath;
     int m_backgroundImageRetryFrames = 0;
@@ -1029,8 +1079,15 @@ private:
     float m_tutorialStartupFadeTimer = 0.f;
     std::uint64_t m_tutorialStartupFadeDeadlineTick = 0;
     bool  m_tutorialStartupFade = false;
+    // Profile / battery currently parked on the bottom strip row.
+    bool m_hudTravelled = false;
     bool m_hintPanelInitialized = false;
     bool m_hintCapsulesInitialized = false;
+    // Points at the widget that held focus when the hint row was last
+    // refreshed. Any change means the user is still moving around, so the
+    // idle fade restarts.
+    const void* m_hintIdleFocus = nullptr;
+    float m_hintIdleSeconds = 0.f;
     bool m_accessibilityToggleComboHeld = false;
     bool m_plusExitPending = false;
     float m_plusExitPendingTimer = 0.f;

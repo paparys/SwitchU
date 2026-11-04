@@ -353,6 +353,383 @@ void WiiUMenuApp::createSettings() {
         m_config.gridRows = rows;
         reflowHomeGrid();
     });
+    m_settings->setIconPresentationState(m_config.iconAspect, m_config.iconCorners,
+                                         m_config.gridNudgeX, m_config.lineNudgeY,
+                                         m_config.iconScale, m_config.iconSpacing,
+                                         m_config.carouselDepth, m_config.lineNudgeX);
+    m_settings->setIconCornerPctState(m_config.iconCornerPct);
+    m_settings->setLockPadCodeState(m_config.lockPadCodeEnabled, m_config.lockPadCode);
+    refreshHiddenGamesState();
+    m_settings->setSortModeState(m_config.sortMode);
+    m_settings->setAlphaOrderState(m_config.alphaOrder);
+    m_settings->setDockedState(m_config.dockedSizeOverrides, m_config.dockedIconScale, m_config.dockedShortcutScale);
+    m_settings->setSidebarScaleState(m_config.sidebarScale);
+    m_settings->setShortcutLayoutState(m_config.shortcutEdge, m_config.shortcutNudgeX,
+                                       m_config.shortcutNudgeXRight);
+    m_settings->setShortcutStripState(m_config.shortcutStrip);
+    m_settings->setShortcutNudgeYState(m_config.shortcutNudgeY);
+    m_settings->setHudChromeState(m_config.hideActionHints, m_config.hudScale);
+    m_settings->setClockLayoutState(m_config.clockNudgeX, m_config.clockScale);
+    m_settings->setClockVerticalState(m_config.clockNudgeY);
+    m_settings->setVisualTreatmentState(m_config.wallpaperDim, m_config.vignetteStrength, m_config.uiRadiusPct);
+    m_settings->setMotionStyleState(m_config.motionStyle);
+    m_settings->setCarouselFadeState(m_config.carouselFade);
+    m_settings->setTitlePillNudgeState(m_config.titlePillNudgeX,
+                                      m_config.titlePillNudgeY);
+    m_settings->setGameTitleVisibilityState(!m_config.hideGameTitle);
+    m_settings->onTitlePillNudgeYChange([this](int nudge) {
+        nudge = std::clamp(nudge, -25, 25);
+        if (m_config.titlePillNudgeY == nudge)
+            return;
+        m_config.titlePillNudgeY = nudge;
+        m_config.save();
+        applyTitlePillLayout();
+    });
+    m_settings->onGameTitleVisibilityChange([this](bool show) {
+        if (m_config.hideGameTitle == !show)
+            return;
+        m_config.hideGameTitle = !show;
+        m_config.save();
+        applyTitlePillVisibility();
+    });
+    m_settings->setWallpaperState(m_config.wallpaperPath, m_config.wallpaperAnimated,
+                                  m_config.wallpaperFps);
+    m_settings->setSteamGridDbAspectState(m_config.steamGridDbAspect);
+    m_settings->onIconAspectChange([this](int aspect) {
+        aspect = std::clamp(aspect, 0, 2);
+        if (m_config.iconAspect == aspect)
+            return;
+        m_config.iconAspect = aspect;
+        m_config.save();
+        applyIconPresentation();
+        reflowHomeGrid();
+    });
+    m_settings->onIconCornersChange([this](int corners) {
+        corners = std::clamp(corners, 0, 1);
+        if (m_config.iconCorners == corners)
+            return;
+        m_config.iconCorners = corners;
+        m_config.save();
+        applyIconPresentation();
+        applySidebarPresentation();
+    });
+    auto pushLayoutToSettings = [this]() {
+        m_settings->setIconPresentationState(
+            m_config.iconAspect, m_config.iconCorners, m_config.gridNudgeX,
+            m_config.lineNudgeY, m_config.iconScale, m_config.iconSpacing,
+            m_config.carouselDepth, m_config.lineNudgeX);
+        m_settings->setIconCornerPctState(m_config.iconCornerPct);
+    };
+    m_settings->onSaveLayoutPreset([this](int slot) {
+        if (slot < 0 || slot > 2)
+            return;
+        m_config.layoutPreset[slot] = {
+            m_config.iconAspect, m_config.iconCorners, m_config.iconCornerPct,
+            m_config.iconScale, m_config.iconSpacing, m_config.carouselDepth,
+            m_config.gridNudgeX, m_config.lineNudgeX, m_config.lineNudgeY};
+        m_config.save();
+    });
+    m_settings->onLoadLayoutPreset([this, pushLayoutToSettings](int slot) {
+        if (slot < 0 || slot > 2)
+            return;
+        const auto& preset = m_config.layoutPreset[slot];
+        if (preset.size() < 9)
+            return;
+        m_config.iconAspect    = std::clamp(preset[0], 0, 2);
+        m_config.iconCorners   = std::clamp(preset[1], 0, 1);
+        m_config.iconCornerPct = std::clamp(preset[2], 0, 100);
+        m_config.iconScale     = std::clamp(preset[3], 70, 130);
+        m_config.iconSpacing   = std::clamp(preset[4], -50, 100);
+        m_config.carouselDepth = std::clamp(preset[5], -100, 100);
+        m_config.gridNudgeX    = std::clamp(preset[6], -25, 25);
+        m_config.lineNudgeX    = std::clamp(preset[7], -25, 25);
+        m_config.lineNudgeY    = std::clamp(preset[8], -25, 25);
+        m_config.save();
+        applyIconPresentation();
+        applySidebarPresentation();
+        pushLayoutToSettings();
+    });
+    m_settings->onResetIconLayout([this, pushLayoutToSettings]() {
+        m_config.iconScale = 100;
+        m_config.iconSpacing = 0;
+        m_config.carouselDepth = 0;
+        m_config.gridNudgeX = 0;
+        m_config.lineNudgeX = 0;
+        m_config.lineNudgeY = 0;
+        m_config.iconCornerPct = 100;
+        m_config.save();
+        applyIconPresentation();
+        applySidebarPresentation();
+        pushLayoutToSettings();
+    });
+    m_settings->onIconCornerPctChange([this](int pct) {
+        pct = std::clamp(pct, 0, 100);
+        if (m_config.iconCornerPct == pct)
+            return;
+        m_config.iconCornerPct = pct;
+        m_config.save();
+        applyIconPresentation();
+        applySidebarPresentation();
+    });
+    m_settings->onWallpaperDimChange([this](int pct) {
+        m_config.wallpaperDim = std::clamp(pct, 0, 100);
+        m_config.save();
+    });
+    m_settings->onVignetteChange([this](int pct) {
+        m_config.vignetteStrength = std::clamp(pct, 0, 100);
+        m_config.save();
+    });
+    m_settings->onUiRadiusPctChange([this](int pct) {
+        m_config.uiRadiusPct = std::clamp(pct, 50, 200);
+        m_config.save();
+        applyTheme();
+        applyIconPresentation();
+        applySidebarPresentation();
+    });
+    m_settings->onIconShadowChange([this]() {
+        m_config.iconShadowOffset = std::clamp(m_settings->iconShadowOffset(), 0, 20);
+        m_config.iconShadowAlpha = std::clamp(m_settings->iconShadowAlpha(), 0, 60);
+        m_config.save();
+        applyIconPresentation();
+    });
+    m_settings->onMotionStyleChange([this](int style) {
+        style = std::clamp(style, 0, 2);
+        if (m_config.motionStyle == style)
+            return;
+        m_config.motionStyle = style;
+        m_config.save();
+        applyMotionStyle();
+    });
+    m_settings->onIconScaleChange([this](int scale) {
+        scale = std::clamp(scale, 70, 130);
+        // This control is the undocked size. While the dock overrides are on it
+        // is stored for undocking but must not fight the docked value live.
+        m_config.handheldIconScale = scale;
+        if (m_dockedNow && m_config.dockedSizeOverrides) {
+            m_config.save();
+            return;
+        }
+        if (m_config.iconScale == scale)
+            return;
+        m_config.iconScale = scale;
+        m_config.save();
+        applyIconPresentation();
+        // Cell size moved, so page capacity and hit rects have to rebuild.
+        reflowHomeGrid();
+    });
+    m_settings->onDockedSizeOverridesChange([this](bool enabled) {
+        m_config.dockedSizeOverrides = enabled;
+        m_config.save();
+        applyDockedMode(m_dockedNow);
+    });
+    m_settings->onDockedIconScaleChange([this](int pct) {
+        m_config.dockedIconScale = std::clamp(pct, 70, 130);
+        m_config.save();
+        applyDockedMode(m_dockedNow);
+    });
+    m_settings->onDockedShortcutScaleChange([this](int pct) {
+        m_config.dockedShortcutScale = std::clamp(pct, 70, 150);
+        m_config.save();
+        applyDockedMode(m_dockedNow);
+    });
+    m_settings->onSortModeChange([this](int mode) {
+        mode = std::clamp(mode, 0, 2);
+        if (m_config.sortMode == mode)
+            return;
+        m_config.sortMode = mode;
+        m_config.save();
+        reflowHomeGrid();
+    });
+    m_settings->onAlphaOrderChange([this](bool on) {
+        if (m_config.alphaOrder == on)
+            return;
+        m_config.alphaOrder = on;
+        m_config.save();
+        reflowHomeGrid();
+    });
+    m_settings->onRestoreHiddenGame([this](std::uint64_t id) {
+        restoreGameToHome(id);
+    });
+    m_settings->onLockPadCodeChange([this](bool enabled, const std::string& code) {
+        m_config.lockPadCodeEnabled = enabled;
+        m_config.lockPadCode = code;
+        m_config.save();
+        if (m_lockScreen)
+            m_lockScreen->setPadCode(enabled, code);
+        DebugLog::log("[lock] pad code enabled=%d code=%s",
+                      enabled ? 1 : 0, code.c_str());
+    });
+    m_settings->onSidebarScaleChange([this](int scale) {
+        scale = std::clamp(scale, 70, 150);
+        m_config.handheldShortcutScale = scale;
+        if (m_dockedNow && m_config.dockedSizeOverrides) {
+            m_config.save();
+            return;
+        }
+        if (m_config.sidebarScale == scale)
+            return;
+        m_config.sidebarScale = scale;
+        // The shortcuts and the top bar are one row, so one control sizes the
+        // whole thing: shortcuts, profile tile, clock and battery together.
+        m_config.hudScale = std::clamp(scale, 70, 160);
+        m_config.clockScale = std::clamp(scale, 70, 160);
+        m_config.save();
+        if (m_settings) {
+            m_settings->setSidebarScaleState(m_config.sidebarScale);
+            m_settings->setHudChromeState(m_config.hideActionHints, m_config.hudScale);
+            m_settings->setClockLayoutState(m_config.clockNudgeX, m_config.clockScale);
+        }
+        applySidebarPresentation();
+        applyHudScale();
+        applyClockLayout();
+    });
+    m_settings->onShortcutEdgeChange([this](int edge) {
+        edge = std::clamp(edge, 0, 1);
+        if (m_config.shortcutEdge == edge)
+            return;
+        m_config.shortcutEdge = edge;
+        m_config.save();
+        applySidebarPresentation();
+    });
+    m_settings->onShortcutNudgeChange([this](int nudge) {
+        nudge = std::clamp(nudge, -25, 25);
+        if (m_config.shortcutNudgeX == nudge)
+            return;
+        m_config.shortcutNudgeX = nudge;
+        m_config.save();
+        applySidebarPresentation();
+    });
+    m_settings->onShortcutNudgeRightChange([this](int nudge) {
+        nudge = std::clamp(nudge, -25, 25);
+        if (m_config.shortcutNudgeXRight == nudge)
+            return;
+        m_config.shortcutNudgeXRight = nudge;
+        m_config.save();
+        applySidebarPresentation();
+    });
+    m_settings->onShortcutStripChange([this](bool on) {
+        if (m_config.shortcutStrip == on)
+            return;
+        m_config.shortcutStrip = on;
+        m_config.save();
+        applySidebarPresentation();
+    });
+    m_settings->onShortcutNudgeYChange([this](int px) {
+        px = (std::clamp(px, -24, 24) / 2) * 2;
+        if (m_config.shortcutNudgeY == px)
+            return;
+        m_config.shortcutNudgeY = px;
+        m_config.save();
+        applySidebarPresentation();
+    });
+    m_settings->onHideActionHintsChange([this](bool hide) {
+        if (m_config.hideActionHints == hide)
+            return;
+        m_config.hideActionHints = hide;
+        m_config.save();
+    });
+    m_settings->onHudScaleChange([this](int scale) {
+        scale = std::clamp(scale, 70, 160);
+        if (m_config.hudScale == scale)
+            return;
+        m_config.hudScale = scale;
+        m_config.save();
+        applyHudScale();
+    });
+    m_settings->onClockScaleChange([this](int scale) {
+        scale = std::clamp(scale, 70, 160);
+        if (m_config.clockScale == scale)
+            return;
+        m_config.clockScale = scale;
+        m_config.save();
+        applyClockLayout();
+    });
+    m_settings->onClockNudgeXChange([this](int nudge) {
+        nudge = std::clamp(nudge, -25, 25);
+        if (m_config.clockNudgeX == nudge)
+            return;
+        m_config.clockNudgeX = nudge;
+        m_config.save();
+        applyClockLayout();
+    });
+    m_settings->onClockNudgeYChange([this](int px) {
+        px = std::clamp(px, -14, 14);
+        if (m_config.clockNudgeY == px)
+            return;
+        m_config.clockNudgeY = px;
+        m_config.save();
+        applyClockLayout();
+    });
+    m_settings->onIconSpacingChange([this](int spacing) {
+        spacing = std::clamp(spacing, -50, 100);
+        if (m_config.iconSpacing == spacing)
+            return;
+        m_config.iconSpacing = spacing;
+        m_config.save();
+        // Padding feeds the cell fit, so the page model has to rebuild.
+        reflowHomeGrid();
+    });
+    m_settings->onCarouselDepthChange([this](int depth) {
+        depth = std::clamp(depth, -100, 100);
+        if (m_config.carouselDepth == depth)
+            return;
+        m_config.carouselDepth = depth;
+        m_config.save();
+        applyIconPresentation();
+    });
+    m_settings->onCarouselFadeChange([this](int fade) {
+        fade = std::clamp(fade, 0, 100);
+        if (m_config.carouselFade == fade)
+            return;
+        m_config.carouselFade = fade;
+        m_config.save();
+        applyIconPresentation();
+    });
+    m_settings->onTitlePillNudgeChange([this](int nudge) {
+        nudge = std::clamp(nudge, -25, 25);
+        if (m_config.titlePillNudgeX == nudge)
+            return;
+        m_config.titlePillNudgeX = nudge;
+        m_config.save();
+        // 12 px per step: the ends reach ~300 px either side of centre, enough
+        // to park the capsule under the edge tiles without leaving the frame.
+        if (m_titlePill)
+            m_titlePill->setNudgeX(12.8f * static_cast<float>(nudge));
+    });
+    m_settings->onGridNudgeChange([this](int nudge) {
+        m_config.gridNudgeX = std::clamp(nudge, -25, 25);
+        m_config.save();
+        applyIconPresentation();
+    });
+    m_settings->onLineNudgeChange([this](int nudge) {
+        m_config.lineNudgeY = std::clamp(nudge, -25, 25);
+        // Nudges are presentation settings like the others: without the save
+        // the strip snapped back to stock on the next boot.
+        m_config.save();
+        applyIconPresentation();
+    });
+    m_settings->onLineNudgeXChange([this](int nudge) {
+        m_config.lineNudgeX = std::clamp(nudge, -25, 25);
+        m_config.save();
+        applyIconPresentation();
+    });
+    m_settings->onWallpaperCycle([this]() { cycleWallpaper(); });
+    m_settings->onWallpaperAnimatedChange([this](bool animated) {
+        m_config.wallpaperAnimated = animated;
+        m_config.save();
+        m_loadedWallpaperPath.clear();
+        reloadAnimatedWallpaper();
+    });
+    m_settings->onWallpaperFpsChange([this](int fps) {
+        m_config.wallpaperFps = std::clamp(fps, 5, 30);
+        m_config.save();
+        m_loadedWallpaperPath.clear();
+        reloadAnimatedWallpaper();
+    });
+    m_settings->onSteamGridDbAspectChange([this](int aspect) {
+        m_config.steamGridDbAspect = std::clamp(aspect, 0, 3);
+        m_config.save();
+    });
     m_settings->onUiLanguageChange([this](const std::string& tag) {
         m_config.uiLanguageOverride = tag;
         if (m_settings) m_settings->setUiLanguageOverride(tag);
@@ -1089,8 +1466,11 @@ void WiiUMenuApp::openSteamGridDbPickerForTitle(std::uint64_t titleId,
     m_steamGridDbPicker->showLoading(titleId, title, query, managerKind, false);
     focusManager().setFocus(m_steamGridDbPicker.get());
     m_steamGridDbBrowseFuture = std::async(std::launch::async,
-        [apiKey = m_config.steamGridDbApiKey, titleId, title, query, managerKind]() {
-            return SteamGridDbManager::browse(apiKey, titleId, title, query, managerKind);
+        [apiKey = m_config.steamGridDbApiKey, titleId, title, query, managerKind,
+         aspect = m_config.steamGridDbAspect]() {
+            return SteamGridDbManager::browse(
+                apiKey, titleId, title, query, managerKind,
+                static_cast<SteamGridDbManager::ArtworkAspect>(aspect));
         });
 }
 
@@ -3552,6 +3932,10 @@ void WiiUMenuApp::applyThemeResources(const ThemePreset& preset) {
     m_backgroundImageRetryFrames = 0;
     m_backgroundImageRetryAttempts = 0;
 
+    // Animated / video wallpaper shares the background slot with the theme
+    // image and wins while it plays.
+    reloadAnimatedWallpaper();
+
     const std::string presetRef = preset.id.empty() ? preset.name : preset.id;
     DebugLog::log("[theme-apply] resources start: preset=%s regularFont=%s smallFont=%s iconsBase=%s bgImage=%s",
                   presetRef.c_str(),
@@ -3887,7 +4271,9 @@ void WiiUMenuApp::updateHeroAwareChrome(bool force) {
     // Keep the user's cursor brand while chrome contrast flips.
     m_homeChrome.cursorNormal = m_theme.cursorNormal;
     m_homeChrome.cursorGlow = m_theme.cursorGlow;
-    m_homeChrome.cursorCornerRadius = m_theme.cursorCornerRadius;
+    // Ring curvature is the tile curvature plus the focus inset, so a square
+    // tile gets a square ring and a pill tile gets a pill ring automatically.
+    m_homeChrome.cursorCornerRadius = effectiveIconCornerRadius() + 4.f;
     m_homeChrome.cursorBorderWidth = m_theme.cursorBorderWidth;
     applyHomeChrome();
 }
@@ -3912,14 +4298,15 @@ void WiiUMenuApp::applyTheme() {
         icon->setBaseColor(m_theme.iconDefault);
         icon->setBorderColor(m_theme.panelBorder);
         icon->setHighlightColor(m_theme.panelHighlight);
-        icon->setCornerRadius(m_theme.iconCornerRadius);
+        icon->setCornerRadius(effectiveIconCornerRadius());
+        icon->setShadow(static_cast<float>(m_config.iconShadowOffset), static_cast<float>(m_config.iconShadowAlpha) / 100.f);
         icon->setLoadingColor(m_theme.cursorNormal);
         icon->setThemeMode(m_theme.mode);
     }
     DebugLog::log("[theme-apply] widget recolor grid icons done");
 
     m_cursor->setColor(m_theme.cursorNormal);
-    m_cursor->setCornerRadius(m_theme.cursorCornerRadius);
+    m_cursor->setCornerRadius(effectiveIconCornerRadius() + 4.f);
     m_cursor->setBorderWidth(m_theme.cursorBorderWidth);
     DebugLog::log("[theme-apply] widget recolor cursors done");
 
@@ -4310,4 +4697,660 @@ void WiiUMenuApp::syncColourIconContrast() {
         if (m_layoutFlip)
             m_layoutFlip->setColourIconContrast(adaptColour);
     }
+}
+
+void WiiUMenuApp::applyMotionStyle() {
+    const int style = std::clamp(m_config.motionStyle, 0, 2);
+    m_config.motionStyle = style;
+    if (m_grid)
+        m_grid->setMotionStyle(style);
+    if (m_cursor)
+        m_cursor->setMotionStyle(style);
+}
+
+void WiiUMenuApp::applyIconPresentation() {
+    // Every icon push also re-asserts the motion style, so a style picked in
+    // Settings survives a reflow that rebuilds the grid widget tree.
+    applyMotionStyle();
+    if (!m_grid)
+        return;
+    m_grid->setIconAspectRatio(m_config.iconAspectRatio());
+    m_grid->setIconScale(
+        static_cast<float>(std::clamp(m_config.iconScale, 70, 130)) / 100.f);
+    m_grid->setCarouselDepth(
+        static_cast<float>(std::clamp(m_config.carouselDepth, -100, 100)) / 100.f);
+    m_grid->setCarouselFade(
+        static_cast<float>(std::clamp(m_config.carouselFade, 0, 100)) / 100.f);
+    if (m_titlePill)
+        m_titlePill->setNudgeX(12.8f * static_cast<float>(
+            std::clamp(m_config.titlePillNudgeX, -25, 25)));
+    const GridLayoutMetrics metrics = computeGridLayoutMetrics();
+    // The grid nudge is a percentage of one cell, so it stays proportional when
+    // the grid density changes. The carousel has no cell of its own, so its steps
+    // are screen-relative: ~6 px each, about +/-150 px at the ends.
+    // Snap applied offsets to whole 2px steps: the slider still has fine
+    // granularity, but accidental 1px drift cannot persist in the layout.
+    auto snap2 = [](float v) { return std::round(v * 0.5f) * 2.f; };
+    m_grid->setGridNudgeX(snap2(metrics.cellW
+        * (static_cast<float>(m_config.gridNudgeX) / 100.f)));
+    m_grid->setLineNudgeY(snap2(6.f * static_cast<float>(m_config.lineNudgeY)));
+    // Slider ends carry the focused tile to either screen edge, not just
+    // 150 px off centre.
+    m_grid->setLineNudgeX(snap2((1280.f * 0.44f)
+        * (static_cast<float>(m_config.lineNudgeX) / 25.f)));
+    const float radius = effectiveIconCornerRadius();
+    for (const auto& icon : m_grid->allIcons()) {
+        if (icon)
+            icon->setCornerRadius(radius);
+    }
+    m_grid->invalidateLineLayout();
+    // Nudges and scale change existing tile rects; without this the grid keeps
+    // the old positions until the next page change.
+    m_grid->refreshLayout();
+}
+
+void WiiUMenuApp::reloadAnimatedWallpaper() {
+    if (!m_background)
+        return;
+    const std::string path = m_config.wallpaperPath;
+    if (path == m_loadedWallpaperPath &&
+        (path.empty() || m_background->hasAnimatedWallpaper()))
+        return;
+    m_background->clearAnimatedWallpaper();
+    m_loadedWallpaperPath.clear();
+    if (path.empty() || !m_config.wallpaperAnimated) {
+        DebugLog::log("[wallpaper] disabled (path='%s' animated=%d)", path.c_str(),
+                      m_config.wallpaperAnimated ? 1 : 0);
+        return;
+    }
+    if (!m_background->loadAnimatedWallpaper(app().gpu(), app().renderer(), path,
+                                             m_config.wallpaperFps)) {
+        DebugLog::log("[wallpaper] '%s' could not be played", path.c_str());
+        return;
+    }
+    m_loadedWallpaperPath = path;
+    DebugLog::log("[wallpaper] playing '%s'", path.c_str());
+}
+
+void WiiUMenuApp::cycleWallpaper() {
+    namespace fs = std::filesystem;
+    std::vector<std::string> options;
+    std::error_code ec;
+    const fs::path dir = "sdmc:/config/SwitchU/wallpapers";
+    fs::create_directories(dir, ec);
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        std::error_code fileEc;
+        if (!entry.is_regular_file(fileEc))
+            continue;
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext == ".webp" || ext == ".gif" || ext == ".mp4" || ext == ".mov"
+            || ext == ".m4v")
+            options.push_back(entry.path().string());
+    }
+    std::sort(options.begin(), options.end());
+
+    std::string next;
+    if (!options.empty()) {
+        if (m_config.wallpaperPath.empty()) {
+            next = options.front();
+        } else {
+            const auto found = std::find(options.begin(), options.end(), m_config.wallpaperPath);
+            auto following = found;
+            if (found == options.end() || (++following) == options.end())
+                next = options.front();
+            else
+                next = *following;
+        }
+    }
+
+    m_config.wallpaperPath = next;
+    m_config.save();
+    m_loadedWallpaperPath.clear();
+    reloadAnimatedWallpaper();
+    if (!m_settings)
+        return;
+    m_settings->setWallpaperState(m_config.wallpaperPath, m_config.wallpaperAnimated,
+                                  m_config.wallpaperFps);
+    if (next.empty()) {
+        m_settings->requestToast(nxui::I18n::instance().tr(
+            "settings.appearance.wallpaper_none",
+            "No wallpaper files in sdmc:/config/SwitchU/wallpapers - using the theme image."));
+    } else {
+        const std::size_t slash = next.find_last_of('/');
+        m_settings->requestToast(nxui::I18n::instance().tr(
+            "settings.appearance.wallpaper_applied", "Wallpaper: ") +
+            (slash == std::string::npos ? next : next.substr(slash + 1)));
+    }
+}
+
+void WiiUMenuApp::applySidebarPresentation() {
+    // Shortcuts are chrome: they follow the shared UI radius and the
+    // rounded/square switch so they stop looking like a second visual language
+    // next to the tiles, while keeping their own size setting.
+    const float radiusPct = static_cast<float>(std::clamp(m_config.iconCornerPct, 0, 100)) / 100.f;
+    const float radius = (m_config.iconCorners == 1)
+        ? 0.f
+        : m_theme.iconCornerRadius * radiusPct * uiRadiusScale();
+    // Square corners read better with a thinner rim; rounded keeps the glass
+    // frame weight the rest of the menu uses.
+    const float border = (m_config.iconCorners == 1) ? 1.6f : 2.2f;
+    // Before the chrome pass: the plate decides whether the buttons paint
+    // their own pills or go transparent.
+    m_sidebar.setStripPlate(m_config.shortcutStrip);
+    m_sidebar.setChromeStyle(radius, border);
+    m_sidebar.setButtonScale(m_config.sidebarScale);
+    m_sidebar.setStripEdge(m_config.shortcutEdge);
+    m_sidebar.setStripNudge(
+        static_cast<float>(std::clamp(m_config.shortcutNudgeX, -25, 25)) * 12.8f,
+        static_cast<float>(std::clamp(m_config.shortcutNudgeXRight, -25, 25)) * 12.8f);
+    m_sidebar.setStripNudgeY(
+        static_cast<float>((std::clamp(m_config.shortcutNudgeY, -24, 24) / 2) * 2));
+    syncGridShortcutInsets();
+    applyTitlePillLayout();
+}
+
+namespace {
+std::uint64_t shortcutSlotId(const std::string& csv, int slot) {
+    std::size_t start = 0;
+    for (int i = 0; i < slot; ++i) {
+        const std::size_t comma = csv.find(',', start);
+        if (comma == std::string::npos)
+            return 0;
+        start = comma + 1;
+    }
+    const std::size_t comma = csv.find(',', start);
+    const std::string part = csv.substr(start, comma == std::string::npos
+                                                   ? std::string::npos
+                                                   : comma - start);
+    try {
+        return std::stoull(part);
+    } catch (...) {
+        return 0;
+    }
+}
+
+std::string shortcutSetSlot(const std::string& csv, int slot, std::uint64_t id) {
+    std::uint64_t ids[6] = {0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 6; ++i)
+        ids[i] = shortcutSlotId(csv, i);
+    if (slot >= 0 && slot < 6)
+        ids[slot] = id;
+    std::string out;
+    for (int i = 0; i < 6; ++i) {
+        if (i)
+            out += ',';
+        out += std::to_string(ids[i]);
+    }
+    return out;
+}
+} // namespace
+
+bool WiiUMenuApp::isGameShortcutPinned(std::uint64_t titleId) const {
+    if (titleId == 0)
+        return false;
+    for (int slot = 0; slot < 6; ++slot) {
+        if (shortcutSlotId(m_config.gameShortcuts, slot) == titleId)
+            return true;
+    }
+    return false;
+}
+
+bool WiiUMenuApp::isTitleHidden(std::uint64_t titleId) const {
+    if (titleId == 0)
+        return false;
+    const std::string& csv = m_config.hiddenGames;
+    std::size_t start = 0;
+    while (start <= csv.size()) {
+        const std::size_t comma = csv.find(',', start);
+        const std::string part = csv.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start);
+        try {
+            if (std::stoull(part) == titleId)
+                return true;
+        } catch (...) {
+        }
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    return false;
+}
+
+std::string WiiUMenuApp::customTitleFor(std::uint64_t titleId) const {
+    const std::string& store = m_config.gameNames;
+    std::size_t start = 0;
+    while (start < store.size()) {
+        const std::size_t nl = store.find('\n', start);
+        const std::string line = store.substr(
+            start, nl == std::string::npos ? std::string::npos : nl - start);
+        const std::size_t tab = line.find('\t');
+        if (tab != std::string::npos) {
+            try {
+                if (std::stoull(line.substr(0, tab)) == titleId)
+                    return line.substr(tab + 1);
+            } catch (...) {
+            }
+        }
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+    return std::string();
+}
+
+void WiiUMenuApp::setGameName(std::uint64_t titleId, const std::string& name) {
+    if (titleId == 0)
+        return;
+    std::string out;
+    const std::string& store = m_config.gameNames;
+    std::size_t start = 0;
+    while (start < store.size()) {
+        const std::size_t nl = store.find('\n', start);
+        const std::string line = store.substr(
+            start, nl == std::string::npos ? std::string::npos : nl - start);
+        const std::size_t tab = line.find('\t');
+        if (tab != std::string::npos) {
+            try {
+                if (std::stoull(line.substr(0, tab)) != titleId) {
+                    out += line;
+                    out += '\n';
+                }
+            } catch (...) {
+            }
+        }
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+    if (!name.empty())
+        out += std::to_string(titleId) + "\t" + name + "\n";
+    m_config.gameNames = out;
+    m_config.save();
+    applyDisplayModel(buildRootFolderModel(), titleId, false);
+}
+
+void WiiUMenuApp::applyDockedMode(bool docked) {
+    m_dockedNow = docked;
+    m_dockedApplied = docked;
+    // handheld* is the restore point and Config::load always seeds it from the
+    // saved sizes. Deriving the base from it every time (instead of capturing
+    // once) keeps the 100% member defaults from overwriting a saved size on the
+    // first frame, when -1 -> Handheld already counts as a mode change.
+    const int handheldIcon = std::clamp(
+        m_config.handheldIconScale > 0 ? m_config.handheldIconScale
+                                       : m_config.iconScale, 70, 130);
+    const int handheldSide = std::clamp(
+        m_config.handheldShortcutScale > 0 ? m_config.handheldShortcutScale
+                                           : m_config.sidebarScale, 70, 150);
+    m_config.handheldIconScale = handheldIcon;
+    m_config.handheldShortcutScale = handheldSide;
+    m_baseIconScale = handheldIcon;
+    m_baseShortcutScale = handheldSide;
+    const bool override = docked && m_config.dockedSizeOverrides;
+    m_config.iconScale = override
+        ? std::clamp(m_config.dockedIconScale, 70, 130) : handheldIcon;
+    m_config.sidebarScale = override
+        ? std::clamp(m_config.dockedShortcutScale, 70, 150) : handheldSide;
+    // One control sizes the whole chrome row: shortcuts, profile, clock, battery.
+    m_config.hudScale = std::clamp(m_config.sidebarScale, 70, 160);
+    m_config.clockScale = std::clamp(m_config.sidebarScale, 70, 160);
+    DebugLog::log("[dock] mode=%d overrides=%d icon=%d side=%d",
+                  docked ? 1 : 0, m_config.dockedSizeOverrides ? 1 : 0,
+                  m_config.iconScale, m_config.sidebarScale);
+    applyIconPresentation();
+    applySidebarPresentation();
+    applyHudScale();
+    applyClockLayout();
+    reflowHomeGrid();
+}
+
+void WiiUMenuApp::refreshHiddenGamesState() {
+    if (!m_settings)
+        return;
+    std::vector<std::pair<std::uint64_t, std::string>> games;
+    const std::string& csv = m_config.hiddenGames;
+    std::size_t start = 0;
+    while (start <= csv.size()) {
+        const std::size_t comma = csv.find(',', start);
+        const std::string part = csv.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start);
+        std::uint64_t id = 0;
+        try { id = std::stoull(part); } catch (...) { id = 0; }
+        if (id != 0) {
+            std::string title;
+            for (const auto& entry : m_allApps)
+                if (entry.titleId == id) { title = entry.title; break; }
+            games.emplace_back(id, title.empty() ? "Unknown title" : title);
+        }
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    m_settings->setHiddenGamesState(games);
+    if (m_settings->isActive())
+        m_settings->rebuildCurrentTab();
+}
+
+void WiiUMenuApp::hideGameFromHome(std::uint64_t titleId) {
+    if (titleId == 0 || isTitleHidden(titleId))
+        return;
+    if (!m_config.hiddenGames.empty())
+        m_config.hiddenGames += ',';
+    m_config.hiddenGames += std::to_string(titleId);
+    m_config.save();
+    refreshHiddenGamesState();
+    applyDisplayModel(buildRootFolderModel(), 0, false);
+}
+
+void WiiUMenuApp::restoreGameToHome(std::uint64_t titleId) {
+    if (titleId == 0)
+        return;
+    std::string out;
+    std::size_t start = 0;
+    const std::string& csv = m_config.hiddenGames;
+    while (start <= csv.size()) {
+        const std::size_t comma = csv.find(',', start);
+        const std::string part = csv.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start);
+        std::uint64_t id = 0;
+        try { id = std::stoull(part); } catch (...) { id = 0; }
+        if (id != 0 && id != titleId) {
+            if (!out.empty()) out += ',';
+            out += std::to_string(id);
+        }
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    m_config.hiddenGames = out;
+    m_config.save();
+    refreshHiddenGamesState();
+    applyDisplayModel(buildRootFolderModel(), titleId, false);
+}
+
+void WiiUMenuApp::applyGameShortcuts() {
+    for (int slot = 0; slot < 6; ++slot)
+        m_sidebar.clearGameShortcut(slot);
+    for (int slot = 0; slot < 6; ++slot) {
+        const std::uint64_t id = shortcutSlotId(m_config.gameShortcuts, slot);
+        if (id == 0)
+            continue;
+        std::string title;
+        for (const auto& entry : m_allApps) {
+            if (entry.titleId == id) {
+                title = entry.title;
+                break;
+            }
+        }
+        if (title.empty())
+            continue;
+        const auto iconData = AppListLoader::loadIconData(id, false);
+        m_sidebar.setGameShortcut(slot, title, iconData,
+                                  app().gpu(), app().renderer(),
+                                  [this, id]() {
+            m_audio.playSfx(Sfx::Activate);
+            focusTitle(id, true);
+        });
+    }
+}
+
+void WiiUMenuApp::toggleGameShortcut(std::uint64_t titleId) {
+    if (titleId == 0)
+        return;
+    bool pinned = false;
+    int freeSlot = -1;
+    for (int slot = 0; slot < 6; ++slot) {
+        const std::uint64_t id = shortcutSlotId(m_config.gameShortcuts, slot);
+        if (id == titleId)
+            pinned = true;
+        else if (id == 0 && freeSlot < 0)
+            freeSlot = slot;
+    }
+    if (!pinned && freeSlot < 0) {
+        if (m_gameOptions) {
+            m_gameOptions->requestToast(
+                nxui::I18n::instance().tr("game.shortcut_full",
+                    "All six shortcut slots are taken."));
+        }
+        return;
+    }
+    const int slot = pinned ? 0 : freeSlot;
+    // Clear the title from whichever slot held it, then fill the free slot.
+    std::string csv = m_config.gameShortcuts;
+    for (int i = 0; i < 6; ++i) {
+        if (shortcutSlotId(csv, i) == titleId)
+            csv = shortcutSetSlot(csv, i, 0);
+    }
+    if (!pinned)
+        csv = shortcutSetSlot(csv, slot, titleId);
+    m_config.gameShortcuts = csv;
+    m_config.save();
+    applyGameShortcuts();
+    if (m_gameOptions)
+        m_gameOptions->setShortcutPinned(!pinned);
+}
+
+void WiiUMenuApp::applyHudScale() {
+    const float s = static_cast<float>(std::clamp(m_config.hudScale, 70, 160)) / 100.f;
+    if (m_battery) {
+        m_battery->setVisualScale(s);
+        // lround keeps the call valid whether setSize takes floats or ints.
+        m_battery->setSize(std::lround(150.f * s), std::lround(62.f * s));
+        m_battery->setMarginTop(14.f * s);
+        m_battery->setMarginRight(24.f * s);
+    }
+    if (m_profileLock) {
+        // Stock profile tile is 62x62 (kProfileLockWidth/Height live in
+        // WiiUMenuApp.cpp and are not visible from this translation unit).
+        const float w = 62.f * s;
+        const float h = 62.f * s;
+        m_profileLock->setSize(w, h);
+        m_profileLock->setMinWidth(w);
+        m_profileLock->setMinHeight(h);
+        m_profileLock->setMarginTop(14.f * s);
+        m_profileLock->setMarginLeft(24.f * s);
+        // The HUD row spreads evenly; keep the tile balanced against the
+        // battery pill so the clock stays on the screen's centre line.
+        m_profileLock->setMarginRight((150.f * s + 24.f * s) - (w + 24.f * s));
+    }
+    if (m_topHud) {
+        m_topHud->layout();
+        placeLayoutFlipButton();
+        // The row reset both capsules to the top line; send them back down if
+        // the strip lives at the bottom.
+        applyHudTravel();
+    }
+}
+
+void WiiUMenuApp::applyClockLayout() {
+    if (m_clock) {
+        const float s = static_cast<float>(std::clamp(m_config.clockScale, 70, 160)) / 100.f;
+        m_clock->setVisualScale(s);
+        m_clock->setSize(std::lround(150.f * s), std::lround(62.f * s));
+        // The row aligns children to the top margin, so vertical travel is a
+        // margin delta in the same 2px steps the slider uses.
+        // Symmetric travel: 0 is the bar's centre line, so the readout is a
+        // real offset instead of a travel percentage. Never let the capsule
+        // leave the top edge.
+        float dy = static_cast<float>(std::clamp(m_config.clockNudgeY, -14, 14));
+        // While the bar is behind the clock, travel stops at the band's edges:
+        // the clock slides inside its cell instead of stepping out of the bar.
+        if (m_appLayoutMode == AppLayoutMode::DynamicLine
+            && std::clamp(m_config.shortcutEdge, 0, 1) == 0
+            && m_config.shortcutStrip) {
+            const float bandH = 62.f
+                * static_cast<float>(std::clamp(m_config.hudScale, 70, 160)) / 100.f;
+            const float clockH = 62.f * s;
+            const float slack = std::max(0.f, (bandH - clockH) * 0.5f);
+            dy = std::clamp(dy, -slack, slack);
+        }
+        m_clock->setMarginTop(std::max(0.f, 14.f * s + dy));
+        // The HUD row splits its leftover air evenly, so a margin only moves
+        // the clock half of its own width. Doubling it makes the slider steps
+        // land where the setting says they do.
+        const float d = static_cast<float>(std::clamp(m_config.clockNudgeX, -25, 25)) * 6.4f;
+        m_clock->setMarginLeft(d > 0.f ? 2.f * d : 0.f);
+        m_clock->setMarginRight(d < 0.f ? -2.f * d : 0.f);
+    }
+    if (m_topHud) {
+        m_topHud->layout();
+        placeLayoutFlipButton();
+        // The row reset both capsules to the top line; send them back down if
+        // the strip lives at the bottom.
+        applyHudTravel();
+    }
+}
+
+void WiiUMenuApp::applyHudTravel() {
+    if (!m_topHud || !m_profileLock || !m_battery)
+        return;
+    // Only travel while the bar itself is on screen. Folders and overlays hide
+    // the plate; moving the capsules then left them floating with no bar.
+    const bool home = m_navigator.route() == switchu::navigation::Route::Home;
+    const bool bottom = home
+        && m_appLayoutMode == AppLayoutMode::DynamicLine
+        && std::clamp(m_config.shortcutEdge, 0, 1) == 1
+        && m_config.shortcutStrip
+        && !m_sidebar.stripPlateSuppressed();
+    if (!bottom) {
+        if (m_hudTravelled) {
+            // Let the HUD row put both capsules back on the top line.
+            m_hudTravelled = false;
+            m_topHud->layout();
+            placeLayoutFlipButton();
+        }
+        return;
+    }
+
+    const nxui::Rect band = m_sidebar.stripBandTarget();
+    if (band.height <= 1.f)
+        return;
+    const float s = static_cast<float>(std::clamp(m_config.hudScale, 70, 160)) / 100.f;
+    const float h = 62.f * s;
+    const float y = band.y + (band.height - h) * 0.5f;
+    const float margin = 24.f * s;
+    const float batteryW = 150.f * s;
+    // Outboard of the two shortcut clusters, so nothing overlaps.
+    m_profileLock->setRect({band.x + margin, y, 62.f * s, h});
+    m_battery->setRect({band.x + band.width - margin - batteryW, y, batteryW, h});
+    // The clock is the middle cell of the bar, so it travels with the capsules
+    // rather than staying behind on the top line. Its own scale decides the
+    // rect, and the nudges keep working inside the band.
+    if (m_clock) {
+        const float clockS = static_cast<float>(
+            std::clamp(m_config.clockScale, 70, 160)) / 100.f;
+        const float clockW = 150.f * clockS;
+        const float clockH = 62.f * clockS;
+        float clockX = band.x + (band.width - clockW) * 0.5f
+            + static_cast<float>(std::clamp(m_config.clockNudgeX, -25, 25)) * 12.8f;
+        clockX = std::clamp(clockX, band.x + 8.f,
+                            std::max(band.x + 8.f, band.right() - clockW - 8.f));
+        float clockDy = static_cast<float>(
+            std::clamp(m_config.clockNudgeY, -14, 14));
+        const float slack = std::max(0.f, (band.height - clockH) * 0.5f);
+        clockDy = std::clamp(clockDy, -slack, slack);
+        m_clock->setRect({clockX,
+                          band.y + (band.height - clockH) * 0.5f + clockDy,
+                          clockW, clockH});
+    }
+    m_hudTravelled = true;
+}
+
+void WiiUMenuApp::syncGridShortcutInsets() {
+    // Authoritative size for the shortcut row. Re-placing the sidebar (strip
+    // paddle, edge switch, rebuild after an asset reload) used to happen with
+    // whatever scale that pass had, which read as the icons snapping back to
+    // stock after a resize. Asserting it here makes the setting win every frame.
+    m_sidebar.setButtonScale(m_config.sidebarScale);
+    if (!m_grid)
+        return;
+    // Only HOME carries the strip; folders and overlays keep the whole frame.
+    const bool home = m_navigator.route() == switchu::navigation::Route::Home;
+    const float top = home ? m_sidebar.reservedTop() : 0.f;
+    const float bottom = home ? m_sidebar.reservedBottom() : 0.f;
+    m_grid->setVerticalInsets(top, bottom);
+    // Hand the live tile band to the sidebar so its left/right sliders use the
+    // grid as their inner limit instead of sliding across it.
+    const nxui::Rect band = m_grid->tileBand();
+    m_sidebar.setGridClearance(home ? band.x : 0.f,
+                               home ? std::min(1280.f, band.right()) : 1280.f);
+    // Park the capsules on the strip's row first, then hand over the rects.
+    applyHudTravel();
+    // With the strip on top the plate becomes the whole top bar, so hand over
+    // the capsule rects (they move with the HUD size and clock settings).
+    // The capsules sit on whichever row the strip uses, so the band merges at
+    // either edge. Dropping their own glass only makes sense while it is drawn:
+    // Settings hides the plate with the sidebar, and a bare capsule with no bar
+    // behind it read as detached.
+    const bool mergedBar = home
+        && m_appLayoutMode == AppLayoutMode::DynamicLine
+        && m_config.shortcutStrip
+        && !m_sidebar.stripPlateSuppressed()
+        && m_profileLock && m_clock && m_battery
+        && m_profileLock->isVisible() && m_battery->isVisible();
+    if (mergedBar) {
+        m_sidebar.setHudAnchors(m_profileLock->rect(), m_battery->rect());
+    } else {
+        m_sidebar.setHudAnchors(nxui::Rect{}, nxui::Rect{});
+    }
+    // The page dots share that bottom strip of screen, so they ride above the
+    // bar instead of being drawn through it.
+    if (m_pageIndicator) {
+        const float targetY = 685.f - (home ? m_sidebar.reservedBottom() : 0.f);
+        const nxui::Rect pr = m_pageIndicator->rect();
+        if (std::abs(pr.y - targetY) > 0.5f)
+            m_pageIndicator->setRect({0.f, targetY, 1280.f, 28.f});
+    }
+    // One bar: the capsules give up their own glass so the profile, the clock
+    // and the battery read as contents of the bar instead of three widgets
+    // sitting on top of it with their own rims.
+    // The clock never travels, so it only gives up its glass when the band is
+    // actually behind it (strip at the top).
+    // The clock is a cell of the bar, not a capsule parked on top of it: once
+    // the band is behind it the glass stays off at every nudge value, and its
+    // travel is confined to the band (see applyClockLayout). At the bottom
+    // edge the band is only behind it while the capsules have travelled down.
+    const bool clockOnBand = mergedBar
+        && (std::clamp(m_config.shortcutEdge, 0, 1) == 0 || m_hudTravelled);
+    if (m_profileLock) m_profileLock->setBackgroundVisible(!mergedBar);
+    if (m_clock) {
+        m_clock->setBackgroundVisible(!clockOnBand);
+        m_clock->setCellDividers(clockOnBand);
+    }
+    if (m_battery)     m_battery->setBackgroundVisible(!mergedBar);
+}
+
+void WiiUMenuApp::applyTitlePillVisibility() {
+    if (!m_titlePill)
+        return;
+    m_titlePill->setSuppressed(m_config.hideGameTitle);
+    if (m_config.hideGameTitle || !m_grid)
+        return;
+    // Bring the capsule back on the spot rather than waiting for the next focus
+    // move, which could be a page away.
+    const int idx = m_grid->focusedGlobalIndex();
+    const auto& icons = m_grid->allIcons();
+    if (idx < 0 || idx >= static_cast<int>(icons.size()))
+        return;
+    const auto& icon = icons[static_cast<std::size_t>(idx)];
+    if (icon)
+        m_titlePill->setText(icon->title());
+}
+
+void WiiUMenuApp::applyTitlePillLayout() {
+    if (!m_titlePill)
+        return;
+    constexpr float kStockPillY = 630.f;
+    m_titlePill->setNudgeX(
+        12.8f * static_cast<float>(std::clamp(m_config.titlePillNudgeX, -25, 25)));
+    // A bottom shortcut strip already takes that space, so the up/down setting
+    // starts from a position that is clear of the chrome instead of fighting it.
+    const float baseY = kStockPillY - m_sidebar.reservedBottom();
+    const float dy = 6.4f * static_cast<float>(std::clamp(m_config.titlePillNudgeY, -25, 25));
+    const nxui::Rect current = m_titlePill->rect();
+    // Clamped so the capsule cannot be nudged off either edge of the screen.
+    m_titlePill->setPosition(current.x, std::clamp(baseY + dy, 260.f, 660.f));
+    m_titlePill->setSuppressed(m_config.hideGameTitle);
 }

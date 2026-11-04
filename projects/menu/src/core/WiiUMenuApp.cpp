@@ -1,4 +1,5 @@
 #include "WiiUMenuApp.hpp"
+#include "ui/SurfaceStyle.hpp"
 #include "icons/IconPackManager.hpp"
 #include <switchu/sd_commit.hpp>
 #include "widgets/GlossyIcon.hpp"
@@ -1362,16 +1363,11 @@ void WiiUMenuApp::setLockedProfile(std::optional<AccountUid> uid) {
 }
 
 void WiiUMenuApp::placeLayoutFlipButton() {
-    if (!m_layoutFlip || !m_clock)
-        return;
-    constexpr float kSize = 52.f;
-    constexpr float kGap = 12.f;
-    const nxui::Rect clock = m_clock->rect();
-    const float x = clock.x + clock.width + kGap;
-    const float y = clock.y + (clock.height - kSize) * 0.5f;
-    m_layoutFlip->setRect({x, y, kSize, kSize});
-    // Visible on HOME and inside folders (touch + controller Change View).
-    m_layoutFlip->setVisible(m_topHud && m_topHud->isVisible());
+    // Removed from the top bar by request. The view switch still lives on the
+    // Minus button, and the widget is hidden rather than destroyed so every
+    // existing focus target stays a valid pointer.
+    if (m_layoutFlip)
+        m_layoutFlip->setVisible(false);
 }
 
 bool WiiUMenuApp::keepLayoutFlipFocus() const {
@@ -1529,6 +1525,7 @@ void WiiUMenuApp::wireProfileLockNavigation() {
                                : static_cast<nxui::Widget*>(lock)));
         lock->setCustomNavigation(nxui::FocusDirection::RIGHT, lockRight);
         m_sidebar.setDynamicLineProfileTarget(lock);
+        m_sidebar.setDynamicLineBatteryTarget(battery);
 
         nxui::Widget* afterLeft = flip
             ? static_cast<nxui::Widget*>(flip)
@@ -1572,6 +1569,7 @@ void WiiUMenuApp::wireProfileLockNavigation() {
         // Grid chrome: [profile] ↔ [flip] ↔ [battery]
         // DOWN from profile → left column; DOWN from battery → right column.
         m_sidebar.setDynamicLineProfileTarget(nullptr);
+        m_sidebar.setDynamicLineBatteryTarget(nullptr);
         lock->setCustomNavigation(nxui::FocusDirection::RIGHT,
                                   flip ? static_cast<nxui::Widget*>(flip)
                                        : (battery ? static_cast<nxui::Widget*>(battery)
@@ -1664,10 +1662,25 @@ WiiUMenuApp::GridLayoutMetrics WiiUMenuApp::computeGridLayoutMetrics(int cols,
     const float scale = std::min(1.f, std::min(scaleW, scaleH));
 
     GridLayoutMetrics m;
-    m.cellW = std::max(88.f, kGridBaseCellW * scale);
-    m.cellH = std::max(88.f, kGridBaseCellH * scale);
-    m.padX = std::max(8.f, kGridBasePadX * scale);
-    m.padY = std::max(8.f, kGridBasePadY * scale);
+    // User tile size. 100% keeps the density-fitted cells; above 100% grows
+    // into the safe margins but never past the grid rect.
+    const float userScale = std::clamp(m_config.iconScale, 70, 130) / 100.f;
+    // Icon spacing scales the fitted gap; negative tightens it, positive opens it.
+    const float spacingScale = std::max(0.2f, 1.f + m_config.iconSpacing / 100.f);
+    m.padX = std::max(4.f, kGridBasePadX * scale * spacingScale);
+    m.padY = std::max(4.f, kGridBasePadY * scale * spacingScale);
+    m.cellW = std::max(88.f, kGridBaseCellW * scale * userScale);
+    m.cellH = std::max(88.f, kGridBaseCellH * scale * userScale);
+    const float maxCellW = (kGridRectW - (cols - 1) * m.padX) / cols;
+    const float maxCellH = (kGridRectH - (rows - 1) * m.padY) / rows;
+    m.cellW = std::min(m.cellW, std::max(88.f, maxCellW));
+    m.cellH = std::min(m.cellH, std::max(88.f, maxCellH));
+    // User-selected tile aspect. The width stays density-driven; the height
+    // follows the requested ratio so 16:9 tiles are shorter and 4:3 taller.
+    if (m_config.iconAspect != 0) {
+        m.cellH = std::clamp(m.cellW / std::max(0.2f, m_config.iconAspectRatio()),
+                             72.f, kGridRectH * 0.34f);
+    }
     return m;
 }
 
@@ -2163,9 +2176,36 @@ GridModel WiiUMenuApp::buildRootFolderModel() {
     normalizeWidgetPlacements();
     GridModel model;
     std::unordered_map<std::uint64_t, AppEntry> entries;
+    // Renamed titles: the store keeps one "id<TAB>name" line per title.
+    std::unordered_map<std::uint64_t, std::string> customNames;
+    {
+        const std::string& store = m_config.gameNames;
+        std::size_t start = 0;
+        while (start < store.size()) {
+            const std::size_t nl = store.find('\n', start);
+            const std::string line = store.substr(
+                start, nl == std::string::npos ? std::string::npos : nl - start);
+            const std::size_t tab = line.find('\t');
+            if (tab != std::string::npos) {
+                try {
+                    customNames.emplace(std::stoull(line.substr(0, tab)),
+                                        line.substr(tab + 1));
+                } catch (...) {
+                }
+            }
+            if (nl == std::string::npos)
+                break;
+            start = nl + 1;
+        }
+    }
     for (const auto& app : m_allApps) {
+        if (isTitleHidden(app.titleId))
+            continue;
         if (m_folderStore.folderForTitle(app.titleId) == 0) {
             AppEntry effective = app;
+            const auto renamed = customNames.find(app.titleId);
+            if (renamed != customNames.end() && !renamed->second.empty())
+                effective.title = renamed->second;
             const auto size = gameGridSize(app.titleId, m_appLayoutMode);
             effective.widgetColumns = size.columns;
             effective.widgetRows = size.rows;
@@ -2241,12 +2281,13 @@ GridModel WiiUMenuApp::buildRootFolderModel() {
     // and widgets remain anchored (including every cell of a wide tile), while
     // applications fill the remaining cells in the requested order.
     std::vector<std::uint64_t> projected;
-    if (m_config.sortMode != 0 && m_appLayoutMode == AppLayoutMode::Grid) {
+    if ((m_config.sortMode != 0 || m_config.alphaOrder) &&
+        m_appLayoutMode == AppLayoutMode::Grid) {
         const int columns = std::clamp(m_config.gridColumns, 1, 8);
         const int gridRows = std::clamp(m_config.gridRows, 1, 5);
         // With sortLargeTiles, applications that use a bigger tile also join
         // the order instead of staying anchored where they were placed.
-        const bool sortLarge = m_config.sortLargeTiles;
+        const bool sortLarge = m_config.sortLargeTiles || m_config.alphaOrder;
         projected.assign(m_layoutSlots.size(), 0);
         std::vector<bool> reserved(m_layoutSlots.size(), false);
 
@@ -2296,7 +2337,7 @@ GridModel WiiUMenuApp::buildRootFolderModel() {
             return leftRank != rightRank ? leftRank < rightRank : left < right;
         });
 
-        const int mode = m_config.sortMode;
+        const int mode = m_config.alphaOrder ? 1 : m_config.sortMode;
         std::stable_sort(applications.begin(), applications.end(),
                          [&](const auto left, const auto right) {
             if (mode == 2) {
@@ -2359,6 +2400,34 @@ GridModel WiiUMenuApp::buildRootFolderModel() {
             }
             while (next < applications.size()) projected.push_back(applications[next++]);
         }
+    }
+    if (m_config.alphaOrder && m_appLayoutMode == AppLayoutMode::DynamicLine) {
+        projected = m_layoutSlots;
+        std::vector<std::size_t> appCells;
+        std::vector<std::uint64_t> apps;
+        for (std::size_t i = 0; i < projected.size(); ++i) {
+            const auto found = entries.find(projected[i]);
+            if (found != entries.end() && found->second.isApplication()) {
+                appCells.push_back(i);
+                apps.push_back(projected[i]);
+            }
+        }
+        auto appTitleLess = [&](std::uint64_t left, std::uint64_t right) {
+            const std::string& leftTitle = entries.at(left).title;
+            const std::string& rightTitle = entries.at(right).title;
+            const std::size_t shared = std::min(leftTitle.size(), rightTitle.size());
+            for (std::size_t i = 0; i < shared; ++i) {
+                const auto leftChar = static_cast<unsigned char>(
+                    std::tolower(static_cast<unsigned char>(leftTitle[i])));
+                const auto rightChar = static_cast<unsigned char>(
+                    std::tolower(static_cast<unsigned char>(rightTitle[i])));
+                if (leftChar != rightChar) return leftChar < rightChar;
+            }
+            return leftTitle.size() < rightTitle.size();
+        };
+        std::sort(apps.begin(), apps.end(), appTitleLess);
+        for (std::size_t i = 0; i < appCells.size(); ++i)
+            projected[appCells[i]] = apps[i];
     }
     const auto& displaySlots = projected.empty() ? m_layoutSlots : projected;
 
@@ -2443,6 +2512,28 @@ GridModel WiiUMenuApp::buildOpenFolderModel(std::uint32_t folderId) const {
     const int pages = std::clamp(std::max(folder->pageCount, occupied),
                                  1, switchu::folders::kMaxFolderPages);
     std::vector<std::uint64_t> slots = folder->titleIds;
+    if (m_config.alphaOrder) {
+        auto titleOf = [this](std::uint64_t id) -> const std::string& {
+            static const std::string empty;
+            for (const auto& candidate : m_allApps)
+                if (candidate.titleId == id) return candidate.title;
+            return empty;
+        };
+        std::sort(slots.begin(), slots.end(),
+                  [&](std::uint64_t left, std::uint64_t right) {
+            const std::string& leftTitle = titleOf(left);
+            const std::string& rightTitle = titleOf(right);
+            const std::size_t shared = std::min(leftTitle.size(), rightTitle.size());
+            for (std::size_t i = 0; i < shared; ++i) {
+                const auto leftChar = static_cast<unsigned char>(
+                    std::tolower(static_cast<unsigned char>(leftTitle[i])));
+                const auto rightChar = static_cast<unsigned char>(
+                    std::tolower(static_cast<unsigned char>(rightTitle[i])));
+                if (leftChar != rightChar) return leftChar < rightChar;
+            }
+            return leftTitle.size() < rightTitle.size();
+        });
+    }
     slots.resize(static_cast<std::size_t>(pages * perPage), 0);
     std::vector<int> coveredBy(slots.size(), -1);
     std::unordered_map<int, AppEntry> anchors;
@@ -2573,7 +2664,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeDisplayIcon(const AppEntry& entry) 
     icon->setBaseColor(m_theme.iconDefault);
     icon->setBorderColor(m_theme.panelBorder);
     icon->setHighlightColor(m_theme.panelHighlight);
-    icon->setCornerRadius(m_theme.iconCornerRadius);
+    icon->setCornerRadius(effectiveIconCornerRadius());
     icon->setLoadingColor(m_theme.cursorNormal);
     return icon;
 }
@@ -2626,6 +2717,7 @@ void WiiUMenuApp::completeDisplayModelApply(
     m_grid->setLayoutMode(m_appLayoutMode, morphLayout);
     m_grid->setup(std::move(icons), columns, rows, metrics.cellW, metrics.cellH,
                   metrics.padX, metrics.padY);
+    applyIconPresentation();
     // setup() rebuilds line/page geometry but does not touch morph state —
     // if we snapped layout on boot, keep it snapped after the icon rebuild.
     if (!morphLayout)
@@ -4104,6 +4196,7 @@ void WiiUMenuApp::configureDynamicLineNavigation() {
     const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine;
     const bool inFolder = (m_openFolderId != 0);
     m_sidebar.setDynamicLineLayout(dynamicLine);
+    syncGridShortcutInsets();
     placeLayoutFlipButton();
 
     if (m_grid) {
@@ -4891,6 +4984,7 @@ void WiiUMenuApp::openCapturedFolder() {
     if (m_topHud) m_topHud->setVisible(true);
     placeLayoutFlipButton();
     if (m_leftSidebar) m_leftSidebar->setVisible(false);
+    m_sidebar.setStripPlateSuppressed(true);
     if (m_rightSidebar) m_rightSidebar->setVisible(false);
     if (m_pageIndicator)
         m_pageIndicator->setActiveColor(switchu::folders::colorForIndex(folder->colorIndex));
@@ -5222,6 +5316,7 @@ void WiiUMenuApp::finishCloseFolder(std::uint32_t oldId, bool preserveEditMode) 
     placeLayoutFlipButton();
     wireLayoutFlipNavigation();
     if (m_leftSidebar) m_leftSidebar->setVisible(true);
+    m_sidebar.setStripPlateSuppressed(false);
     if (m_rightSidebar) m_rightSidebar->setVisible(true);
     if (m_pageIndicator)
         m_pageIndicator->clearActiveColor();
@@ -6028,7 +6123,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
             "accessibility.hints.grid_empty",
             "Plus opens the add menu. A places software being moved out of a folder."));
         icon->setNotLaunchable(false);
-        icon->setCornerRadius(m_theme.iconCornerRadius);
+        icon->setCornerRadius(effectiveIconCornerRadius());
         icon->setPanelOpacity(0.96f);
         icon->setOnActivate([this]() {
             if (deletePageAvailable())
@@ -6068,7 +6163,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
         icon->setTitle(entry.title);
         icon->setTitleId(entry.titleId);
         icon->setFocusable(true);
-        icon->setCornerRadius(m_theme.iconCornerRadius);
+        icon->setCornerRadius(effectiveIconCornerRadius());
         icon->setBaseColor(m_theme.iconDefault);
         icon->setLoadingColor(m_theme.cursorNormal);
         icon->setWidgetData(entry.widgetType, entry.widgetColumns, entry.widgetRows,
@@ -6130,7 +6225,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
         icon->setTitle(entry.title);
         icon->setTitleId(entry.titleId);
         icon->setFocusable(true);
-        icon->setCornerRadius(m_theme.iconCornerRadius);
+        icon->setCornerRadius(effectiveIconCornerRadius());
         icon->setBaseColor(m_theme.iconDefault);
         icon->setAccessibilityLabel(entry.title);
         auto& i18n = nxui::I18n::instance();
@@ -6161,7 +6256,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
         ? i18n.tr("accessibility.hints.game_launchable", "A to launch. Plus for options. Y to move. ZL or ZR to change page.")
         : i18n.tr("accessibility.hints.game_blocked", "A to show why this item is blocked."));
     // Texture is set by IconStreamer::onPageChanged() ΓÇö not here.
-    icon->setCornerRadius(m_theme.iconCornerRadius);
+    icon->setCornerRadius(effectiveIconCornerRadius());
     icon->setLoadingColor(m_theme.cursorNormal);
     icon->setIsGameCard(entry.isGameCard());
     icon->setGameCardTexture(&m_gameCardTex);
@@ -6290,6 +6385,7 @@ void WiiUMenuApp::buildGrid() {
                   std::clamp(m_config.gridRows, 1, 5),
                   gridMetrics.cellW, gridMetrics.cellH,
                   gridMetrics.padX, gridMetrics.padY);
+    applyIconPresentation();
     m_grid->setLayoutMode(m_appLayoutMode, false);
     // Defer syncSingleRowPosterPresentation until after leave-session restore
     // so folder-peek warm uses the real focus (not index 0).
@@ -6304,7 +6400,7 @@ void WiiUMenuApp::buildGrid() {
     m_clock->setSmallFont(&m_fontSmall);
     m_clock->setClockService(&m_clockService);
     m_clock->setUse12HourClock(m_config.clockUse12Hour);
-    m_clock->setCornerRadius(m_theme.cellCornerRadius);
+    m_clock->setCornerRadius((m_theme.cellCornerRadius * uiRadiusScale()));
     m_clock->setForceLiquidGlass(true);
     m_clock->setBlurEnabled(false);
 
@@ -6331,7 +6427,7 @@ void WiiUMenuApp::buildGrid() {
     m_battery->setMarginRight(24.f);
     m_battery->setSize(150, 62);
     m_battery->setFont(&m_fontSmall);
-    m_battery->setCornerRadius(m_theme.cellCornerRadius);
+    m_battery->setCornerRadius((m_theme.cellCornerRadius * uiRadiusScale()));
     m_battery->setForceLiquidGlass(true);
     m_battery->setBlurEnabled(false);
     m_battery->setOnActivate([this]() {
@@ -6348,7 +6444,7 @@ void WiiUMenuApp::buildGrid() {
     m_profileLock->setShrink(0.f);
     m_profileLock->setMarginTop(14.f);
     m_profileLock->setMarginLeft(24.f);
-    m_profileLock->setCornerRadius(m_theme.cellCornerRadius);
+    m_profileLock->setCornerRadius((m_theme.cellCornerRadius * uiRadiusScale()));
     // The HUD row spreads its items evenly; balance the square tile against the
     // battery widget so the clock lands on the screen's centre line.
     m_profileLock->setMarginRight((150.f + 24.f) - (kProfileLockWidth + 24.f));
@@ -6366,6 +6462,9 @@ void WiiUMenuApp::buildGrid() {
     m_titlePill->setPadding(9.f, 22.f, 9.f, 22.f);
     m_titlePill->setForceLiquidGlass(true);
     m_titlePill->setBlurEnabled(false);
+    // Seed both nudges and visibility before the first title so the capsule
+    // never starts centred and jumps.
+    applyTitlePillLayout();
 
     m_pageIndicator = std::make_shared<PageIndicator>();
     m_pageIndicator->setRect({0, 685.f, 1280.f, 28.f});
@@ -6711,9 +6810,11 @@ void WiiUMenuApp::buildGrid() {
     };
 
     m_sidebar.build(app().gpu(), app().renderer(), SD_ASSETS, sidebarActions);
+    applySidebarPresentation();
     configureDynamicLineNavigation();
     if (!fastReturn)
         reloadSidebarIcons();
+    applyGameShortcuts();
     // Apply the saved per-pack tint / contrast follow to the freshly built
     // sidebar so a boot never shows chrome-tinted icons unless asked for.
     syncColourIconContrast();
@@ -6774,6 +6875,9 @@ void WiiUMenuApp::buildGrid() {
     m_topHud->addChild(m_battery);
     m_topHud->layout();
     placeLayoutFlipButton();
+    // Seed the saved profile / battery size before the first frame.
+    applyHudScale();
+    applyClockLayout();
     // Flip/battery are visible only after HUD layout — rewire the full strip.
     configureDynamicLineNavigation();
 
@@ -6796,6 +6900,10 @@ void WiiUMenuApp::buildGrid() {
     m_contentLayer->addChild(m_folderZoom);
     m_contentLayer->addChild(m_grid);
     m_contentLayer->addChild(m_folderHeader);
+    // Added before the sidebar boxes so the plate renders underneath the
+    // buttons it backs.
+    if (auto plate = m_sidebar.stripPlate())
+        m_contentLayer->addChild(plate);
     m_contentLayer->addChild(m_leftSidebar);
     m_contentLayer->addChild(m_rightSidebar);
     m_contentLayer->addChild(m_topHud);
@@ -6830,6 +6938,39 @@ void WiiUMenuApp::buildGrid() {
             focusManager().setFocus(m_settings.get());
     });
     m_steamGridDbPicker->onSearch([this]() { editSteamGridDbPickerQuery(); });
+    m_steamGridDbPicker->onShapeCycle([this]() {
+        // 0 = any shape, 1 = 16:9, 3 = both, 2 = 4:3. The artwork filter lives
+        // beside the search it shapes instead of in Settings; Y cycles it.
+        int& aspect = m_config.steamGridDbAspect;
+        aspect = aspect == 0 ? 1 : aspect == 1 ? 3 : aspect == 3 ? 2 : 0;
+        m_config.save();
+        const char* label = aspect == 0 ? "all shapes"
+                          : aspect == 1 ? "16:9 only"
+                          : aspect == 3 ? "16:9 + 4:3"
+                          : "4:3 only";
+        if (!m_steamGridDbPicker)
+            return;
+        m_steamGridDbPicker->setMessage(
+            std::string("Filter: ") + label + " - reloading...", true);
+        // Re-run the current query with the new shape. Only relabelling left the
+        // grid showing the previous search, so switching to 4:3 looked like it
+        // had searched and found nothing.
+        const auto kind = m_steamGridDbPicker->artworkKind();
+        const auto mappedKind = kind == SteamGridDbManager::ArtworkKind::Logo
+            ? GameOptionsScreen::ArtworkKind::Logo
+            : kind == SteamGridDbManager::ArtworkKind::Icon
+                ? GameOptionsScreen::ArtworkKind::Icon
+                : kind == SteamGridDbManager::ArtworkKind::Poster
+                    ? GameOptionsScreen::ArtworkKind::Poster
+                    : kind == SteamGridDbManager::ArtworkKind::GridWide
+                        ? GameOptionsScreen::ArtworkKind::PosterWide
+                        : GameOptionsScreen::ArtworkKind::Hero;
+        const std::uint64_t titleId = m_steamGridDbPicker->titleId();
+        const std::string query = m_steamGridDbPicker->query();
+        const std::string title = m_steamGridDbPicker->title();
+        if (titleId != 0)
+            openSteamGridDbPickerForTitle(titleId, title, mappedKind, query);
+    });
     m_steamGridDbPicker->onApply(
         [this](const SteamGridDbManager::BrowseResult& browse,
                const SteamGridDbManager::Candidate& candidate) {
@@ -6860,10 +7001,12 @@ void WiiUMenuApp::buildGrid() {
             if (m_steamGridDbBrowseFuture.valid())
                 m_steamGridDbRetiredBrowses.push_back(std::move(m_steamGridDbBrowseFuture));
             m_steamGridDbBrowseFuture = std::async(std::launch::async,
-                [apiKey = m_config.steamGridDbApiKey, browse, match, query]() {
+                [apiKey = m_config.steamGridDbApiKey, browse, match, query,
+                 aspect = m_config.steamGridDbAspect]() {
                     return SteamGridDbManager::browseGame(
                         apiKey, browse.titleId, browse.title, query,
-                        browse.kind, match.id, match.name);
+                        browse.kind, match.id, match.name,
+                        static_cast<SteamGridDbManager::ArtworkAspect>(aspect));
                 });
         });
     // Picker is added after folder/game options so it paints above them; show
@@ -7399,6 +7542,9 @@ void WiiUMenuApp::enterLockView(bool instant) {
     m_lockScreen->setZoomDir(m_config.lockScreenZoomDir);
     m_lockScreen->setWipeDir(m_config.lockScreenWipeDir);
 
+    // The passcode is read at every entry so a change in Settings is
+    // picked up without rebuilding the lock view.
+    m_lockScreen->setPadCode(m_config.lockPadCodeEnabled, m_config.lockPadCode);
     m_lockReturnFocus = focusManager().current();
     m_lockReturnTitleId = 0;
     if (m_lockReturnFocus && m_lockReturnFocus->tag() == "glossy_icon")
@@ -7485,6 +7631,12 @@ void WiiUMenuApp::finishExitLockView(bool resumeSuspended) {
         m_bgLayer->setVisible(true);
     if (m_contentLayer)
         m_contentLayer->setVisible(true);
+
+    // HOME must come back exactly as it was left. The sidebar is not laid out
+    // while the lock overlay owns the view, so the row came back at stock size
+    // after a resize followed by a lock. Re-assert the saved presentation
+    // before the user sees the menu again.
+    applySidebarPresentation();
 
     m_audio.playSfx(Sfx::Activate);
     beginForcedCursorTeleport();
@@ -9030,7 +9182,32 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
         }
     }
 
+    {
+        const int mode = static_cast<int>(appletGetOperationMode());
+        if (mode != m_lastOperationMode) {
+            m_lastOperationMode = mode;
+            applyDockedMode(mode == static_cast<int>(AppletOperationMode_Console));
+        }
+    }
     m_sidebar.update(dt, focusManager().current());
+    // The grid must clear a top/bottom shortcut strip no matter which path
+    // changed the layout, the edge or the route. setVerticalInsets() is a
+    // no-op when the values did not move, so doing this per frame is cheap and
+    // removes the ordering trap that used to leave the insets at zero.
+    syncGridShortcutInsets();
+
+    // One-shot startup nudge: widen the shortcut row by two pixels and put it
+    // straight back. Re-running the arrangement is what settles the icons on
+    // the configured size; both steps happen in the same frame, so no motion is
+    // visible. Waits a few frames so the icon pack has finished binding.
+    if (m_sidebarBootNudge) {
+        if (m_sidebarBootNudgeFrames > 0) {
+            --m_sidebarBootNudgeFrames;
+        } else if (!m_lockViewActive && !(m_settings && m_settings->isActive())) {
+            m_sidebarBootNudge = false;
+            m_sidebar.nudgeButtonScale(m_config.sidebarScale, 2.f);
+        }
+    }
 
     nxui::AnimationManager::instance().update(motionDt);
 
@@ -9158,6 +9335,7 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         add(buttonGlyph(nxui::Button::X), i18n.tr("hint.search", "Search"));
+        add(buttonGlyph(nxui::Button::Y), i18n.tr("hint.shape", "16:9 / 4:3"));
         return hints;
     }
 
@@ -9313,6 +9491,17 @@ float WiiUMenuApp::hintCapsuleWidth(const std::string& icon, const std::string& 
 }
 
 void WiiUMenuApp::syncHintCapsules(float dt) {
+    // The capsules are a training aid, so they dim once navigation goes quiet
+    // and come straight back the moment focus moves. Focus changes are the
+    // only input this screen acts on, which makes them a good idle signal.
+    const void* focusNow = focusManager().current();
+    if (focusNow != m_hintIdleFocus) {
+        m_hintIdleFocus = focusNow;
+        m_hintIdleSeconds = 0.f;
+    } else {
+        m_hintIdleSeconds = std::min(m_hintIdleSeconds + dt, 60.f);
+    }
+
     std::vector<ActionHint> hints = buildActionHints();
     if ((int)hints.size() > kHintMaxItems)
         hints.resize((size_t)kHintMaxItems);
@@ -9368,6 +9557,9 @@ void WiiUMenuApp::syncHintCapsules(float dt) {
 }
 
 void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
+    // Hidden by request: the capsules are reminders, the bindings still work.
+    if (m_config.hideActionHints)
+        return;
     const int count = (int)m_hintCapsules.size();
     if (count <= 0)
         return;
@@ -9431,11 +9623,21 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
         rows.push_back({0, count});
 
     const float reveal = std::clamp(m_hintContentReveal.value(), 0.f, 1.f);
+    const float idle = m_hintIdleSeconds > 4.f
+        ? switchu::ui::surface::kHintIdleAlpha : 1.f;
+    // Every alpha below rides this: the row fades as one block, glyphs and
+    // capsule glass together.
+    const float hintAlpha = reveal * idle;
     const float blockH = rows.size() * kHintCapH + (rows.size() - 1) * kHintRowGap;
-    float y = 720.f - kHintEdgeY - blockH + (1.f - reveal) * 4.f;
+    // A bottom shortcut bar owns this strip of the screen; lift the capsules
+    // clear of it instead of drawing the hints through the bar.
+    const float bottomBar = m_sidebar.reservedBottom();
+    float y = 720.f - kHintEdgeY - blockH - bottomBar + (1.f - reveal) * 4.f;
 
     const nxui::Color tint = m_homeChrome.panelBase.withAlpha(
-        m_homeChrome.mode == nxui::ThemeMode::Dark ? 0.30f : 0.24f);
+        m_homeChrome.mode == nxui::ThemeMode::Dark
+            ? switchu::ui::surface::kHintAlphaDark
+            : switchu::ui::surface::kHintAlphaLight);
 
     for (const auto& [first, last] : rows) {
         float rowW = 0.f;
@@ -9449,10 +9651,10 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
             const float radius = kHintCapH * 0.5f;
 
             ren.drawRoundedRect({cap.x, cap.y + 3.f, cap.width, cap.height},
-                                nxui::Color(0.f, 0.f, 0.f, 0.14f * reveal), radius);
-            ren.drawFrostedInset(cap, tint.withAlpha(tint.a * reveal),
-                                 m_homeChrome.panelBorder.withAlpha(0.24f * reveal),
-                                 m_homeChrome.panelHighlight.withAlpha(0.08f * reveal),
+                                nxui::Color(0.f, 0.f, 0.f, 0.14f * hintAlpha), radius);
+            ren.drawFrostedInset(cap, tint.withAlpha(tint.a * hintAlpha),
+                                 m_homeChrome.panelBorder.withAlpha(0.24f * hintAlpha),
+                                 m_homeChrome.panelHighlight.withAlpha(0.08f * hintAlpha),
                                  radius, 0.86f);
 
             const nxui::Vec2 iconSize = m_fontIcons.measure(c.icon);
@@ -9460,7 +9662,7 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
             ren.drawText(c.icon,
                          {cap.x + kHintCapPadX,
                           cap.y + (kHintCapH - iconSize.y * kHintIconScale) * 0.5f},
-                         &m_fontIcons, m_homeChrome.textPrimary.withAlpha(0.94f * reveal), kHintIconScale);
+                         &m_fontIcons, m_homeChrome.textPrimary.withAlpha(0.94f * hintAlpha), kHintIconScale);
 
             const float textX = cap.x + kHintCapPadX + iconW + kHintIconGap;
             const float swap  = nxui::Easing::outCubic(std::clamp(c.swapT, 0.f, 1.f));
@@ -9472,7 +9674,7 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
                              {textX - 7.f * swap,
                               cap.y + (kHintCapH - os.y * kHintTextScale) * 0.5f},
                              &m_fontSmall,
-                             m_homeChrome.textSecondary.withAlpha(0.90f * reveal * (1.f - swap)),
+                             m_homeChrome.textSecondary.withAlpha(0.90f * hintAlpha * (1.f - swap)),
                              kHintTextScale);
             }
             const nxui::Vec2 ls = m_fontSmall.measure(c.label);
@@ -9480,7 +9682,7 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
                          {textX + 7.f * (1.f - swap),
                           cap.y + (kHintCapH - ls.y * kHintTextScale) * 0.5f},
                          &m_fontSmall,
-                         m_homeChrome.textSecondary.withAlpha(0.90f * reveal * swap),
+                         m_homeChrome.textSecondary.withAlpha(0.90f * hintAlpha * swap),
                          kHintTextScale);
             ren.popClipRect();
 
@@ -10239,6 +10441,23 @@ void WiiUMenuApp::renderDeletePageButton(nxui::Renderer& ren) {
     ren.drawCircle({cx, cy}, ring - 1.6f,
                    m_theme.panelHighlight.withAlpha(0.10f * e), 28);
 
+    // Empty-page hint. The ring only explains that the page can be deleted;
+    // it never said why the page is blank or how to fill it.
+    if (!m_loadedRegularFontPath.empty()) {
+        const auto& emptyI18n = nxui::I18n::instance();
+        const std::string emptyTitle = emptyI18n.tr("home.empty_page_title",
+                                                    "This page is empty");
+        const std::string emptyHint = emptyI18n.tr(
+            "home.empty_page_hint", "Press + to add a game, or - to remove this page");
+        const float emptyTitleW = m_fontNormal.measure(emptyTitle).x * 0.95f;
+        const float emptyHintW = m_fontSmall.measure(emptyHint).x * 0.80f;
+        const float emptyY = cy + ring + 30.f;
+        ren.drawText(emptyTitle, {cx - emptyTitleW * 0.5f, emptyY}, &m_fontNormal,
+                     m_theme.textPrimary.withAlpha(0.92f * e), 0.95f);
+        ren.drawText(emptyHint, {cx - emptyHintW * 0.5f, emptyY + 34.f}, &m_fontSmall,
+                     m_theme.textPrimary.withAlpha(0.66f * e), 0.80f);
+    }
+
     const float bar = ring * 0.92f;
     const float thick = std::max(2.f, ring * 0.17f);
     const nxui::Color ink = m_theme.textPrimary.withAlpha(0.92f * e);
@@ -10285,6 +10504,52 @@ void WiiUMenuApp::onRender(nxui::Renderer& ren) {
             armTicksToNs(armGetSystemTick() - m_fastReturnStartupTick) / 1'000'000ULL);
         DebugLog::log("[first-frame] fast HOME return rendered in %lums", elapsedMs);
         m_fastReturnStartupTick = 0;
+    }
+    // Screen treatment: a flat veil first, then an edge vignette so the middle
+    // of the grid stays the brightest part of the frame.
+    {
+        const int dimPct = std::clamp(m_config.wallpaperDim, 0, 100);
+        if (dimPct > 0) {
+            // Flat veil at reduced weight plus a top / bottom scrim. A single
+            // flat layer darkened the artwork evenly, which flattened the
+            // wallpaper and still left the clock band fighting bright art.
+            const float strength = static_cast<float>(dimPct) / 100.f;
+            const float flat = strength * 0.34f;
+            const float scrim = strength * 0.42f;
+            ren.drawRect({0, 0, 1280, 720}, nxui::Color(0, 0, 0, flat));
+            ren.drawGradientRect({0.f, 0.f, 1280.f, 190.f},
+                                 nxui::Color(0.f, 0.f, 0.f, scrim),
+                                 nxui::Color(0.f, 0.f, 0.f, 0.f));
+            ren.drawGradientRect({0.f, 720.f - 220.f, 1280.f, 220.f},
+                                 nxui::Color(0.f, 0.f, 0.f, 0.f),
+                                 nxui::Color(0.f, 0.f, 0.f, scrim * 1.1f));
+        }
+        const int vigPct = std::clamp(m_config.vignetteStrength, 0, 100);
+        if (vigPct > 0) {
+            // True gradients, not strips. Four full-width/height bands built from
+            // the renderer's gradient quads, two linear halves each to approximate
+            // a (1-t)^2 ramp. Nothing is quantised into steps, so there is no
+            // banding and no seam rows to see - the old version stacked 16 (then
+            // 44) rectangles whose overlaps composited the same pixels twice.
+            // The bands intentionally overlap at the corners: the two falloffs
+            // multiply there, so the corners end up darkest the way a vignette
+            // should be, instead of leaving a visible rectangular frame.
+            const float strength = static_cast<float>(vigPct) / 100.f;
+            const float edgeAlpha = strength * 0.30f;
+            const float midAlpha = edgeAlpha * 0.25f;   // (1 - 0.5)^2
+            constexpr float kHalf = 88.f;              // 176 px of reach per side
+            const nxui::Color clear(0.f, 0.f, 0.f, 0.f);
+            const nxui::Color edge(0.f, 0.f, 0.f, edgeAlpha);
+            const nxui::Color mid(0.f, 0.f, 0.f, midAlpha);
+            ren.drawGradientRect({0.f, 0.f, 1280.f, kHalf}, edge, mid);
+            ren.drawGradientRect({0.f, kHalf, 1280.f, kHalf}, mid, clear);
+            ren.drawGradientRect({0.f, 720.f - kHalf * 2.f, 1280.f, kHalf}, clear, mid);
+            ren.drawGradientRect({0.f, 720.f - kHalf, 1280.f, kHalf}, mid, edge);
+            ren.drawGradientRectH({0.f, 0.f, kHalf, 720.f}, edge, mid);
+            ren.drawGradientRectH({kHalf, 0.f, kHalf, 720.f}, mid, clear);
+            ren.drawGradientRectH({1280.f - kHalf * 2.f, 0.f, kHalf, 720.f}, clear, mid);
+            ren.drawGradientRectH({1280.f - kHalf, 0.f, kHalf, 720.f}, mid, edge);
+        }
     }
     if (m_returnFadeTimer > 0.f) {
         float alpha = m_returnFadeTimer / kReturnFadeInDur;

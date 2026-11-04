@@ -4,6 +4,7 @@
 #include <switchu/sd_commit.hpp>
 #include <switch.h>
 #include <nlohmann/json.hpp>
+#include "core/PlaytimeStore.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -221,6 +222,9 @@ void WidgetStore::updateRecentDuration(std::int64_t now) {
         static_cast<std::uint64_t>(now - m_recent.sessionMeasuredAt),
         kMaximumSessionSeconds);
     m_recent.recentSeconds += elapsed;
+    // The recency fields only ever describe the newest title, so the durable
+    // per-title total lives here - this is what the icon badges read.
+    switchu::playtime::addSession(m_recent.titleId, elapsed);
     m_recent.totalSeconds += elapsed;
     // A session is measured once when SwitchU regains control. Resuming or
     // relaunching records a new measurement start.

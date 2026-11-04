@@ -52,11 +52,103 @@ struct AppConfig {
     bool  steamGridDbShowPosterInDynamicLine = true;
     // Logo overlay above / beside the single-row carousel.
     bool  steamGridDbShowLogoInDynamicLine = true;
+    // Preferred landscape artwork aspect for SteamGridDB searches:
+    // Bitmask of the shapes to request: 1 = 16:9, 2 = 4:3 (3 = both, 0 = any).
+    // Each shape asks for every resolution it exists at.
+    int   steamGridDbAspect = 0;
     std::string steamGridDbApiKey;
+
+    // Home icon presentation, shared by the HOME grid and the single-row
+    // carousel so both views keep one look.
+    // 0 = square (1:1), 1 = widescreen (16:9), 2 = classic (4:3).
+    int iconAspect = 0;
+    // 0 = rounded tiles, 1 = perfectly square tiles.
+    int iconCorners = 0;
+    // Percentage of the theme's corner radius; 100 keeps the stock curve,
+    // 0 draws square tiles without changing the Rounded/Square switch.
+    int iconCornerPct = 100;
+    // Uniform tile size in percent of the density-fitted cells (70..130).
+    int iconScale = 100;
+    // Sidebar / top-strip shortcut button size, percent (70..150). Separate
+    // from iconScale so shortcuts and game tiles size independently.
+    int sidebarScale = 100;
+    // Where the shortcut strip sits: 0 = top of the screen, 1 = bottom.
+    int shortcutEdge = 0;
+    // Horizontal travel for the shortcuts, in 1/25 screen steps (like the
+    // other nudges): the strip slides, the two columns move in/out.
+    int shortcutNudgeX = 0;
+    // Right group / right column travels on its own paddle. Older configs
+    // have no key for it, so load() seeds it from shortcutNudgeX.
+    int shortcutNudgeXRight = 0;
+    // One continuous plate behind the whole strip instead of a pill per
+    // shortcut. Only the top / bottom strip layout draws it.
+    bool shortcutStrip = true;
+    // Vertical travel of the shortcut row in pixels (-24..24, snapped to 2px
+    // steps). Applied at whichever edge the strip sits on.
+    int shortcutNudgeY = 0;
+    // Extra gap between tiles, percent of the fitted spacing (-50..100).
+    int iconSpacing = 0;
+    // Carousel depth, percent: negative pulls the row back so smaller tiles
+    // and more of them are on screen, positive brings it forward.
+    int carouselDepth = 0;
+    int carouselFade = 50;
+    int titlePillNudgeX = 0;
+    // Hides the title capsule under the carousel entirely (clean shelf).
+    bool hideGameTitle = false;
+    // Bottom-right action capsules (A / B / + hints).
+    bool hideActionHints = false;
+    // Profile tile and battery pill size in the top HUD, percent (70..160).
+    int hudScale = 100;
+    // Date/time capsule: size percent and horizontal travel (+/-25 steps of
+    // 6.4 px), same scale as the other nudges.
+    int clockScale = 100;
+    int clockNudgeX = 0;
+    // Vertical travel of the clock in pixels, 2px steps (-14..14, 0 centred).
+    // Leaving the bar row hands the clock its own capsule back.
+    int clockNudgeY = 0;
+    // Vertical travel for the capsule on the same +/-25 step scale as the
+    // horizontal nudge. Positive moves it down.
+    int titlePillNudgeY = 0;
+    // Layout nudges as a percentage of one cell, clamped to +/-25.
+    // The grid moves left/right; the carousel row moves up/down.
+    int gridNudgeX = 0;
+    int lineNudgeY = 0;
+    // Whole-screen treatment. Dim is a flat veil; vignette darkens
+    // the edges so tiles read against busy wallpaper.
+    int wallpaperDim = 0;
+    int vignetteStrength = 0;
+    // Shared multiplier for every UI radius (tiles, cursor, panels,
+    // cells, folders). 100 = the theme's own values.
+    int uiRadiusPct = 100;
+    // Tile drop shadow: vertical offset in px and veil strength in %.
+    int iconShadowOffset = 6;
+    int iconShadowAlpha = 20;
+    int motionStyle = 1;
+    // Carousel horizontal offset: moves the focused tile left or right of
+    // centre without touching the grid.
+    int lineNudgeX = 0;
+    // Layout presets, 9 values each: aspect, corners, roundness,
+    // scale, spacing, depth, gridNudgeX, lineNudgeX, lineNudgeY.
+    std::vector<int> layoutPreset[3];
+
+    // Animated wallpaper (animated WebP, or Motion-JPEG inside an .mp4).
+    // Empty keeps the theme's still image.
+    std::string wallpaperPath;
+    bool wallpaperAnimated = true;
+    int  wallpaperFps = 15;
+
+    float iconAspectRatio() const {
+        switch (iconAspect) {
+            case 1:  return 16.f / 9.f;
+            case 2:  return 4.f / 3.f;
+            default: return 1.f;
+        }
+    }
 
     // 0 keeps the hand-made layout. The other modes are display-only
     // projections and never overwrite layout.json.
     int sortMode = 0;
+    bool alphaOrder = false;
     // A-Z / Recent also reorder applications that use a larger tile size.
     bool sortLargeTiles = true;
     // Colour HOME chrome icons follow single-row hero light/dark chrome when on
@@ -80,6 +172,25 @@ struct AppConfig {
     int lockScreenZoomDir = 0;
     // Wipe exit direction: 0 = Up, 1 = Right, 2 = Down, 3 = Left.
     int lockScreenWipeDir = 1;
+    // Lock view D-pad passcode: four directional steps (U/D/L/R) that must be
+    // pressed in order. Off by default; the lock screen falls back to swipe /
+    // any-button unlock while this is false.
+    bool lockPadCodeEnabled = false;
+    std::string lockPadCode = "UDLR";
+    // Six comma-separated shortcut slot ids (0 = stock applet). Any installed
+    // game or homebrew can occupy a slot from its Game Options page.
+    std::string gameShortcuts;
+    // Comma-separated title ids hidden from HOME. Restored from Settings.
+    std::string hiddenGames;
+    // Per-title display names: id<TAB>name lines.
+    std::string gameNames;
+    // Docked-mode size overrides. handheld* keeps the normal values so
+    // undocking restores them; docked* is applied only while docked.
+    bool dockedSizeOverrides = true;
+    int handheldIconScale = 0;
+    int handheldShortcutScale = 0;
+    int dockedIconScale = 100;
+    int dockedShortcutScale = 100;
     // Theme Shop → Lock Screen: applying a theme with fonts may set clock face.
     bool themeLockClockFontOverride = true;
     // Theme Shop → Interface: applying a theme with icons may switch icon pack.

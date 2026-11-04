@@ -2144,6 +2144,24 @@ void WiiUMenuApp::showGameContextMenu(GlossyIcon* icon) {
         game.hasPosterWideArt = SteamGridDbManager::hasGridWide(titleId);
     }
     m_gameOptions->setGame(game);
+    m_gameOptions->onToggleShortcut([this]() {
+        toggleGameShortcut(m_gameOptionsTitleId);
+    });
+    m_gameOptions->setShortcutPinned(isGameShortcutPinned(titleId));
+    m_gameOptions->onRenameGame([this, titleId]() {
+        std::string current;
+        for (const auto& entry : m_allApps)
+            if (entry.titleId == titleId) { current = entry.title; break; }
+        const std::string renamed = customTitleFor(titleId);
+        if (!renamed.empty()) current = renamed;
+        requestTextEntry(nxui::I18n::instance().tr("game.rename", "Rename game"),
+                         nxui::I18n::instance().tr("game.rename_hint", "Name"),
+                         current, 64, false,
+                         [this, titleId](const std::string& value) {
+            setGameName(titleId, value);
+        });
+    });
+    m_gameOptions->onHideFromHome([this]() { hideGameFromHome(m_gameOptionsTitleId); });
     m_gameOptions->onMove([this]() {
         if (m_gameOptions) m_gameOptions->hide();
         if (focusTitle(m_gameOptionsTitleId)) {
@@ -2830,6 +2848,13 @@ void WiiUMenuApp::updateCursor() {
             : cur->focusRect();
         float corner = m_theme.cursorCornerRadius;
         const bool glossyFocus = cur->tag() == "glossy_icon";
+        // Match the highlight to the tile it surrounds. Icons already resolve
+        // their own radius (0 with Icons -> Square), so the ring has to follow
+        // that instead of always using the theme's cursor radius.
+        if (glossyFocus) {
+            if (auto* focusedIcon = static_cast<GlossyIcon*>(cur))
+                corner = focusedIcon->cornerRadius();
+        }
         bool outsideFitCursor = movingLineFocus;
         if (!outsideFitCursor && glossyFocus && !m_editMode) {
             auto* icon = static_cast<GlossyIcon*>(cur);
@@ -2879,7 +2904,7 @@ void WiiUMenuApp::updateCursor() {
             // suspended ring (no pre-pad that insets into poster/wide art).
             m_cursor->moveTo(fr, corner, dur);
         } else {
-            m_cursor->moveTo(fr.expanded(4.f), dur);
+            m_cursor->moveTo(fr.expanded(4.f), corner, dur);
         }
         m_cursor->setVisible(true);
         if (m_snapHomeFocus)

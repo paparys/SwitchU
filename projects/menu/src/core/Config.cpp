@@ -98,8 +98,57 @@ bool AppConfig::load() {
     readJsonOpt(j, "steamGridDbShowInFolders", steamGridDbShowInFolders);
     readJsonOpt(j, "steamGridDbShowPosterInDynamicLine", steamGridDbShowPosterInDynamicLine);
     readJsonOpt(j, "steamGridDbShowLogoInDynamicLine", steamGridDbShowLogoInDynamicLine);
+    readJsonOpt(j, "steamGridDbAspect", steamGridDbAspect);
     readJsonOpt(j, "steamGridDbApiKey", steamGridDbApiKey);
+    readJsonOpt(j, "iconAspect", iconAspect);
+    readJsonOpt(j, "iconCorners", iconCorners);
+    readJsonOpt(j, "iconCornerPct", iconCornerPct);
+    readJsonOpt(j, "iconScale", iconScale);
+    readJsonOpt(j, "sidebarScale", sidebarScale);
+    readJsonOpt(j, "shortcutEdge", shortcutEdge);
+    readJsonOpt(j, "shortcutNudgeX", shortcutNudgeX);
+    if (j.find("shortcutNudgeXRight") == j.end())
+        shortcutNudgeXRight = shortcutNudgeX;
+    else
+        readJsonOpt(j, "shortcutNudgeXRight", shortcutNudgeXRight);
+    readJsonOpt(j, "shortcutStrip", shortcutStrip);
+    readJsonOpt(j, "shortcutNudgeY", shortcutNudgeY);
+    readJsonOpt(j, "iconSpacing", iconSpacing);
+    readJsonOpt(j, "carouselDepth", carouselDepth);
+    readJsonOpt(j, "carouselFade", carouselFade);
+    readJsonOpt(j, "titlePillNudgeX", titlePillNudgeX);
+    readJsonOpt(j, "hideGameTitle", hideGameTitle);
+    readJsonOpt(j, "hideActionHints", hideActionHints);
+    readJsonOpt(j, "hudScale", hudScale);
+    readJsonOpt(j, "clockScale", clockScale);
+    readJsonOpt(j, "clockNudgeX", clockNudgeX);
+    readJsonOpt(j, "clockNudgeY", clockNudgeY);
+    readJsonOpt(j, "titlePillNudgeY", titlePillNudgeY);
+    readJsonOpt(j, "gridNudgeX", gridNudgeX);
+    readJsonOpt(j, "lineNudgeY", lineNudgeY);
+    readJsonOpt(j, "wallpaperDim", wallpaperDim);
+    readJsonOpt(j, "vignetteStrength", vignetteStrength);
+    readJsonOpt(j, "uiRadiusPct", uiRadiusPct);
+    readJsonOpt(j, "iconShadowOffset", iconShadowOffset);
+    readJsonOpt(j, "iconShadowAlpha", iconShadowAlpha);
+    readJsonOpt(j, "motionStyle", motionStyle);
+    readJsonOpt(j, "lineNudgeX", lineNudgeX);
+    for (int preset = 0; preset < 3; ++preset) {
+        layoutPreset[preset].clear();
+        const std::string key = "layoutPreset" + std::to_string(preset + 1);
+        auto it = j.find(key);
+        if (it == j.end() || !it->is_array())
+            continue;
+        for (const auto& value : *it) {
+            if (value.is_number_integer() && layoutPreset[preset].size() < 9)
+                layoutPreset[preset].push_back(value.get<int>());
+        }
+    }
+    readJsonOpt(j, "wallpaperPath", wallpaperPath);
+    readJsonOpt(j, "wallpaperAnimated", wallpaperAnimated);
+    readJsonOpt(j, "wallpaperFps", wallpaperFps);
     readJsonOpt(j, "sortMode", sortMode);
+    readJsonOpt(j, "alphaOrder", alphaOrder);
     readJsonOpt(j, "sortLargeTiles", sortLargeTiles);
     readJsonOpt(j, "iconContrastAdapt", iconContrastAdapt);
     readJsonOpt(j, "batterySaver", batterySaver);
@@ -113,6 +162,20 @@ bool AppConfig::load() {
     lockScreenZoomDir = std::clamp(lockScreenZoomDir, 0, 1);
     readJsonOpt(j, "lockScreenWipeDir", lockScreenWipeDir);
     lockScreenWipeDir = std::clamp(lockScreenWipeDir, 0, 3);
+    readJsonOpt(j, "lockPadCodeEnabled", lockPadCodeEnabled);
+    readJsonOpt(j, "lockPadCode", lockPadCode);
+    readJsonOpt(j, "gameShortcuts", gameShortcuts);
+    readJsonOpt(j, "hiddenGames", hiddenGames);
+    readJsonOpt(j, "gameNames", gameNames);
+    readJsonOpt(j, "dockedSizeOverrides", dockedSizeOverrides);
+    readJsonOpt(j, "handheldIconScale", handheldIconScale);
+    readJsonOpt(j, "handheldShortcutScale", handheldShortcutScale);
+    readJsonOpt(j, "dockedIconScale", dockedIconScale);
+    readJsonOpt(j, "dockedShortcutScale", dockedShortcutScale);
+    if (handheldIconScale == 0) handheldIconScale = iconScale;
+    if (handheldShortcutScale == 0) handheldShortcutScale = sidebarScale;
+    dockedIconScale = std::clamp(dockedIconScale, 70, 130);
+    dockedShortcutScale = std::clamp(dockedShortcutScale, 70, 150);
     readJsonOpt(j, "themeLockClockFontOverride", themeLockClockFontOverride);
     readJsonOpt(j, "themeIconPackOverride", themeIconPackOverride);
     readJsonOpt(j, "themeMusicOverride", themeMusicOverride);
@@ -211,6 +274,39 @@ bool AppConfig::load() {
     if (!defaultProfileEnabled) defaultProfileUid.clear();
     accessibilitySpeechRate = std::clamp(accessibilitySpeechRate, 120, 320);
     sortMode = std::clamp(sortMode, 0, 2);
+    steamGridDbAspect = std::clamp(steamGridDbAspect, 0, 3);
+    iconAspect = std::clamp(iconAspect, 0, 2);
+    iconCorners = std::clamp(iconCorners, 0, 1);
+    iconCornerPct = std::clamp(iconCornerPct, 0, 100);
+    iconScale = std::clamp(iconScale, 70, 130);
+    sidebarScale = std::clamp(sidebarScale, 70, 150);
+    shortcutEdge = std::clamp(shortcutEdge, 0, 1);
+    shortcutNudgeX = std::clamp(shortcutNudgeX, -25, 25);
+    shortcutNudgeXRight = std::clamp(shortcutNudgeXRight, -25, 25);
+    // 2px steps only: truncate toward zero, which also covers negatives.
+    shortcutNudgeY = (std::clamp(shortcutNudgeY, -24, 24) / 2) * 2;
+    iconSpacing = std::clamp(iconSpacing, -50, 100);
+    carouselDepth = std::clamp(carouselDepth, -100, 100);
+    carouselFade = std::clamp(carouselFade, 0, 100);
+    titlePillNudgeX = std::clamp(titlePillNudgeX, -25, 25);
+    hudScale = std::clamp(hudScale, 70, 160);
+    clockScale = std::clamp(clockScale, 70, 160);
+    clockNudgeX = std::clamp(clockNudgeX, -25, 25);
+    clockNudgeY = std::clamp(clockNudgeY, -14, 14);
+    titlePillNudgeY = std::clamp(titlePillNudgeY, -25, 25);
+    gridNudgeX = std::clamp(gridNudgeX, -25, 25);
+    lineNudgeY = std::clamp(lineNudgeY, -25, 25);
+    wallpaperDim = std::clamp(wallpaperDim, 0, 100);
+    vignetteStrength = std::clamp(vignetteStrength, 0, 100);
+    uiRadiusPct = std::clamp(uiRadiusPct, 50, 200);
+    iconShadowOffset = std::clamp(iconShadowOffset, 0, 20);
+    iconShadowAlpha = std::clamp(iconShadowAlpha, 0, 60);
+    motionStyle = std::clamp(motionStyle, 0, 2);
+    lineNudgeX = std::clamp(lineNudgeX, -25, 25);
+    wallpaperFps = std::clamp(wallpaperFps, 5, 30);
+    // Animated wallpapers are no longer offered in Settings. Drop a path saved
+    // by an earlier build so the background stays on the theme image.
+    wallpaperPath.clear();
     if (themePreset.empty()) themePreset = "Default Light";
     if (!hasShowCoverKey) {
         // Local 9-style table used while vetting Cover/Plate as separate styles.
@@ -294,8 +390,45 @@ bool AppConfig::save() const {
     j["steamGridDbShowInFolders"] = steamGridDbShowInFolders;
     j["steamGridDbShowPosterInDynamicLine"] = steamGridDbShowPosterInDynamicLine;
     j["steamGridDbShowLogoInDynamicLine"] = steamGridDbShowLogoInDynamicLine;
+    j["steamGridDbAspect"] = std::clamp(steamGridDbAspect, 0, 3);
     j["steamGridDbApiKey"] = steamGridDbApiKey;
+    j["iconAspect"] = std::clamp(iconAspect, 0, 2);
+    j["iconCorners"] = std::clamp(iconCorners, 0, 1);
+    j["iconCornerPct"] = std::clamp(iconCornerPct, 0, 100);
+    j["iconScale"] = std::clamp(iconScale, 70, 130);
+    j["sidebarScale"] = std::clamp(sidebarScale, 70, 150);
+    j["shortcutEdge"] = std::clamp(shortcutEdge, 0, 1);
+    j["shortcutNudgeX"] = std::clamp(shortcutNudgeX, -25, 25);
+    j["shortcutNudgeXRight"] = std::clamp(shortcutNudgeXRight, -25, 25);
+    j["shortcutStrip"] = shortcutStrip;
+    j["shortcutNudgeY"] = std::clamp(shortcutNudgeY, -24, 24);
+    j["iconSpacing"] = std::clamp(iconSpacing, -50, 100);
+    j["carouselDepth"] = std::clamp(carouselDepth, -100, 100);
+    j["carouselFade"] = std::clamp(carouselFade, 0, 100);
+    j["titlePillNudgeX"] = std::clamp(titlePillNudgeX, -25, 25);
+    j["hideGameTitle"] = hideGameTitle;
+    j["hideActionHints"] = hideActionHints;
+    j["hudScale"] = std::clamp(hudScale, 70, 160);
+    j["clockScale"] = std::clamp(clockScale, 70, 160);
+    j["clockNudgeX"] = std::clamp(clockNudgeX, -25, 25);
+    j["clockNudgeY"] = std::clamp(clockNudgeY, -14, 14);
+    j["titlePillNudgeY"] = std::clamp(titlePillNudgeY, -25, 25);
+    j["gridNudgeX"] = std::clamp(gridNudgeX, -25, 25);
+    j["lineNudgeY"] = std::clamp(lineNudgeY, -25, 25);
+    j["wallpaperDim"] = std::clamp(wallpaperDim, 0, 100);
+    j["vignetteStrength"] = std::clamp(vignetteStrength, 0, 100);
+    j["uiRadiusPct"] = std::clamp(uiRadiusPct, 50, 200);
+    j["iconShadowOffset"] = std::clamp(iconShadowOffset, 0, 20);
+    j["iconShadowAlpha"] = std::clamp(iconShadowAlpha, 0, 60);
+    j["motionStyle"] = std::clamp(motionStyle, 0, 2);
+    j["lineNudgeX"] = std::clamp(lineNudgeX, -25, 25);
+    for (int preset = 0; preset < 3; ++preset)
+        j["layoutPreset" + std::to_string(preset + 1)] = layoutPreset[preset];
+    j["wallpaperPath"] = wallpaperPath;
+    j["wallpaperAnimated"] = wallpaperAnimated;
+    j["wallpaperFps"] = std::clamp(wallpaperFps, 5, 30);
     j["sortMode"] = std::clamp(sortMode, 0, 2);
+    j["alphaOrder"] = alphaOrder;
     j["sortLargeTiles"] = sortLargeTiles;
     j["iconContrastAdapt"] = iconContrastAdapt;
     j["batterySaver"] = batterySaver;
@@ -305,6 +438,16 @@ bool AppConfig::save() const {
     j["lockScreenTransition"] = std::clamp(lockScreenTransition, 0, 3);
     j["lockScreenZoomDir"] = std::clamp(lockScreenZoomDir, 0, 1);
     j["lockScreenWipeDir"] = std::clamp(lockScreenWipeDir, 0, 3);
+    j["lockPadCodeEnabled"] = lockPadCodeEnabled;
+    j["lockPadCode"] = lockPadCode;
+    j["gameShortcuts"] = gameShortcuts;
+    j["hiddenGames"] = hiddenGames;
+    j["gameNames"] = gameNames;
+    j["dockedSizeOverrides"] = dockedSizeOverrides;
+    j["handheldIconScale"] = handheldIconScale;
+    j["handheldShortcutScale"] = handheldShortcutScale;
+    j["dockedIconScale"] = dockedIconScale;
+    j["dockedShortcutScale"] = dockedShortcutScale;
     j["themeLockClockFontOverride"] = themeLockClockFontOverride;
     j["themeIconPackOverride"] = themeIconPackOverride;
     j["themeMusicOverride"] = themeMusicOverride;
