@@ -171,6 +171,19 @@ void Renderer::addQuadGrad(float x0, float y0, float x1, float y1,
     addVertex(x0, y1, u0, v1, cBot);
 }
 
+void Renderer::addQuadGradH(float x0, float y0, float x1, float y1,
+                            float u0, float v0, float u1, float v1,
+                            const Color& cLeft, const Color& cRight)
+{
+    if (m_vtxCount + 6 > GpuDevice::MAX_VERTICES) flush();
+    addVertex(x0, y0, u0, v0, cLeft);
+    addVertex(x1, y0, u1, v0, cRight);
+    addVertex(x1, y1, u1, v1, cRight);
+    addVertex(x0, y0, u0, v0, cLeft);
+    addVertex(x1, y1, u1, v1, cRight);
+    addVertex(x0, y1, u0, v1, cLeft);
+}
+
 void Renderer::drawRect(const Rect& r, const Color& c) {
     m_texturing = false;
     m_boundTex = nullptr;
@@ -188,6 +201,12 @@ void Renderer::drawGradientRect(const Rect& r, const Color& top, const Color& bo
     m_texturing = false;
     m_boundTex = nullptr;
     addQuadGrad(r.x, r.y, r.right(), r.bottom(), 0, 0, 1, 1, top, bottom);
+}
+
+void Renderer::drawGradientRectH(const Rect& r, const Color& left, const Color& right) {
+    m_texturing = false;
+    m_boundTex = nullptr;
+    addQuadGradH(r.x, r.y, r.right(), r.bottom(), 0, 0, 1, 1, left, right);
 }
 
 void Renderer::drawRoundedRect(const Rect& r, const Color& c, float radius) {

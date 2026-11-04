@@ -15,6 +15,10 @@ public:
     void setBorderWidth(float w)      { m_borderW = w; }
     void setScale(float s)            { m_scale = s; }
     void setPanelOpacity(float o)     { m_panelOpacity = o; }
+    // Draws only the content: no base, rim, highlight or glass. Used when a
+    // shared bar behind several widgets is meant to be the only chrome.
+    void setBackgroundVisible(bool visible) { m_backgroundVisible = visible; }
+    bool backgroundVisible() const    { return m_backgroundVisible; }
     float scale() const               { return m_scale; }
     float panelOpacity() const        { return m_panelOpacity; }
     float cornerRadius() const        { return m_radius; }
@@ -71,6 +75,7 @@ protected:
     float m_materialTextureIntensity = 0.55f;
 
     // Opaque backing
+    bool  m_backgroundVisible = true;
     bool  m_backingEnabled = false;
     Color m_backingColor   {0.f, 0.f, 0.f, 1.f};
 };

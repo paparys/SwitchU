@@ -104,6 +104,8 @@ public:
     void drawTriangle(const Vec2& p1, const Vec2& p2, const Vec2& p3, const Color& c);
     void drawLine(const Vec2& from, const Vec2& to, const Color& c, float thickness = 1.f);
     void drawGradientRect(const Rect& r, const Color& top, const Color& bottom);
+    // Horizontal counterpart: left colour at r.x, right colour at r.right().
+    void drawGradientRectH(const Rect& r, const Color& left, const Color& right);
     void drawTexture(const Texture* tex, const Rect& dest, const Color& tint = Color::white());
     void drawTextureSub(const Texture* tex, const Rect& src, const Rect& dest, const Color& tint = Color::white());
     void drawTextureRounded(const Texture* tex, const Rect& dest, float radius, const Color& tint = Color::white());
@@ -188,6 +190,9 @@ private:
     void addQuadGrad(float x0, float y0, float x1, float y1,
                      float u0, float v0, float u1, float v1,
                      const Color& cTop, const Color& cBot);
+    void addQuadGradH(float x0, float y0, float x1, float y1,
+                      float u0, float v0, float u1, float v1,
+                      const Color& cLeft, const Color& cRight);
 
 #ifdef NXUI_BACKEND_DEKO3D
     bool loadShaders();

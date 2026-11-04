@@ -73,6 +73,9 @@ void drawPanelMaterialTexture(Renderer& ren, const Rect& r, float radius,
 
 void GlassPanel::onRender(Renderer& ren) {
     if (m_scale < 0.01f) return;
+    // GlassWidget draws the content after this call, so returning here leaves
+    // the widget's contents visible with no chrome of its own.
+    if (!m_backgroundVisible) return;
 
     Rect r = m_rect;
     if (std::abs(m_scale - 1.f) > 0.001f) {
