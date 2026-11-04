@@ -132,6 +132,16 @@ public:
 
     int  iconCount()         const { return (int)m_appToSlot.size(); }
     bool hasData(int index)  const;
+    // Compressed bytes a title still holds. Null once the icon has been
+    // uploaded and released, so callers fall back to the SD cache.
+    const std::vector<uint8_t>* compressedIcon(std::uint64_t titleId) const {
+        const std::size_t count = std::min(m_titleIds.size(), m_compressed.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            if (m_titleIds[i] == titleId && !m_compressed[i].empty())
+                return &m_compressed[i];
+        }
+        return nullptr;
+    }
     bool needsVisibleLoads(int currentPage, int iconsPerPage) const;
 
     // Soak inventory: bound slots vs free-with-MemBlock vs empty free.

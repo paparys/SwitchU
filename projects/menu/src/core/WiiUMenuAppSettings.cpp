@@ -1,4 +1,7 @@
 #include "WiiUMenuApp.hpp"
+#include <switch.h>
+#include <switchu/control_cache.hpp>
+#include "ui/AccentPalette.hpp"
 #include "icons/IconPackInstaller.hpp"
 #include "icons/IconPackManager.hpp"
 #include "themeshop/ThemePackageInstaller.hpp"
@@ -34,6 +37,13 @@ size_t appendMp3TracksFromDir(AudioManager& audio,
                               const std::string& albumFolder);
 
 namespace {
+
+// The dock state last acted on can lag a real dock/undock by a frame, and the
+// settings callbacks used to trust that cached value. Read the mode at the
+// edit itself so a docked-size change always lands on the sizes in use.
+bool dockedNow() {
+    return appletGetOperationMode() == AppletOperationMode_Console;
+}
 
 bool removeDirectoryRecursive(const std::string& path) {
     std::error_code ec;
@@ -285,6 +295,22 @@ std::string defaultThemeRef() {
 
 } // namespace
 
+void WiiUMenuApp::applyHeroBackdropResolution() {
+    if (!m_steamGridDbBackdrop)
+        return;
+    const int level = std::clamp(m_config.heroBackdropResolution, 0, 2);
+    const int width = (level == 2) ? 640 : (level == 1 ? 960 : 1280);
+    const int height = (level == 2) ? 360 : (level == 1 ? 540 : 720);
+    m_steamGridDbBackdrop->setHeroCanvas(width, height);
+}
+
+void WiiUMenuApp::applyHeroBackdropBlur() {
+    if (!m_steamGridDbBackdrop)
+        return;
+    m_steamGridDbBackdrop->setBlur(
+        static_cast<float>(std::clamp(m_config.heroBackdropBlur, 0, 100)) / 100.f);
+}
+
 void WiiUMenuApp::createSettings() {
     if (m_settings) return;
 
@@ -315,6 +341,8 @@ void WiiUMenuApp::createSettings() {
                                     m_config.steamGridDbShowInFolders,
                                     m_config.steamGridDbShowPosterInDynamicLine,
                                     m_config.steamGridDbShowLogoInDynamicLine);
+    m_settings->setHeroBackdropResolutionState(m_config.heroBackdropResolution);
+    m_settings->setHeroBackdropBlurState(m_config.heroBackdropBlur);
 
     m_settings->onNavigateSfx([this]() { m_audio.playSfx(Sfx::Navigate); });
     m_settings->onActivateSfx([this]() { m_audio.playSfx(Sfx::Activate); });
@@ -356,7 +384,9 @@ void WiiUMenuApp::createSettings() {
     m_settings->setIconPresentationState(m_config.iconAspect, m_config.iconCorners,
                                          m_config.gridNudgeX, m_config.lineNudgeY,
                                          m_config.iconScale, m_config.iconSpacing,
-                                         m_config.carouselDepth, m_config.lineNudgeX);
+                                         m_config.carouselDepth, m_config.lineNudgeX,
+                                         m_config.iconVignette, m_config.iconHighlight,
+                                         m_config.iconDepth);
     m_settings->setIconCornerPctState(m_config.iconCornerPct);
     m_settings->setLockPadCodeState(m_config.lockPadCodeEnabled, m_config.lockPadCode);
     refreshHiddenGamesState();
@@ -368,6 +398,7 @@ void WiiUMenuApp::createSettings() {
                                        m_config.shortcutNudgeXRight);
     m_settings->setShortcutStripState(m_config.shortcutStrip);
     m_settings->setShortcutNudgeYState(m_config.shortcutNudgeY);
+    m_settings->setPinSideState(m_config.shortcutSide);
     m_settings->setHudChromeState(m_config.hideActionHints, m_config.hudScale);
     m_settings->setClockLayoutState(m_config.clockNudgeX, m_config.clockScale);
     m_settings->setClockVerticalState(m_config.clockNudgeY);
@@ -394,6 +425,8 @@ void WiiUMenuApp::createSettings() {
     });
     m_settings->setWallpaperState(m_config.wallpaperPath, m_config.wallpaperAnimated,
                                   m_config.wallpaperFps);
+    m_settings->setBackgroundDriftState(m_config.backgroundDrift,
+                                        m_config.backgroundDriftSpeed);
     m_settings->setSteamGridDbAspectState(m_config.steamGridDbAspect);
     m_settings->onIconAspectChange([this](int aspect) {
         aspect = std::clamp(aspect, 0, 2);
@@ -417,7 +450,8 @@ void WiiUMenuApp::createSettings() {
         m_settings->setIconPresentationState(
             m_config.iconAspect, m_config.iconCorners, m_config.gridNudgeX,
             m_config.lineNudgeY, m_config.iconScale, m_config.iconSpacing,
-            m_config.carouselDepth, m_config.lineNudgeX);
+            m_config.carouselDepth, m_config.lineNudgeX,
+            m_config.iconVignette, m_config.iconHighlight, m_config.iconDepth);
         m_settings->setIconCornerPctState(m_config.iconCornerPct);
     };
     m_settings->onSaveLayoutPreset([this](int slot) {
@@ -492,6 +526,13 @@ void WiiUMenuApp::createSettings() {
         m_config.save();
         applyIconPresentation();
     });
+    m_settings->onIconOverlayChange([this]() {
+        m_config.iconVignette = std::clamp(m_settings->iconVignette(), 0, 100);
+        m_config.iconHighlight = std::clamp(m_settings->iconHighlight(), 0, 100);
+        m_config.iconDepth = std::clamp(m_settings->iconDepth(), 0, 100);
+        m_config.save();
+        applyIconPresentation();
+    });
     m_settings->onMotionStyleChange([this](int style) {
         style = std::clamp(style, 0, 2);
         if (m_config.motionStyle == style)
@@ -500,12 +541,52 @@ void WiiUMenuApp::createSettings() {
         m_config.save();
         applyMotionStyle();
     });
+    // Liquid glass: one palette shared with the Glass color selector. Index 0
+    // means "leave the theme alone"; 1..9 are the fixed tints. Solid mode
+    // reuses the same colour for its opaque plate.
+    // Colours come from the shared palette in ui/AccentPalette.hpp, the same
+    // one the Glass tab lists, so labels and applied values cannot drift.
+    m_settings->setGlassState(m_config.glassTint, m_config.glassSolid);
+    auto applyGlassStyle = [this]() {
+        const int idx = std::clamp(m_config.glassTint, 0, 9);
+        app().renderer().setLiquidGlassStyle(
+            switchu::ui::accent::valid(idx),
+            switchu::ui::accent::colorFor(idx),
+            m_config.glassSolid);
+    };
+    applyGlassStyle();
+    m_settings->onGlassTintChange([this, applyGlassStyle](int tint) {
+        tint = std::clamp(tint, 0, 9);
+        if (m_config.glassTint == tint)
+            return;
+        m_config.glassTint = tint;
+        m_config.save();
+        applyGlassStyle();
+    });
+    m_settings->onGlassSolidChange([this, applyGlassStyle](bool solid) {
+        if (m_config.glassSolid == solid)
+            return;
+        m_config.glassSolid = solid;
+        m_config.save();
+        applyGlassStyle();
+    });
+    m_settings->setHighlightTint(m_config.highlightTint);
+    // The accent is applied through the theme, so a change recolours every
+    // consumer in one pass rather than only the focus ring.
+    m_settings->onHighlightTintChange([this](int tint) {
+        tint = std::clamp(tint, 0, 9);
+        if (m_config.highlightTint == tint)
+            return;
+        m_config.highlightTint = tint;
+        m_config.save();
+        applyTheme();
+    });
     m_settings->onIconScaleChange([this](int scale) {
         scale = std::clamp(scale, 70, 130);
         // This control is the undocked size. While the dock overrides are on it
         // is stored for undocking but must not fight the docked value live.
         m_config.handheldIconScale = scale;
-        if (m_dockedNow && m_config.dockedSizeOverrides) {
+        if (dockedNow() && m_config.dockedSizeOverrides) {
             m_config.save();
             return;
         }
@@ -520,17 +601,26 @@ void WiiUMenuApp::createSettings() {
     m_settings->onDockedSizeOverridesChange([this](bool enabled) {
         m_config.dockedSizeOverrides = enabled;
         m_config.save();
-        applyDockedMode(m_dockedNow);
+        applyDockedMode(dockedNow());
+        // Persist the sizes the apply just settled on, including the docked
+        // values inherited from the handheld sizes on a fresh config.
+        m_config.save();
     });
     m_settings->onDockedIconScaleChange([this](int pct) {
         m_config.dockedIconScale = std::clamp(pct, 70, 130);
         m_config.save();
-        applyDockedMode(m_dockedNow);
+        applyDockedMode(dockedNow());
+        // Persist the sizes the apply just settled on, including the docked
+        // values inherited from the handheld sizes on a fresh config.
+        m_config.save();
     });
     m_settings->onDockedShortcutScaleChange([this](int pct) {
         m_config.dockedShortcutScale = std::clamp(pct, 70, 150);
         m_config.save();
-        applyDockedMode(m_dockedNow);
+        applyDockedMode(dockedNow());
+        // Persist the sizes the apply just settled on, including the docked
+        // values inherited from the handheld sizes on a fresh config.
+        m_config.save();
     });
     m_settings->onSortModeChange([this](int mode) {
         mode = std::clamp(mode, 0, 2);
@@ -562,7 +652,7 @@ void WiiUMenuApp::createSettings() {
     m_settings->onSidebarScaleChange([this](int scale) {
         scale = std::clamp(scale, 70, 150);
         m_config.handheldShortcutScale = scale;
-        if (m_dockedNow && m_config.dockedSizeOverrides) {
+        if (dockedNow() && m_config.dockedSizeOverrides) {
             m_config.save();
             return;
         }
@@ -590,6 +680,16 @@ void WiiUMenuApp::createSettings() {
         m_config.shortcutEdge = edge;
         m_config.save();
         applySidebarPresentation();
+    });
+    m_settings->onPinSideChange([this](int side) {
+        side = std::clamp(side, 0, 1);
+        if (m_config.shortcutSide == side)
+            return;
+        m_config.shortcutSide = side;
+        m_config.save();
+        applySidebarPresentation();
+        // The grid lands on the applet cluster the pins now hug.
+        configureDynamicLineNavigation();
     });
     m_settings->onShortcutNudgeChange([this](int nudge) {
         nudge = std::clamp(nudge, -25, 25);
@@ -714,6 +814,24 @@ void WiiUMenuApp::createSettings() {
         applyIconPresentation();
     });
     m_settings->onWallpaperCycle([this]() { cycleWallpaper(); });
+    m_settings->onBackgroundDriftChange([this](bool on) {
+        m_config.backgroundDrift = on;
+        m_config.save();
+        if (m_background)
+            m_background->setDrift(m_config.backgroundDrift, m_config.backgroundDriftSpeed);
+        if (m_steamGridDbBackdrop)
+            m_steamGridDbBackdrop->setDrift(m_config.backgroundDrift,
+                                            m_config.backgroundDriftSpeed);
+    });
+    m_settings->onBackgroundDriftSpeedChange([this](int pct) {
+        m_config.backgroundDriftSpeed = std::clamp(pct, 1, 100);
+        m_config.save();
+        if (m_background)
+            m_background->setDrift(m_config.backgroundDrift, m_config.backgroundDriftSpeed);
+        if (m_steamGridDbBackdrop)
+            m_steamGridDbBackdrop->setDrift(m_config.backgroundDrift,
+                                            m_config.backgroundDriftSpeed);
+    });
     m_settings->onWallpaperAnimatedChange([this](bool animated) {
         m_config.wallpaperAnimated = animated;
         m_config.save();
@@ -902,6 +1020,18 @@ void WiiUMenuApp::createSettings() {
         }
         syncSteamGridDbLogoArea();
         syncSingleRowPosterPresentation(true);
+    });
+    m_settings->onHeroBackdropResolutionChange([this](int level) {
+        m_config.heroBackdropResolution = std::clamp(level, 0, 2);
+        m_config.save();
+        applyHeroBackdropResolution();
+        showFocusedSteamGridDbArtwork(true);
+    });
+    m_settings->onHeroBackdropBlurChange([this](int pct) {
+        m_config.heroBackdropBlur = std::clamp(pct, 0, 100);
+        m_config.save();
+        applyHeroBackdropBlur();
+        showFocusedSteamGridDbArtwork(true);
     });
     m_settings->onSteamGridDbViewFlagsChange([this](bool grid, bool line, bool folders) {
         m_config.steamGridDbShowInGrid = grid;
@@ -1947,6 +2077,7 @@ void WiiUMenuApp::showFocusedSteamGridDbArtwork(bool forceReload) {
     m_steamGridDbBackdrop->setLayoutMode(presentationLayoutMode());
 
     std::uint64_t titleId = 0;
+    bool nearbyChanged = false;
     std::vector<std::uint64_t> nearbyTitleIds;
     // While carrying a title, keep its hero — hopping focus across slots for
     // placement would otherwise thrash hero loads and lag the folder.
@@ -1963,7 +2094,18 @@ void WiiUMenuApp::showFocusedSteamGridDbArtwork(bool forceReload) {
                 titleId = static_cast<GlossyIcon*>(current)->titleId();
         }
         const int focused = m_grid->focusedGlobalIndex();
-        for (int distance = 1; focused >= 0 && nearbyTitleIds.size() < 8
+        // This runs from the per-frame HOME update, so the neighbour list must
+        // only be rebuilt when it can actually differ: otherwise every frame
+        // pays an allocation plus a scan of the model for nothing.
+        nearbyChanged = forceReload
+            || focused != m_lastBackdropFocusIndex
+            || m_model.count() != m_lastBackdropModelCount
+            || titleId != m_lastBackdropTitleId;
+        m_lastBackdropFocusIndex = focused;
+        m_lastBackdropModelCount = m_model.count();
+        m_lastBackdropTitleId = titleId;
+        for (int distance = 1; nearbyChanged && focused >= 0
+                               && nearbyTitleIds.size() < 8
                                && distance < m_model.count(); ++distance) {
             for (int direction : {1, -1}) {
                 const int index = focused + direction * distance;
@@ -1980,9 +2122,11 @@ void WiiUMenuApp::showFocusedSteamGridDbArtwork(bool forceReload) {
     m_steamGridDbBackdrop->showTitle(titleId, forceReload);
     // After layout morph, skip neighbour hero/logo warm for a beat so HOME
     // stays responsive; focused title still updates above.
-    if (m_deferBackdropPreloadSec > 0.f)
-        nearbyTitleIds.clear();
-    m_steamGridDbBackdrop->setPreloadTitles(std::move(nearbyTitleIds));
+    if (nearbyChanged) {
+        if (m_deferBackdropPreloadSec > 0.f)
+            nearbyTitleIds.clear();
+        m_steamGridDbBackdrop->setPreloadTitles(std::move(nearbyTitleIds));
+    }
     syncSteamGridDbLogoArea();
     updateHeroAwareChrome();
 }
@@ -4285,13 +4429,44 @@ void WiiUMenuApp::syncHeroBackdropPresentation() {
     updateHeroAwareChrome(true);
 }
 
+void WiiUMenuApp::applyAccentColor() {
+    const auto same = [](const nxui::Color& a, const nxui::Color& b) {
+        return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+    };
+    // Undo our previous tint, but only while the theme still carries it: a
+    // freshly loaded theme keeps its own accent as the new baseline.
+    if (m_accentBaseValid && same(m_theme.cursorNormal, m_appliedAccent)) {
+        m_theme.cursorNormal = m_accentBase;
+        m_theme.cursorGlow = m_accentBaseGlow;
+    }
+    m_accentBase = m_theme.cursorNormal;
+    m_accentBaseGlow = m_theme.cursorGlow;
+    m_accentBaseValid = true;
+
+    const int idx = std::clamp(m_config.highlightTint, 0, 9);
+    if (switchu::ui::accent::valid(idx)) {
+        const nxui::Color accent = switchu::ui::accent::colorFor(idx);
+        m_theme.cursorNormal = accent;
+        m_theme.cursorGlow = accent.withAlpha(0.14f);
+        m_appliedAccent = accent;
+    } else {
+        m_appliedAccent = m_accentBase;
+    }
+
+    m_homeChrome.cursorNormal = m_theme.cursorNormal;
+    m_homeChrome.cursorGlow = m_theme.cursorGlow;
+    if (m_cursor) m_cursor->setColor(m_theme.cursorNormal);
+}
+
 void WiiUMenuApp::applyTheme() {
     DebugLog::log("[theme-apply] widget recolor start");
+    applyAccentColor();
     m_homeChrome = m_theme;
     m_heroChromeAdapt = HeroChromeAdapt::Off;
     m_background->setAccentColor(m_theme.backgroundAccent);
     m_background->setSecondaryColor(m_theme.background);
     m_background->setShapeColor(m_theme.shapeColor);
+    m_background->setDrift(m_config.backgroundDrift, m_config.backgroundDriftSpeed);
     DebugLog::log("[theme-apply] widget recolor background done");
 
     for (auto& icon : m_grid->allIcons()) {
@@ -4300,6 +4475,9 @@ void WiiUMenuApp::applyTheme() {
         icon->setHighlightColor(m_theme.panelHighlight);
         icon->setCornerRadius(effectiveIconCornerRadius());
         icon->setShadow(static_cast<float>(m_config.iconShadowOffset), static_cast<float>(m_config.iconShadowAlpha) / 100.f);
+        icon->setVignette(static_cast<float>(std::clamp(m_config.iconVignette, 0, 100)) / 100.f);
+        icon->setHighlight(static_cast<float>(std::clamp(m_config.iconHighlight, 0, 100)) / 100.f);
+        icon->setDepth(static_cast<float>(std::clamp(m_config.iconDepth, 0, 100)) / 100.f);
         icon->setLoadingColor(m_theme.cursorNormal);
         icon->setThemeMode(m_theme.mode);
     }
@@ -4739,9 +4917,19 @@ void WiiUMenuApp::applyIconPresentation() {
     m_grid->setLineNudgeX(snap2((1280.f * 0.44f)
         * (static_cast<float>(m_config.lineNudgeX) / 25.f)));
     const float radius = effectiveIconCornerRadius();
+    const float vignette = static_cast<float>(
+        std::clamp(m_config.iconVignette, 0, 100)) / 100.f;
+    const float highlight = static_cast<float>(
+        std::clamp(m_config.iconHighlight, 0, 100)) / 100.f;
+    const float depth = static_cast<float>(
+        std::clamp(m_config.iconDepth, 0, 100)) / 100.f;
     for (const auto& icon : m_grid->allIcons()) {
-        if (icon)
-            icon->setCornerRadius(radius);
+        if (!icon)
+            continue;
+        icon->setCornerRadius(radius);
+        icon->setVignette(vignette);
+        icon->setHighlight(highlight);
+        icon->setDepth(depth);
     }
     m_grid->invalidateLineLayout();
     // Nudges and scale change existing tile rects; without this the grid keeps
@@ -4842,6 +5030,7 @@ void WiiUMenuApp::applySidebarPresentation() {
     m_sidebar.setChromeStyle(radius, border);
     m_sidebar.setButtonScale(m_config.sidebarScale);
     m_sidebar.setStripEdge(m_config.shortcutEdge);
+    m_sidebar.setPinSide(m_config.shortcutSide);
     m_sidebar.setStripNudge(
         static_cast<float>(std::clamp(m_config.shortcutNudgeX, -25, 25)) * 12.8f,
         static_cast<float>(std::clamp(m_config.shortcutNudgeXRight, -25, 25)) * 12.8f);
@@ -4988,6 +5177,12 @@ void WiiUMenuApp::applyDockedMode(bool docked) {
     m_config.handheldShortcutScale = handheldSide;
     m_baseIconScale = handheldIcon;
     m_baseShortcutScale = handheldSide;
+    // 0 means "never set separately": inherit the sizes in use instead of
+    // snapping a custom size back to a hard 100% the first time docked.
+    if (m_config.dockedIconScale <= 0)
+        m_config.dockedIconScale = handheldIcon;
+    if (m_config.dockedShortcutScale <= 0)
+        m_config.dockedShortcutScale = handheldSide;
     const bool override = docked && m_config.dockedSizeOverrides;
     m_config.iconScale = override
         ? std::clamp(m_config.dockedIconScale, 70, 130) : handheldIcon;
@@ -4996,6 +5191,12 @@ void WiiUMenuApp::applyDockedMode(bool docked) {
     // One control sizes the whole chrome row: shortcuts, profile, clock, battery.
     m_config.hudScale = std::clamp(m_config.sidebarScale, 70, 160);
     m_config.clockScale = std::clamp(m_config.sidebarScale, 70, 160);
+    // Keep the Docked tab showing the values that are actually in use, so the
+    // row the user just moved never reads back a stale size.
+    if (m_settings)
+        m_settings->setDockedState(m_config.dockedSizeOverrides,
+                                   m_config.dockedIconScale,
+                                   m_config.dockedShortcutScale);
     DebugLog::log("[dock] mode=%d overrides=%d icon=%d side=%d",
                   docked ? 1 : 0, m_config.dockedSizeOverrides ? 1 : 0,
                   m_config.iconScale, m_config.sidebarScale);
@@ -5070,6 +5271,65 @@ void WiiUMenuApp::restoreGameToHome(std::uint64_t titleId) {
     applyDisplayModel(buildRootFolderModel(), titleId, false);
 }
 
+void WiiUMenuApp::launchPinnedTitle(std::uint64_t titleId) {
+    if (titleId == 0 || leaveSplashActive())
+        return;
+    AppEntry* entry = nullptr;
+    const int modelIndex = findTitleIndex(titleId);
+    if (modelIndex >= 0)
+        entry = &m_model.at(modelIndex);
+    if (!entry) {
+        for (auto& app : m_allApps) {
+            if (app.titleId == titleId) {
+                entry = &app;
+                break;
+            }
+        }
+    }
+#ifdef SWITCHU_MENU
+    // Reuse the tile's own activation so a shortcut gets the launch zoom, the
+    // startup-user handling and the suspended-app resume that pressing A on
+    // the icon gets. Focusing alone never launched anything.
+    if (m_grid) {
+        for (const auto& icon : m_grid->allIcons()) {
+            if (!icon || icon->titleId() != titleId)
+                continue;
+            activateApplication(icon.get(), entry, titleId, icon->title());
+            return;
+        }
+    }
+#endif
+    // The title is inside a folder (or otherwise off this grid): no tile to
+    // zoom from, so at least bring it into view.
+    focusTitle(titleId, true);
+}
+
+void WiiUMenuApp::refreshPinnedIcons() {
+    const auto& pins = m_sidebar.pinButtons();
+    for (int slot = 0; slot < SidebarManager::kPinnedSlotCount; ++slot) {
+        const std::uint64_t id = shortcutSlotId(m_config.gameShortcuts, slot);
+        if (id == 0 || slot >= static_cast<int>(pins.size()) || !pins[slot])
+            continue;
+        AppletButton* btn = pins[static_cast<std::size_t>(slot)].get();
+        if (btn->icon() && btn->icon()->valid())
+            continue;
+        auto iconData = AppListLoader::loadIconData(id, false);
+        if (iconData.empty()) {
+            if (const auto* held = m_iconStreamer.compressedIcon(id);
+                held && !held->empty()) {
+                iconData = *held;
+                switchu::control_cache::writeIcon(
+                    id, iconData.data(), iconData.size());
+            }
+        }
+        const bool bound = m_sidebar.setGameShortcutIcon(
+            slot, iconData, app().gpu(), app().renderer());
+        DebugLog::log("[shortcuts] icon retry slot=%d tid=%016lX bytes=%u bound=%d",
+                      slot, static_cast<unsigned long>(id),
+                      static_cast<unsigned>(iconData.size()), bound ? 1 : 0);
+    }
+}
+
 void WiiUMenuApp::applyGameShortcuts() {
     for (int slot = 0; slot < 6; ++slot)
         m_sidebar.clearGameShortcut(slot);
@@ -5086,14 +5346,38 @@ void WiiUMenuApp::applyGameShortcuts() {
         }
         if (title.empty())
             continue;
-        const auto iconData = AppListLoader::loadIconData(id, false);
+        auto iconData = AppListLoader::loadIconData(id, false);
+        if (iconData.empty()) {
+            // The grid receives its icons inline from the daemon catalogue; the
+            // SD cache the loader reads can still be empty. Reuse the bytes the
+            // streamer is holding and park them in that cache so the retry path
+            // (and the next boot) finds them too.
+            if (const auto* held = m_iconStreamer.compressedIcon(id);
+                held && !held->empty()) {
+                iconData = *held;
+                switchu::control_cache::writeIcon(
+                    id, iconData.data(), iconData.size());
+            }
+        }
+        DebugLog::log("[shortcuts] bind slot=%d tid=%016lX bytes=%u",
+                      slot, static_cast<unsigned long>(id),
+                      static_cast<unsigned>(iconData.size()));
         m_sidebar.setGameShortcut(slot, title, iconData,
                                   app().gpu(), app().renderer(),
                                   [this, id]() {
             m_audio.playSfx(Sfx::Activate);
-            focusTitle(id, true);
+            launchPinnedTitle(id);
         });
     }
+    // Sockets just appeared or vanished, so the row has to be re-placed before
+    // the new buttons are drawn. That pass also refreshes the visible count the
+    // grid inset below is derived from.
+    m_sidebar.refreshLayout();
+    syncGridShortcutInsets();
+    // A socket bound here can miss its icon when the control cache has not been
+    // written yet; the frame loop retries a few times while any pin is blank.
+    m_pinIconRetryFrames = 120;
+    m_pinIconRetryAttempts = 3;
 }
 
 void WiiUMenuApp::toggleGameShortcut(std::uint64_t titleId) {

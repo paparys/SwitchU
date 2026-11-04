@@ -4210,6 +4210,16 @@ void WiiUMenuApp::configureDynamicLineNavigation() {
                 leftTargets.push_back(button.get());
             for (const auto& button : m_sidebar.rightButtons())
                 rightTargets.push_back(button.get());
+            // Pinned sockets hug one applet cluster, so the grid lands on that
+            // side instead of always reaching for the right edge.
+            for (const auto& button : m_sidebar.pinButtons()) {
+                if (!button || !button->isVisible())
+                    continue;
+                if (m_sidebar.pinSide() == 0)
+                    leftTargets.push_back(button.get());
+                else
+                    rightTargets.push_back(button.get());
+            }
         }
         m_grid->setGridSideTargets(std::move(leftTargets), std::move(rightTargets));
         // Titles UP → Change View (folders keep clock + flip; no sidebars).
@@ -4713,6 +4723,10 @@ void WiiUMenuApp::updateLayoutTransition(float dt) {
 }
 
 void WiiUMenuApp::setAppLayoutMode(AppLayoutMode mode) {
+    // The grid view has been removed, so every path that used to ask for it
+    // (folder defaults, restored sessions, the old Change View button, an old
+    // config) lands on the carousel instead of a paged grid.
+    mode = AppLayoutMode::DynamicLine;
     if (m_layoutTransition.kind != LayoutTransitionKind::Idle)
         return;
     if (m_appLayoutMode == mode && m_grid && m_grid->layoutMode() == mode)
@@ -6407,6 +6421,9 @@ void WiiUMenuApp::buildGrid() {
     m_layoutFlip = std::make_shared<LayoutFlipButton>();
     m_layoutFlip->setTheme(&m_theme);
     syncLayoutFlipState();
+    // Grid view is gone, so there is no second view to flip to. The button is
+    // still constructed (other code holds the pointer) but never draws.
+    m_layoutFlip->setVisible(false);
     m_layoutFlip->ensureIcon(app().gpu(), app().renderer(),
                              resolveActiveIconGlyphPath(switchu::icons::kChangeViewFile));
     m_layoutFlip->setOnActivate([this]() {
@@ -6834,6 +6851,10 @@ void WiiUMenuApp::buildGrid() {
         app().gpu(), app().renderer(), &m_threadPool);
     m_steamGridDbBackdrop->setEnabled(m_config.steamGridDbEnabled);
     m_steamGridDbBackdrop->setLayoutMode(m_appLayoutMode);
+    applyHeroBackdropResolution();
+    applyHeroBackdropBlur();
+    m_steamGridDbBackdrop->setDrift(m_config.backgroundDrift,
+                                    m_config.backgroundDriftSpeed);
     syncSteamGridDbLogoArea();
 
     m_contentLayer = std::make_shared<nxui::Box>();
@@ -6906,6 +6927,11 @@ void WiiUMenuApp::buildGrid() {
         m_contentLayer->addChild(plate);
     m_contentLayer->addChild(m_leftSidebar);
     m_contentLayer->addChild(m_rightSidebar);
+    // Pinned-game sockets live outside the two column boxes and are added AFTER
+    // the strip plate: they sit inside that band, so being added before it left
+    // the plate's glass washing over the tile and the icon read as a shadow.
+    for (auto& pin : m_sidebar.pinButtons())
+        m_contentLayer->addChild(pin);
     m_contentLayer->addChild(m_topHud);
     // Sibling of topHud (not nested) so clock layout stays unchanged and the
     // flip control remains independently focusable / tappable.
@@ -9058,6 +9084,15 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
     }
 #endif
 
+    // Pinned sockets can be bound before the daemon writes their icon into the
+    // control cache. Retry a few times instead of leaving the tile blank.
+    if (m_pinIconRetryFrames > 0 && --m_pinIconRetryFrames <= 0) {
+        m_pinIconRetryFrames = 0;
+        refreshPinnedIcons();
+        if (--m_pinIconRetryAttempts > 0)
+            m_pinIconRetryFrames = 120;
+    }
+
     bool debugTouchBlocked = false;
 #ifdef SWITCHU_DEBUG_UI
     debugTouchBlocked = m_showDebugOverlay;
@@ -9456,6 +9491,12 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         }
         for (const auto& btn : m_sidebar.rightButtons()) {
             if (btn.get() == cur) {
+                add(buttonGlyph(nxui::Button::A), btn->label());
+                break;
+            }
+        }
+        for (const auto& btn : m_sidebar.pinButtons()) {
+            if (btn && btn.get() == cur) {
                 add(buttonGlyph(nxui::Button::A), btn->label());
                 break;
             }

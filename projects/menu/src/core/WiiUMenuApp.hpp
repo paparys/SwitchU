@@ -264,6 +264,9 @@ private:
     void applySteamGridDbCandidate(const SteamGridDbManager::BrowseResult& browse,
                                    const SteamGridDbManager::Candidate& candidate);
     void syncSteamGridDb();
+    // Pushes Settings → Backgrounds resolution onto the SGDB backdrop canvas.
+    void applyHeroBackdropResolution();
+    void applyHeroBackdropBlur();
     void showFocusedSteamGridDbArtwork(bool forceReload = false);
     bool steamGridDbArtworkAllowedHere() const;
     // Layout the user still sees (grid stays up during poster prefetch).
@@ -271,6 +274,9 @@ private:
     void applyTheme();
     // Recolor HOME chrome (HUD / sidebars / hints) from m_homeChrome.
     void applyHomeChrome();
+    // Folds the chosen accent into m_theme/m_homeChrome so every consumer of
+    // cursorNormal (rings, carets, spinners, progress, focused borders) agrees.
+    void applyAccentColor();
     // When full-opacity heroes fight the active theme, temporarily flip chrome
     // contrast (light theme + dark hero → dark chrome, and vice versa).
     void updateHeroAwareChrome(bool force = false);
@@ -931,6 +937,12 @@ private:
     void endForcedCursorTeleport();
     // Suppress neighbour hero/logo preload until morph + a beat of input settle.
     float m_deferBackdropPreloadSec = 0.f;
+    // Focus/model the neighbour hero list was last built for. The HOME update
+    // calls showFocusedSteamGridDbArtwork every frame, and rebuilding that list
+    // when none of these changed is just allocator churn.
+    int m_lastBackdropFocusIndex = -1;
+    int m_lastBackdropModelCount = -1;
+    std::uint64_t m_lastBackdropTitleId = 0;
     // After HOME return: keep paced hero prefetch for a few seconds past defer.
     float m_returnPreloadPaceSec = 0.f;
 
@@ -958,7 +970,7 @@ private:
     std::uint64_t m_steamGridDbUiRevision = 0;
     std::uint64_t m_steamGridDbLastCompletedTitleId = 0;
     bool m_steamGridDbWasRunning = false;
-    AppLayoutMode m_appLayoutMode = AppLayoutMode::Grid;
+    AppLayoutMode m_appLayoutMode = AppLayoutMode::DynamicLine;
     bool m_settingsNeedRefresh        = false;
     std::string m_loadedRegularFontPath;
     std::string m_loadedSmallFontPath;
@@ -970,6 +982,12 @@ private:
     // tiles, their own size setting.
     void applySidebarPresentation();
     void applyGameShortcuts();
+    void launchPinnedTitle(std::uint64_t titleId);
+    // Re-reads icon data for sockets that are still blank. The control cache is
+    // written by the daemon, so a socket bound during boot can miss its icon.
+    void refreshPinnedIcons();
+    int m_pinIconRetryFrames = 0;
+    int m_pinIconRetryAttempts = 0;
     void toggleGameShortcut(std::uint64_t titleId);
     bool isGameShortcutPinned(std::uint64_t titleId) const;
     bool isTitleHidden(std::uint64_t titleId) const;
@@ -1012,6 +1030,12 @@ private:
     int m_backgroundImageRetryFrames = 0;
     int m_backgroundImageRetryAttempts = 0;
     bool m_forceThemeResourceReload   = false;
+    // Accent override bookkeeping: the theme's own accent is the baseline, the
+    // applied tint is remembered so it can be undone without reloading.
+    nxui::Color m_accentBase {};
+    nxui::Color m_accentBaseGlow {};
+    nxui::Color m_appliedAccent {};
+    bool        m_accentBaseValid = false;
     std::uint64_t m_gameOptionsTitleId = 0;
     std::uint32_t m_folderOptionsId = 0;
     nxui::Widget* m_contextMenuReturnFocus = nullptr;

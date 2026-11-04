@@ -38,6 +38,8 @@ public:
     // The dynamic-line HOME layout turns the two side columns into one
     // horizontal control strip between the profile bar and the applications.
     void setDynamicLineLayout(bool enabled);
+    // Re-place the live arrangement (pinned sockets come and go).
+    void refreshLayout() { setDynamicLineLayout(m_dynamicLine); }
     // Shortcut size and chrome come from the same settings as the tiles, so
     // the side columns and the top strip never read as a separate UI.
     // percent: 70..150 of the stock button.
@@ -46,17 +48,27 @@ public:
     // once at startup so the shortcuts settle on the configured size instead of
     // whatever the first placement pass produced.
     void nudgeButtonScale(int percent, float pixels);
-    // Game pinning. Slot 0..5 follows the stock order (Album, Mii, Controllers,
-    // Sleep, Theme Shop, Settings); an empty label restores that slot.
+    // Game pinning. Pinned titles own six sockets of their own, parked next to
+    // the six stock applets: slot 0..5 never shares a button with Album / Mii /
+    // Controllers / Sleep / Theme Shop / Settings, so adding a game cannot take
+    // an applet shortcut away. An empty socket stays hidden.
+    static constexpr int kPinnedSlotCount = 6;
     void setGameShortcut(int slot, const std::string& label,
                          const std::vector<std::uint8_t>& iconData,
                          nxui::GpuDevice& gpu, nxui::Renderer& ren,
                          std::function<void()> action);
+    // Binds just the icon of an already-labelled socket. Returns false when
+    // there was no data or the decode failed, so the caller can retry later.
+    bool setGameShortcutIcon(int slot, const std::vector<std::uint8_t>& iconData,
+                             nxui::GpuDevice& gpu, nxui::Renderer& ren);
     void clearGameShortcut(int slot);
     // cornerRadius 0 = square; borderWidth is clamped to a sane range.
     void setChromeStyle(float cornerRadius, float borderWidth);
     // 0 = strip at the top of the screen, 1 = at the bottom.
     void setStripEdge(int edge);
+    // Which applet cluster the pinned sockets sit next to: 0 = left, 1 = right.
+    void setPinSide(int side);
+    int  pinSide() const { return m_pinSide; }
     // Horizontal travel in pixels, clamped so no group leaves the screen.
     // Left and right groups travel independently (pixels, clamped).
     void setStripNudge(float leftPx, float rightPx);
@@ -101,6 +113,10 @@ public:
     std::vector<std::shared_ptr<AppletButton>>& rightButtons() { return m_rightButtons; }
     const std::vector<std::shared_ptr<AppletButton>>& leftButtons() const  { return m_leftButtons; }
     const std::vector<std::shared_ptr<AppletButton>>& rightButtons() const { return m_rightButtons; }
+    // Pinned-game sockets, separate from the applet clusters.
+    std::vector<std::shared_ptr<AppletButton>>& pinButtons() { return m_pinButtons; }
+    const std::vector<std::shared_ptr<AppletButton>>& pinButtons() const { return m_pinButtons; }
+    int visiblePinCount() const { return m_visiblePins; }
 
     AppletButton*  albumButton()    const { return m_albumButton; }
     nxui::Widget*  settingsButton() const { return m_settingsButton; }
@@ -136,12 +152,8 @@ private:
     void syncStripPlateGeometry();
 
     std::vector<nxui::Texture> m_icons;
-    // Pinned-game icons and the stock slot state they replace.
+    // Pinned-game textures: one per pin socket, resized once at build.
     std::vector<nxui::Texture> m_gameIcons;
-    std::vector<nxui::Texture*> m_defaultIcons;
-    bool m_slotOverridden[6] = {false, false, false, false, false, false};
-    std::vector<std::string> m_defaultLabels;
-    std::vector<std::function<void()>> m_defaultActions;
     // White×alpha twins for colour glyphs (empty/invalid when icon is mono).
     std::vector<nxui::Texture> m_iconContrastMasks;
     std::vector<float> m_iconMeanLumas;
@@ -149,6 +161,9 @@ private:
     switchu::icons::HslAdjust m_hslAdjust;
     std::vector<std::shared_ptr<AppletButton>> m_leftButtons;
     std::vector<std::shared_ptr<AppletButton>> m_rightButtons;
+    std::vector<std::shared_ptr<AppletButton>> m_pinButtons;
+    int m_visiblePins = 0;
+    int m_pinSide = 0;
     AppletButton*  m_albumButton    = nullptr;
     nxui::Widget*  m_settingsButton = nullptr;
     nxui::Widget*  m_themeShopButton = nullptr;

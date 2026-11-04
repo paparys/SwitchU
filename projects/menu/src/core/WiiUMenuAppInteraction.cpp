@@ -102,6 +102,8 @@ std::string WiiUMenuApp::accessibilityContextFor(nxui::Widget* w) const {
         if (btn.get() == w) return i18n.tr("accessibility.context.left_sidebar", "Left sidebar");
     for (const auto& btn : m_sidebar.rightButtons())
         if (btn.get() == w) return i18n.tr("accessibility.context.right_sidebar", "Right sidebar");
+    for (const auto& btn : m_sidebar.pinButtons())
+        if (btn && btn.get() == w) return i18n.tr("accessibility.context.shortcuts", "Shortcut");
     if (m_profileLock && m_profileLock.get() == w)
         return i18n.tr("accessibility.context.user_profiles", "User profiles");
     if (m_layoutFlip && m_layoutFlip.get() == w)
@@ -189,6 +191,8 @@ std::string WiiUMenuApp::accessibilityPositionFor(nxui::Widget* w) const {
     if (auto text = describeLinear(m_sidebar.leftButtons()); !text.empty())
         return text;
     if (auto text = describeLinear(m_sidebar.rightButtons()); !text.empty())
+        return text;
+    if (auto text = describeLinear(m_sidebar.pinButtons()); !text.empty())
         return text;
 
     return {};
@@ -1409,6 +1413,9 @@ void WiiUMenuApp::wireFocusCallback() {
             for (auto& btn : m_sidebar.rightButtons()) {
                 if (btn.get() == cur) { m_titlePill->setText(btn->label()); m_titlePill->setVisible(true); return; }
             }
+            for (auto& btn : m_sidebar.pinButtons()) {
+                if (btn && btn.get() == cur) { m_titlePill->setText(btn->label()); m_titlePill->setVisible(true); return; }
+            }
             if (m_profileLock && m_profileLock.get() == cur) {
                 m_titlePill->setText(m_profileLock->statusText());
                 m_titlePill->setVisible(true);
@@ -1452,6 +1459,8 @@ bool WiiUMenuApp::isCurrentFocusableWidget(nxui::Widget* w) const {
         if (btn.get() == w) return w->isFocusable();
     for (const auto& btn : m_sidebar.rightButtons())
         if (btn.get() == w) return w->isFocusable();
+    for (const auto& btn : m_sidebar.pinButtons())
+        if (btn && btn.get() == w) return w->isFocusable();
     if (m_profileLock && m_profileLock.get() == w) return w->isFocusable();
     if (m_layoutFlip && m_layoutFlip.get() == w) return w->isFocusable();
     if (m_battery && m_battery.get() == w) return w->isFocusable();

@@ -31,6 +31,8 @@ constexpr float kDynamicRightGroupX = 902.f;
 constexpr float kStripPlatePad = 9.f;
 // Air kept between a shortcut stack and the tile band.
 constexpr float kColumnClearGap = 10.f;
+// Gap under the pinned-game row when the applets are in side columns.
+constexpr float kPinnedRowMargin = 14.f;
 // Mirrors IconGrid::kLayoutMorphDuration so chrome and tiles land together.
 constexpr float kSidebarGlideDuration = 0.40f;
 // Tiny cascade across the six buttons: reads as one gesture, not six snaps.
@@ -133,34 +135,22 @@ void SidebarManager::build(nxui::GpuDevice& gpu, nxui::Renderer& ren,
         m_rightButtons.push_back(std::move(sleep));
     }
 
-    // Remember the stock six so a pinned game can be removed again.
-    m_defaultIcons.assign(6, nullptr);
-    m_defaultLabels.assign(6, std::string());
-    m_defaultActions.assign(6, std::function<void()>());
-    if (m_leftButtons.size() >= 3) {
-        m_defaultIcons[0] = &m_icons[0];
-        m_defaultLabels[0] = m_leftButtons[0]->label();
-        m_defaultActions[0] = actions.onAlbum;
-        m_defaultIcons[1] = &m_icons[1];
-        m_defaultLabels[1] = m_leftButtons[1]->label();
-        m_defaultActions[1] = actions.onMiiEditor;
-        m_defaultIcons[5] = &m_icons[5];
-        m_defaultLabels[5] = m_leftButtons[2]->label();
-        m_defaultActions[5] = actions.onSettings;
+    // Remember the stock six so the pinned sockets below stay independent of
+    // them: the applets are fixed chrome and are never repurposed.
+    if ((int)m_gameIcons.size() != kPinnedSlotCount)
+        m_gameIcons.resize(kPinnedSlotCount);
+
+    // Pinned-game sockets. Created once and hidden until a title occupies them;
+    // each points at its own texture in m_gameIcons, so a rebind never moves a
+    // pointer the button is still drawing.
+    m_pinButtons.clear();
+    for (int i = 0; i < kPinnedSlotCount; ++i) {
+        auto pin = makeBtn(&m_gameIcons[static_cast<std::size_t>(i)], "", "", nullptr);
+        pin->setTag("pinnedShortcut" + std::to_string(i));
+        pin->setVisible(false);
+        m_pinButtons.push_back(std::move(pin));
     }
-    if (m_rightButtons.size() >= 3) {
-        m_defaultIcons[2] = &m_icons[2];
-        m_defaultLabels[2] = m_rightButtons[0]->label();
-        m_defaultActions[2] = actions.onControllers;
-        m_defaultIcons[4] = &m_icons[4];
-        m_defaultLabels[4] = m_rightButtons[1]->label();
-        m_defaultActions[4] = actions.onMiiverse;
-        m_defaultIcons[3] = &m_icons[3];
-        m_defaultLabels[3] = m_rightButtons[2]->label();
-        m_defaultActions[3] = actions.onSleep;
-    }
-    if ((int)m_gameIcons.size() != kSidebarIconCount)
-        m_gameIcons.resize(kSidebarIconCount);
+    m_visiblePins = 0;
 
     if (!m_leftButtons.empty()) {
         m_leftButtons.front()->setCustomNavigation(nxui::FocusDirection::UP, m_leftButtons.front().get());
@@ -278,7 +268,9 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
             stripY = std::clamp(stripY, bandTop,
                                 std::max(bandTop, bandTop + bandH - stripSize));
         }
-        for (std::size_t i = 0; i < ordered.size(); ++i) {
+        float leftGroupX = kDynamicLeftGroupX;
+    float rightGroupX = kDynamicRightGroupX;
+    for (std::size_t i = 0; i < ordered.size(); ++i) {
             auto* button = ordered[i];
             const bool rightGroup = i >= m_leftButtons.size();
             const std::size_t groupIndex = rightGroup ? i - m_leftButtons.size() : i;
@@ -303,6 +295,10 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
                                       m_anchorProfile.right() + kColumnClearGap);
             }
             groupX = std::clamp(groupX, 8.f, 1272.f - groupSpan);
+            if (rightGroup)
+                rightGroupX = groupX;
+            else
+                leftGroupX = groupX;
             place(button,
                   {groupX + static_cast<float>(groupIndex) *
                                 (stripSize + stripGap),
@@ -322,6 +318,49 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
                 : ordered[i + 1];
             button->setCustomNavigation(nxui::FocusDirection::LEFT, leftTarget);
             button->setCustomNavigation(nxui::FocusDirection::RIGHT, rightTarget);
+        }
+        // Pinned games continue the chosen applet cluster's row: left pins grow
+        // rightwards from the left group, right pins grow leftwards from the
+        // right group. They never take one of the six applets' sockets.
+        std::vector<AppletButton*> pins;
+        for (auto& btn : m_pinButtons)
+            if (btn && btn->isVisible()) pins.push_back(btn.get());
+        m_visiblePins = static_cast<int>(pins.size());
+        if (!pins.empty()) {
+            const float clusterSpan = 3.f * stripSize + 2.f * stripGap;
+            const float pinsSpan = (static_cast<float>(pins.size()) - 1.f)
+                                 * (stripSize + stripGap) + stripSize;
+            const float clear = kColumnClearGap;
+            const float lowX = leftGroupX + clusterSpan + clear;
+            const float highX = rightGroupX - clear - pinsSpan;
+            float pinsX = (m_pinSide == 0) ? lowX : highX;
+            pinsX = std::clamp(pinsX, std::min(lowX, highX), std::max(lowX, highX));
+            pinsX = std::clamp(pinsX, 8.f, std::max(8.f, 1272.f - pinsSpan));
+            for (std::size_t i = 0; i < pins.size(); ++i) {
+                place(pins[i],
+                      {pinsX + static_cast<float>(i) * (stripSize + stripGap),
+                       stripY, stripSize, stripSize},
+                      static_cast<int>(i));
+            }
+            // Keep the row on the one horizontal chain: last left applet ->
+            // pins -> first right applet, so it never becomes a dead end.
+            nxui::Widget* leftEnd = m_leftButtons.empty()
+                ? nullptr : static_cast<nxui::Widget*>(m_leftButtons.back().get());
+            nxui::Widget* rightStart = m_rightButtons.empty()
+                ? nullptr : static_cast<nxui::Widget*>(m_rightButtons.front().get());
+            for (std::size_t i = 0; i < pins.size(); ++i) {
+                pins[i]->setCustomNavigation(nxui::FocusDirection::LEFT,
+                    i == 0 ? leftEnd : static_cast<nxui::Widget*>(pins[i - 1]));
+                pins[i]->setCustomNavigation(nxui::FocusDirection::RIGHT,
+                    i + 1 < pins.size() ? static_cast<nxui::Widget*>(pins[i + 1])
+                                        : rightStart);
+            }
+            if (!m_leftButtons.empty())
+                m_leftButtons.back()->setCustomNavigation(nxui::FocusDirection::RIGHT,
+                    static_cast<nxui::Widget*>(pins.front()));
+            if (!m_rightButtons.empty())
+                m_rightButtons.front()->setCustomNavigation(nxui::FocusDirection::LEFT,
+                    static_cast<nxui::Widget*>(pins.back()));
         }
         syncStripPlateGeometry();
         return;
@@ -357,6 +396,64 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
                startY + static_cast<float>(i) * (colSize + colGap),
                colSize, colSize},
               static_cast<int>(i));
+    }
+    // Column layout: pinned games stack beside the chosen applet column, two
+    // sub-columns of three so the block is exactly as tall as the stack.
+    std::vector<AppletButton*> pins;
+    for (auto& btn : m_pinButtons)
+        if (btn && btn->isVisible()) pins.push_back(btn.get());
+    m_visiblePins = static_cast<int>(pins.size());
+    if (!pins.empty()) {
+        constexpr int kPinsPerColumn = 3;
+        const float innerX = (m_pinSide == 0)
+            ? leftColX + colSize + colGap
+            : rightColX - colGap - colSize;
+        const float step = colSize + colGap;
+        for (std::size_t i = 0; i < pins.size(); ++i) {
+            const int col = static_cast<int>(i) / kPinsPerColumn;
+            const int row = static_cast<int>(i) % kPinsPerColumn;
+            const float x = (m_pinSide == 0)
+                ? innerX + static_cast<float>(col) * step
+                : innerX - static_cast<float>(col) * step;
+            place(pins[i],
+                  {std::clamp(x, 8.f, 1272.f - colSize),
+                   startY + static_cast<float>(row) * step,
+                   colSize, colSize},
+                  static_cast<int>(i));
+        }
+        // Wire the block by row and column: UP/DOWN inside a sub-column,
+        // LEFT/RIGHT across to the applet stack it belongs to.
+        for (std::size_t i = 0; i < pins.size(); ++i) {
+            const int col = static_cast<int>(i) / kPinsPerColumn;
+            const int row = static_cast<int>(i) % kPinsPerColumn;
+            const std::size_t partner = (col == 0)
+                ? i + static_cast<std::size_t>(kPinsPerColumn)
+                : i - static_cast<std::size_t>(kPinsPerColumn);
+            const bool partnerExists = partner < pins.size();
+            const std::size_t up = (row == 0) ? i : i - 1;
+            const std::size_t down = (row == kPinsPerColumn - 1) ? i : i + 1;
+            pins[i]->setCustomNavigation(nxui::FocusDirection::UP,
+                static_cast<nxui::Widget*>(pins[up]));
+            pins[i]->setCustomNavigation(nxui::FocusDirection::DOWN,
+                static_cast<nxui::Widget*>(pins[down]));
+            nxui::Widget* across = nullptr;
+            const auto& stack = (m_pinSide == 0) ? m_leftButtons : m_rightButtons;
+            if (col == 0 && !stack.empty()) {
+                const std::size_t rowIndex = std::min<std::size_t>(
+                    static_cast<std::size_t>(row), stack.size() - 1);
+                across = static_cast<nxui::Widget*>(stack[rowIndex].get());
+            }
+            pins[i]->setCustomNavigation(nxui::FocusDirection::LEFT,
+                (m_pinSide == 0) ? across
+                                 : (partnerExists
+                                        ? static_cast<nxui::Widget*>(pins[partner])
+                                        : nullptr));
+            pins[i]->setCustomNavigation(nxui::FocusDirection::RIGHT,
+                (m_pinSide == 0)
+                    ? (partnerExists ? static_cast<nxui::Widget*>(pins[partner])
+                                     : nullptr)
+                    : across);
+        }
     }
     if (!m_leftButtons.empty()) {
         m_leftButtons.front()->setCustomNavigation(nxui::FocusDirection::UP,
@@ -581,9 +678,6 @@ void SidebarManager::loadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
         if (!btn)
             continue;
 
-        // A pinned game owns this slot: leave its icon and action alone.
-        if (def.iconIdx >= 0 && def.iconIdx < 6 && m_slotOverridden[def.iconIdx])
-            continue;
         nxui::Texture* staticTex = &m_icons[def.iconIdx];
         const std::size_t idx = static_cast<std::size_t>(def.iconIdx);
         btn->setIconAdaptive(iconAdaptive[idx]);
@@ -652,11 +746,6 @@ void SidebarManager::update(float dt, nxui::Widget* focusedWidget) {
     updateButtonGlides(dt);
     for (auto& e : m_anims) {
         if (!e.button) continue;
-        bool pinnedSlot = false;
-        for (int slot = 0; slot < 6; ++slot)
-            if (gameSlotButton(slot) == e.button && m_slotOverridden[slot])
-                pinnedSlot = true;
-        if (pinnedSlot) continue;
         bool focused = (focusedWidget == e.button);
         e.anim.update(dt, focused);
         if (focused && e.anim.hasFrames()) {
@@ -691,6 +780,7 @@ void SidebarManager::applyTheme(const nxui::Theme& theme) {
     };
     for (auto& btn : m_leftButtons)  apply(btn);
     for (auto& btn : m_rightButtons) apply(btn);
+    for (auto& btn : m_pinButtons)   apply(btn);
     // Chrome colours live in the members now, so the plate and the buttons
     // always pick up the same theme in one pass.
     applyChromeToButtons();
@@ -705,6 +795,7 @@ void SidebarManager::setColourIconContrast(bool enabled) {
     };
     for (auto& btn : m_leftButtons)  apply(btn);
     for (auto& btn : m_rightButtons) apply(btn);
+    for (auto& btn : m_pinButtons)   apply(btn);
 }
 
 void SidebarManager::setIconHslAdjust(const switchu::icons::HslAdjust& adj) {
@@ -735,15 +826,11 @@ void SidebarManager::nudgeButtonScale(int percent, float pixels) {
 }
 
 AppletButton* SidebarManager::gameSlotButton(int slot) const {
-    switch (slot) {
-        case 0: return m_leftButtons.size() > 0 ? m_leftButtons[0].get() : nullptr;
-        case 1: return m_leftButtons.size() > 1 ? m_leftButtons[1].get() : nullptr;
-        case 5: return m_leftButtons.size() > 2 ? m_leftButtons[2].get() : nullptr;
-        case 2: return m_rightButtons.size() > 0 ? m_rightButtons[0].get() : nullptr;
-        case 4: return m_rightButtons.size() > 1 ? m_rightButtons[1].get() : nullptr;
-        case 3: return m_rightButtons.size() > 2 ? m_rightButtons[2].get() : nullptr;
-        default: return nullptr;
-    }
+    // Pinned sockets only: the applet buttons are never handed out here, which
+    // is what stops a pinned game from replacing Album / Mii / Settings / ...
+    if (slot < 0 || slot >= static_cast<int>(m_pinButtons.size()))
+        return nullptr;
+    return m_pinButtons[static_cast<std::size_t>(slot)].get();
 }
 
 void SidebarManager::setGameShortcut(int slot, const std::string& label,
@@ -753,36 +840,50 @@ void SidebarManager::setGameShortcut(int slot, const std::string& label,
     AppletButton* btn = gameSlotButton(slot);
     if (!btn)
         return;
-    if ((int)m_gameIcons.size() != kSidebarIconCount)
-        m_gameIcons.resize(kSidebarIconCount);
-    nxui::Texture& tex = m_gameIcons[static_cast<std::size_t>(slot)];
-    tex = nxui::Texture();
-    if (!iconData.empty())
-        tex.loadFromMemory(gpu, ren, iconData.data(), iconData.size(), 128);
-    if (slot >= 0 && slot < 6)
-        m_slotOverridden[slot] = true;
-    nxui::Texture* fallback = (slot >= 0 && slot < (int)m_defaultIcons.size())
-        ? m_defaultIcons[static_cast<std::size_t>(slot)] : nullptr;
-    btn->setIcon(tex.valid() ? &tex : fallback);
+    const bool bound = setGameShortcutIcon(slot, iconData, gpu, ren);
+    if (!bound)
+        btn->setIcon(nullptr);
+    DebugLog::log("[shortcuts] slot=%d label=%s icon_bytes=%u bound=%d",
+                  slot, label.c_str(), static_cast<unsigned>(iconData.size()),
+                  bound ? 1 : 0);
     btn->setLabel(label);
     btn->setAccessibilityLabel(label);
+    btn->setAccessibilityHint(nxui::I18n::instance().tr(
+        "accessibility.hints.open_shortcut", "A to open this shortcut."));
     btn->setOnActivate(std::move(action));
+    btn->setVisible(true);
+}
+
+bool SidebarManager::setGameShortcutIcon(int slot,
+                                         const std::vector<std::uint8_t>& iconData,
+                                         nxui::GpuDevice& gpu, nxui::Renderer& ren) {
+    AppletButton* btn = gameSlotButton(slot);
+    if (!btn || iconData.empty())
+        return false;
+    nxui::Texture& tex = m_gameIcons[static_cast<std::size_t>(slot)];
+    tex = nxui::Texture();
+    if (!tex.loadFromMemory(gpu, ren, iconData.data(), iconData.size(), 128)
+        || !tex.valid())
+        return false;
+    // A pinned game is colour artwork: never let the applet chrome tint or the
+    // mono contrast mask touch it, or the tile reads as an empty square.
+    btn->setIconAdaptive(false);
+    btn->setIconUsesColorArtwork(true);
+    btn->setIconContrastMask(nullptr);
+    btn->setIcon(&tex);
+    return true;
 }
 
 void SidebarManager::clearGameShortcut(int slot) {
     AppletButton* btn = gameSlotButton(slot);
     if (!btn)
         return;
-    if (slot >= 0 && slot < (int)m_defaultIcons.size()) {
-        btn->setIcon(m_defaultIcons[static_cast<std::size_t>(slot)]);
-        btn->setLabel(m_defaultLabels[static_cast<std::size_t>(slot)]);
-        btn->setAccessibilityLabel(m_defaultLabels[static_cast<std::size_t>(slot)]);
-        btn->setOnActivate(m_defaultActions[static_cast<std::size_t>(slot)]);
-    }
-    if (slot >= 0 && slot < (int)m_gameIcons.size())
-        m_gameIcons[static_cast<std::size_t>(slot)] = nxui::Texture();
-    if (slot >= 0 && slot < 6)
-        m_slotOverridden[slot] = false;
+    // Drop the pointer before the texture goes away, then hide the socket. The
+    // six applets are untouched by this path.
+    btn->setIcon(nullptr);
+    btn->setOnActivate(std::function<void()>());
+    btn->setVisible(false);
+    m_gameIcons[static_cast<std::size_t>(slot)] = nxui::Texture();
 }
 
 void SidebarManager::setChromeStyle(float cornerRadius, float borderWidth) {
@@ -812,6 +913,7 @@ void SidebarManager::applyChromeToButtons() {
     };
     for (auto& btn : m_leftButtons)  apply(btn);
     for (auto& btn : m_rightButtons) apply(btn);
+    for (auto& btn : m_pinButtons)   apply(btn);
 }
 
 void SidebarManager::applyPaddingToButtons() {
@@ -824,6 +926,18 @@ void SidebarManager::applyPaddingToButtons() {
     for (auto& btn : m_rightButtons) {
         if (btn) btn->setPadding(padding);
     }
+    for (auto& btn : m_pinButtons) {
+        if (btn) btn->setPadding(padding);
+    }
+}
+
+void SidebarManager::setPinSide(int side) {
+    const int clamped = std::clamp(side, 0, 1);
+    if (m_pinSide == clamped)
+        return;
+    m_pinSide = clamped;
+    if (!m_leftButtons.empty() || !m_rightButtons.empty())
+        setDynamicLineLayout(m_dynamicLine);
 }
 
 void SidebarManager::setStripEdge(int edge) {
@@ -856,7 +970,11 @@ float SidebarManager::reservedTop() const {
 }
 
 float SidebarManager::reservedBottom() const {
-    return (m_dynamicLine && m_stripEdge == 1) ? stripReserve() : 0.f;
+    // Pinned sockets ride beside the applet clusters in both layouts now, so
+    // the grid only clears a strip that is actually at the bottom edge.
+    if (m_dynamicLine && m_stripEdge == 1)
+        return stripReserve();
+    return 0.f;
 }
 
 void SidebarManager::setStripPlate(bool enabled) {
