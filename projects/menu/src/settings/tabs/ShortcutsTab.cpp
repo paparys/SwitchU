@@ -114,5 +114,28 @@ SettingsScreen::Tab settings::tabs::ShortcutsTab::build(SettingsScreen& screen) 
     };
     tab.items.push_back(std::move(vertical));
 
+    SettingItem pinnedSection;
+    pinnedSection.type = ItemType::Section;
+    pinnedSection.label = i18n.tr("settings.shortcuts.pinned_section", "Pinned games");
+    tab.items.push_back(std::move(pinnedSection));
+
+    SettingItem pinSide;
+    pinSide.type = ItemType::Selector;
+    pinSide.label = i18n.tr("settings.shortcuts.pin_side", "Pinned shortcut side");
+    pinSide.description = i18n.tr("settings.shortcuts.pin_side_desc",
+        "Keeps the pinned game icons next to the applet shortcuts on the left or "
+        "right.");
+    pinSide.options = {
+        i18n.tr("settings.shortcuts.side_left", "Left"),
+        i18n.tr("settings.shortcuts.side_right", "Right"),
+    };
+    pinSide.intVal = std::clamp(screen.m_pinSide, 0, 1);
+    pinSide.onChange = [&screen](SettingItem& self) {
+        screen.m_pinSide = std::clamp(self.intVal, 0, 1);
+        if (screen.m_pinSideCb)
+            screen.m_pinSideCb(screen.m_pinSide);
+    };
+    tab.items.push_back(std::move(pinSide));
+
     return tab;
 }

@@ -45,6 +45,12 @@ SettingsScreen::Tab settings::tabs::DockedTab::build(SettingsScreen& screen) {
     icons.floatVal = (screen.dockedIconScale() - 70) / 60.f;
     icons.anim01 = icons.floatVal;
     icons.onChange = [&screen](SettingItem& self) {
+        // Editing a docked size implies wanting it used. With the master switch
+        // off both sliders moved and did nothing, which read as a broken tab.
+        if (!screen.dockedSizeOverrides()) {
+            screen.setDockedSizeOverrides(true);
+            screen.notifyDockedOverrides(true);
+        }
         const int pct = 70 + static_cast<int>(
             std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 60.f));
         screen.setDockedIconScale(pct);
@@ -67,6 +73,10 @@ SettingsScreen::Tab settings::tabs::DockedTab::build(SettingsScreen& screen) {
         (screen.dockedShortcutScale() - 70) / 80.f;
     shortcuts.anim01 = shortcuts.floatVal;
     shortcuts.onChange = [&screen](SettingItem& self) {
+        if (!screen.dockedSizeOverrides()) {
+            screen.setDockedSizeOverrides(true);
+            screen.notifyDockedOverrides(true);
+        }
         const int pct = 70 + static_cast<int>(
             std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 80.f));
         screen.setDockedShortcutScale(pct);
@@ -81,6 +91,18 @@ SettingsScreen::Tab settings::tabs::DockedTab::build(SettingsScreen& screen) {
         "The Icons and Shortcuts tabs still control the undocked sizes. Only "
         "the two rows above change while the console sits in the dock.");
     tab.items.push_back(std::move(hint));
+
+    // Moving a slider turns the master switch on above, so the toggle row has to
+    // follow instead of still reading "off" while the new size is live.
+    tab.onUpdate = [](SettingsScreen::Tab& current, TabbedOverlayScreen& base) {
+        if (current.items.size() < 5)
+            return;
+        const bool on = static_cast<SettingsScreen&>(base).dockedSizeOverrides();
+        if (current.items[1].boolVal != on) {
+            current.items[1].boolVal = on;
+            current.items[1].anim01 = on ? 1.f : 0.f;
+        }
+    };
 
     return tab;
 }

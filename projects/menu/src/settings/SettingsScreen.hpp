@@ -19,7 +19,9 @@ class AboutTab;
 class LayoutTab;
 class TreatmentTab;
 class AppearanceTab;
+class BackgroundsTab;
 class ShortcutsTab;
+class GlassTab;
 }
 
 class SettingsScreen : public TabbedOverlayScreen {
@@ -58,6 +60,12 @@ public:
     void onLineNudgeChange(IntCb cb) { m_lineNudgeCb = std::move(cb); }
     void onIconScaleChange(IntCb cb) { m_iconScaleCb = std::move(cb); }
     void onSidebarScaleChange(IntCb cb) { m_sidebarScaleCb = std::move(cb); }
+    void onHeroBackdropResolutionChange(IntCb cb) {
+        m_heroBackdropResolutionCb = std::move(cb);
+    }
+    void onHeroBackdropBlurChange(IntCb cb) {
+        m_heroBackdropBlurCb = std::move(cb);
+    }
     void onSortModeChange(IntCb cb) { m_sortModeCb = std::move(cb); }
     void onAlphaOrderChange(BoolCb cb) { m_alphaOrderCb = std::move(cb); }
     void setAlphaOrderState(bool on) { m_alphaOrder = on; }
@@ -97,6 +105,7 @@ public:
         m_shortcutNudgeXCbRight = std::move(cb);
     }
     void onShortcutStripChange(BoolCb cb) { m_shortcutStripCb = std::move(cb); }
+    void onPinSideChange(IntCb cb) { m_pinSideCb = std::move(cb); }
     void onShortcutNudgeYChange(IntCb cb) { m_shortcutNudgeYCb = std::move(cb); }
     void onIconSpacingChange(IntCb cb) { m_iconSpacingCb = std::move(cb); }
     void onCarouselDepthChange(IntCb cb) { m_carouselDepthCb = std::move(cb); }
@@ -108,7 +117,16 @@ public:
     void onVignetteChange(IntCb cb) { m_vignetteCb = std::move(cb); }
     void onUiRadiusPctChange(IntCb cb) { m_uiRadiusPctCb = std::move(cb); }
     void onIconShadowChange(VoidCb cb) { m_iconShadowCb = std::move(cb); }
+    void onIconOverlayChange(VoidCb cb) { m_iconOverlayCb = std::move(cb); }
     void onMotionStyleChange(IntCb cb) { m_motionStyleCb = std::move(cb); }
+    void onGlassTintChange(IntCb cb) { m_glassTintCb = std::move(cb); }
+    void onGlassSolidChange(BoolCb cb) { m_glassSolidCb = std::move(cb); }
+    void onHighlightTintChange(IntCb cb) { m_highlightTintCb = std::move(cb); }
+    void setHighlightTint(int tint) { m_highlightTint = std::clamp(tint, 0, 9); }
+    void setGlassState(int tint, bool solid) {
+        m_glassTint = std::clamp(tint, 0, 9);
+        m_glassSolid = solid;
+    }
     void onCarouselFadeChange(IntCb cb) { m_carouselFadeCb = std::move(cb); }
     void onTitlePillNudgeChange(IntCb cb) { m_titlePillNudgeCb = std::move(cb); }
     void onTitlePillNudgeYChange(IntCb cb) { m_titlePillNudgeYCb = std::move(cb); }
@@ -122,12 +140,19 @@ public:
     void onClockNudgeYChange(IntCb cb) { m_clockNudgeYCb = std::move(cb); }
     int iconShadowOffset() const { return m_iconShadowOffset; }
     int iconShadowAlpha() const { return m_iconShadowAlpha; }
+    int iconVignette() const { return m_iconVignette; }
+    int iconHighlight() const { return m_iconHighlight; }
+    int iconDepth() const { return m_iconDepth; }
     void onWallpaperCycle(VoidCb cb) { m_wallpaperCycleCb = std::move(cb); }
     void onWallpaperAnimatedChange(BoolCb cb) { m_wallpaperAnimatedCb = std::move(cb); }
     void onWallpaperFpsChange(IntCb cb) { m_wallpaperFpsCb = std::move(cb); }
+    void onBackgroundDriftChange(BoolCb cb) { m_backgroundDriftCb = std::move(cb); }
+    void onBackgroundDriftSpeedChange(IntCb cb) { m_backgroundDriftSpeedCb = std::move(cb); }
     void setIconPresentationState(int aspect, int corners, int gridNudge, int lineNudge,
                                   int iconScale = 100, int iconSpacing = 0,
-                                  int carouselDepth = 0, int lineNudgeX = 0) {
+                                  int carouselDepth = 0, int lineNudgeX = 0,
+                                  int iconVignette = 0, int iconHighlight = 0,
+                                  int iconDepth = 35) {
         m_iconAspect = std::clamp(aspect, 0, 2);
         m_iconCorners = std::clamp(corners, 0, 1);
         m_gridNudgeX = std::clamp(gridNudge, -25, 25);
@@ -136,16 +161,51 @@ public:
         m_iconSpacing = std::clamp(iconSpacing, -50, 100);
         m_carouselDepth = std::clamp(carouselDepth, -100, 100);
         m_lineNudgeX = std::clamp(lineNudgeX, -25, 25);
+        m_iconVignette = std::clamp(iconVignette, 0, 100);
+        m_iconHighlight = std::clamp(iconHighlight, 0, 100);
+        m_iconDepth = std::clamp(iconDepth, 0, 100);
     }
     void setWallpaperState(const std::string& path, bool animated, int fps) {
         m_wallpaperPath = path;
         m_wallpaperAnimated = animated;
         m_wallpaperFps = std::clamp(fps, 5, 30);
     }
+    void setBackgroundDriftState(bool on, int speed) {
+        m_backgroundDrift = on;
+        m_backgroundDriftSpeed = std::clamp(speed, 1, 100);
+    }
+    bool backgroundDrift() const { return m_backgroundDrift; }
+    int backgroundDriftSpeed() const { return m_backgroundDriftSpeed; }
+    void setBackgroundDrift(bool on) { m_backgroundDrift = on; }
+    void setBackgroundDriftSpeed(int v) {
+        m_backgroundDriftSpeed = std::clamp(v, 1, 100);
+    }
+    void notifyBackgroundDrift(bool on) {
+        if (m_backgroundDriftCb) m_backgroundDriftCb(on);
+    }
+    void notifyBackgroundDriftSpeed(int v) {
+        if (m_backgroundDriftSpeedCb) m_backgroundDriftSpeedCb(v);
+    }
     void setIconCornerPctState(int pct) {
         m_iconCornerPct = std::clamp(pct, 0, 100);
     }
     void setSidebarScaleState(int pct) { m_sidebarScale = std::clamp(pct, 70, 150); }
+    void setHeroBackdropResolutionState(int level) {
+        m_heroBackdropResolution = std::clamp(level, 0, 2);
+    }
+    int heroBackdropResolution() const { return m_heroBackdropResolution; }
+    void notifyHeroBackdropResolution() {
+        if (m_heroBackdropResolutionCb)
+            m_heroBackdropResolutionCb(m_heroBackdropResolution);
+    }
+    void setHeroBackdropBlurState(int pct) {
+        m_heroBackdropBlur = std::clamp(pct, 0, 100);
+    }
+    int heroBackdropBlur() const { return m_heroBackdropBlur; }
+    void notifyHeroBackdropBlur() {
+        if (m_heroBackdropBlurCb)
+            m_heroBackdropBlurCb(m_heroBackdropBlur);
+    }
     void setLockPadCodeState(bool enabled, const std::string& code) {
         m_lockPadCodeEnabled = enabled;
         m_lockPadCode.clear();
@@ -173,6 +233,7 @@ public:
         m_shortcutNudgeXRight = std::clamp(nudgeRight, -25, 25);
     }
     void setShortcutStripState(bool on) { m_shortcutStrip = on; }
+    void setPinSideState(int side) { m_pinSide = std::clamp(side, 0, 1); }
     void setShortcutNudgeYState(int px) {
         m_shortcutNudgeY = (std::clamp(px, -24, 24) / 2) * 2;
     }
@@ -295,6 +356,7 @@ private:
     friend class settings::tabs::LayoutTab;
     friend class settings::tabs::TreatmentTab;
     friend class settings::tabs::ShortcutsTab;
+    friend class settings::tabs::GlassTab;
 
     BoolCb m_wireframeCb;
     IntCb m_gridColumnsCb;
@@ -318,6 +380,8 @@ private:
     IntCb m_lineNudgeCb;
     IntCb m_iconScaleCb;
     IntCb m_sidebarScaleCb;
+    IntCb m_heroBackdropResolutionCb;
+    IntCb m_heroBackdropBlurCb;
     std::function<void(bool, const std::string&)> m_lockPadCodeCb;
     std::function<void(std::uint64_t)> m_restoreHiddenCb;
     IntCb m_sortModeCb;
@@ -335,6 +399,7 @@ private:
     IntCb m_shortcutNudgeXCb;
     IntCb m_shortcutNudgeXCbRight;
     BoolCb m_shortcutStripCb;
+    IntCb m_pinSideCb;
     bool m_shortcutStrip = true;
     BoolCb m_hideActionHintsCb;
     IntCb m_hudScaleCb;
@@ -355,7 +420,14 @@ private:
     IntCb m_loadLayoutPresetCb;
     VoidCb m_resetIconLayoutCb;
     VoidCb m_iconShadowCb;
+    VoidCb m_iconOverlayCb;
     IntCb m_motionStyleCb;
+    IntCb m_glassTintCb;
+    BoolCb m_glassSolidCb;
+    int m_glassTint = 0;
+    bool m_glassSolid = false;
+    IntCb m_highlightTintCb;
+    int m_highlightTint = 0;
     IntCb m_carouselFadeCb;
     IntCb m_titlePillNudgeCb;
     IntCb m_titlePillNudgeYCb;
@@ -366,6 +438,10 @@ private:
     VoidCb m_wallpaperCycleCb;
     BoolCb m_wallpaperAnimatedCb;
     IntCb m_wallpaperFpsCb;
+    BoolCb m_backgroundDriftCb;
+    IntCb m_backgroundDriftSpeedCb;
+    bool m_backgroundDrift = false;
+    int m_backgroundDriftSpeed = 35;
     BoolCb m_steamGridDbEnabledCb;
     std::function<void(bool, bool, bool)> m_steamGridDbViewFlagsCb;
     BoolCb m_steamGridDbPosterInLineCb;
@@ -401,6 +477,9 @@ private:
     int m_uiRadiusPct = 100;
     int m_iconShadowOffset = 6;
     int m_iconShadowAlpha = 20;
+    int m_iconVignette = 0;
+    int m_iconHighlight = 0;
+    int m_iconDepth = 35;
     int m_motionStyle = 1;
     int m_carouselFade = 50;
     int m_titlePillNudgeX = 0;
@@ -409,10 +488,13 @@ private:
     int m_gridNudgeX = 0;
     int m_lineNudgeY = 0;
     int m_iconScale = 100;
+    int m_heroBackdropResolution = 0;
+    int m_heroBackdropBlur = 0;
     int m_sidebarScale = 100;
     bool m_lockPadCodeEnabled = false;
     std::string m_lockPadCode = "UDLR";
     int m_shortcutEdge = 0;
+    int m_pinSide = 0;
     int m_shortcutNudgeX = 0;
     int m_shortcutNudgeXRight = 0;
     int m_iconSpacing = 0;

@@ -55,10 +55,6 @@ SettingsScreen::Tab settings::tabs::SteamGridDbTab::build(SettingsScreen& screen
         tab.items.push_back(std::move(item));
     };
 
-    addViewToggle("settings.steamgriddb.show_grid", "Show on grid menu",
-                  "settings.steamgriddb.show_grid_desc",
-                  "Hero backdrop behind the standard HOME grid.",
-                  screen.m_steamGridDbShowInGrid);
     addViewToggle("settings.steamgriddb.show_line", "Show on single-row menu",
                   "settings.steamgriddb.show_line_desc",
                   "Hero backdrop behind the single-row carousel.",
@@ -144,15 +140,15 @@ SettingsScreen::Tab settings::tabs::SteamGridDbTab::build(SettingsScreen& screen
 
     tab.onUpdate = [](SettingsScreen::Tab& current, TabbedOverlayScreen& base) {
         auto& owner = static_cast<SettingsScreen&>(base);
-        // Section, master, 3 view toggles, poster, logo, API key, scan
-        if (current.items.size() < 9) return;
+        // Section, master, 2 view toggles, poster, logo, API key, scan
+        if (current.items.size() < 8) return;
 
-        for (int i = 2; i <= 6; ++i) {
+        for (int i = 2; i <= 5; ++i) {
             current.items[static_cast<std::size_t>(i)].enabled = owner.m_steamGridDbEnabled;
             current.items[static_cast<std::size_t>(i)].indentLevel = 1;
         }
 
-        auto& key = current.items[7];
+        auto& key = current.items[6];
         key.description = owner.m_steamGridDbHasApiKey
             ? nxui::I18n::instance().tr("settings.steamgriddb.api_key_set", "Configured (hidden)")
             : nxui::I18n::instance().tr("settings.steamgriddb.api_key_missing", "Not configured");

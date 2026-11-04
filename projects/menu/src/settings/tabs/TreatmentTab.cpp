@@ -34,7 +34,7 @@ SettingsScreen::Tab settings::tabs::TreatmentTab::build(SettingsScreen& screen) 
     alpha.type = ItemType::Toggle;
     alpha.label = i18n.tr("settings.treatment.alpha_order", "Sort all games A-Z");
     alpha.description = i18n.tr("settings.treatment.alpha_order_desc",
-        "Rearranges every game on the HOME screen by name: the grid, the "
+        "Rearranges every game on the HOME screen by name: the "
         "single-row carousel and the inside of folders. Folders and widgets "
         "keep their place. Turning it off goes back to My order.");
     alpha.boolVal = screen.alphaOrder();
@@ -92,7 +92,7 @@ SettingsScreen::Tab settings::tabs::TreatmentTab::build(SettingsScreen& screen) 
     vignette.type = ItemType::Slider;
     vignette.label = i18n.tr("settings.appearance.vignette", "Corner vignette");
     vignette.description = i18n.tr("settings.appearance.vignette_desc",
-        "Darkens the edges of the screen, keeping the eye on the middle of the grid.");
+        "Darkens the edges of the screen, keeping the eye on the middle of the screen.");
     vignette.sliderSteps = 100;
     vignette.valueSpan = 100;
     vignette.hasReset = true;

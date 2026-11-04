@@ -53,7 +53,7 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
     aspect.type = ItemType::Selector;
     aspect.label = i18n.tr("settings.appearance.aspect", "Icon aspect ratio");
     aspect.description = i18n.tr("settings.appearance.aspect_desc",
-        "Shapes tiles in both the grid and the single-row carousel.");
+        "Shapes every tile in the single-row carousel.");
     aspect.options = {"1:1", "16:9", "4:3"};
     aspect.intVal = std::clamp(screen.m_iconAspect, 0, 2);
     aspect.onChange = [&screen](SettingItem& self) {
@@ -105,7 +105,7 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
     size.type = ItemType::Slider;
     size.label = i18n.tr("settings.appearance.icon_scale", "Icon size");
     size.description = i18n.tr("settings.appearance.icon_scale_desc",
-        "Scales every HOME tile in the grid and the carousel. 100% is the stock size.");
+        "Scales every HOME tile in the carousel. 100% is the stock size.");
     size.sliderSteps = 60;
     size.valueBase = 70;
     size.valueSpan = 60;
@@ -121,6 +121,69 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
             screen.m_iconScaleCb(pct);
     };
     tab.items.push_back(std::move(size));
+
+    SettingItem vignette;
+    vignette.type = ItemType::Slider;
+    vignette.label = i18n.tr("settings.appearance.icon_vignette", "Icon vignette");
+    vignette.description = i18n.tr("settings.appearance.icon_vignette_desc",
+        "Darkens the rim of every tile so the artwork sits inside the glass. "
+        "0% is off.");
+    vignette.sliderSteps = 100;
+    vignette.valueSpan = 100;
+    vignette.hasReset = true;
+    vignette.resetValue = 0.f;
+    vignette.floatVal = std::clamp(screen.m_iconVignette, 0, 100) / 100.f;
+    vignette.anim01 = vignette.floatVal;
+    vignette.onChange = [&screen](SettingItem& self) {
+        screen.m_iconVignette = static_cast<int>(
+            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 100.f));
+        if (screen.m_iconOverlayCb)
+            screen.m_iconOverlayCb();
+    };
+    tab.items.push_back(std::move(vignette));
+
+    SettingItem highlight;
+    highlight.type = ItemType::Slider;
+    highlight.label = i18n.tr("settings.appearance.icon_highlight", "Icon highlight");
+    highlight.description = i18n.tr("settings.appearance.icon_highlight_desc",
+        "Adds a glass sheen across the top of each tile, plus a thin rim light. "
+        "0% is off.");
+    highlight.sliderSteps = 100;
+    highlight.valueSpan = 100;
+    highlight.hasReset = true;
+    highlight.resetValue = 0.f;
+    highlight.floatVal = std::clamp(screen.m_iconHighlight, 0, 100) / 100.f;
+    highlight.anim01 = highlight.floatVal;
+    highlight.onChange = [&screen](SettingItem& self) {
+        screen.m_iconHighlight = static_cast<int>(
+            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 100.f));
+        if (screen.m_iconOverlayCb)
+            screen.m_iconOverlayCb();
+    };
+    tab.items.push_back(std::move(highlight));
+
+    SettingItem depth3d;
+    depth3d.type = ItemType::Slider;
+    depth3d.label = i18n.tr("settings.appearance.icon_depth", "Icon 3D depth");
+    depth3d.description = i18n.tr("settings.appearance.icon_depth_desc",
+        "Bevels every tile: a light edge along the top and left, a shadow along "
+        "the bottom and right, so icons read as raised plates instead of flat "
+        "decals. Works with the vignette and the highlight. 0% is flat.");
+    depth3d.sliderSteps = 100;
+    depth3d.valueSpan = 100;
+    depth3d.hasReset = true;
+    depth3d.resetValue = 0.35f;
+    depth3d.floatVal = std::clamp(screen.m_iconDepth, 0, 100) / 100.f;
+    depth3d.anim01 = depth3d.floatVal;
+    depth3d.infoText = std::to_string(std::clamp(screen.m_iconDepth, 0, 100)) + "%";
+    depth3d.onChange = [&screen](SettingItem& self) {
+        screen.m_iconDepth = static_cast<int>(
+            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 100.f));
+        self.infoText = std::to_string(screen.m_iconDepth) + "%";
+        if (screen.m_iconOverlayCb)
+            screen.m_iconOverlayCb();
+    };
+    tab.items.push_back(std::move(depth3d));
 
     SettingItem spacing;
     spacing.type = ItemType::Slider;
@@ -190,7 +253,7 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
 
     SettingItem gridNudge;
     gridNudge.type = ItemType::Slider;
-    gridNudge.label = i18n.tr("settings.appearance.grid_nudge", "Move grid left / right");
+    gridNudge.label = i18n.tr("settings.appearance.grid_nudge", "Move icons left / right");
     gridNudge.description = i18n.tr("settings.appearance.grid_nudge_desc",
         "Slides every HOME tile sideways. 0 keeps the stock position.");
     gridNudge.sliderSteps = 50;

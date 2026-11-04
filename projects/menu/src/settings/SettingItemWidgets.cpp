@@ -728,6 +728,13 @@ public:
         m_value->setHAlign(nxui::Label::HAlign::Left);
         m_value->setVAlign(nxui::Label::VAlign::Center);
 
+        // Colour chip shown when the row carries swatches. Lives inside the
+        // pill so it reads as part of the value, not a separate control.
+        m_swatch = std::make_shared<nxui::GlassBox>();
+        m_swatch->setCornerRadius(7.f);
+        m_swatch->setBorderWidth(1.f);
+        m_swatch->setVisible(false);
+        m_pill->addChild(m_swatch);
         m_pill->addChild(m_value);
         m_right->addChild(m_pill);
     }
@@ -766,12 +773,32 @@ protected:
             m_pill->setBorderColor(rowTheme->panelBorder.withAlpha(0.5f * opacity()));
             m_value->setTextColor(rowTheme->textPrimary);
         }
+        const bool hasSwatch = idx >= 0 && idx < (int)m_item.swatches.size();
+        const float chipSize = 14.f;
+        float textX = pillRect.x + 12.f;
+        if (hasSwatch) {
+            textX = pillRect.x + 12.f + chipSize + 8.f;
+        }
+
         m_pill->setRect(pillRect);
+        if (hasSwatch) {
+            m_swatch->setBaseColor(m_item.swatches[(std::size_t)idx].withAlpha(opacity()));
+            if (rowTheme)
+                m_swatch->setBorderColor(rowTheme->panelBorder.withAlpha(0.55f * opacity()));
+            m_swatch->setRect({pillRect.x + 12.f,
+                               pillRect.y + (pillRect.height - chipSize) * 0.5f,
+                               chipSize, chipSize});
+            m_swatch->setOpacity(opacity());
+            m_swatch->setVisible(true);
+        } else {
+            m_swatch->setVisible(false);
+        }
         m_value->setOpacity(opacity());
-        m_value->setRect({pillRect.x + 12.f, pillRect.y, std::max(0.f, pillRect.width - 24.f), pillRect.height});
+        m_value->setRect({textX, pillRect.y, std::max(0.f, pillRect.right() - 12.f - textX), pillRect.height});
     }
 private:
     std::shared_ptr<nxui::GlassBox> m_pill;
+    std::shared_ptr<nxui::GlassBox> m_swatch;
     std::shared_ptr<nxui::Label> m_value;
     nxui::Font* m_cachedFont = nullptr;
     std::string m_cachedValueText;

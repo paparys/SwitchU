@@ -105,4 +105,14 @@ public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };
 
+class GlassTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class BackgroundsTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
 }

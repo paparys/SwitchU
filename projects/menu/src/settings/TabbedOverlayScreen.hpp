@@ -161,6 +161,9 @@ public:
         int                      intVal    = 0;
         int                      sliderSteps = 20;
         std::vector<std::string> options;
+        // Optional colour chips drawn beside the option names (colour pickers).
+        // Same order as `options`; empty means a plain text selector.
+        std::vector<nxui::Color> swatches;
         std::string              infoText;
         // Honest readout. valueSpan == 0 keeps the stock "travel %" label;
         // otherwise the label shows valueBase..valueBase+valueSpan in the real
