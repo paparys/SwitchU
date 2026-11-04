@@ -301,7 +301,7 @@
       "cursor_translate": "Translation",
       "cursor_teleport": "Téléportation",
       "page_transition": "Transition de page",
-      "page_transition_desc": "Choisissez si le changement de page fait glisser la grille ou la remplace instantanément.",
+      "page_transition_desc": "Choisissez si le changement de page fait glisser ou remplace instantanément.",
       "page_translate": "Translation",
       "page_teleport": "Téléportation",
       "ui_wireframe": "Wireframe UI",

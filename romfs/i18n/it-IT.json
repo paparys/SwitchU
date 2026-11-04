@@ -92,7 +92,7 @@
       "cursor_translate": "Scorrimento",
       "cursor_teleport": "Teletrasporto",
       "page_transition": "Transizione pagina",
-      "page_transition_desc": "Scegli se il cambio pagina scorre la griglia o la sostituisce istantaneamente.",
+      "page_transition_desc": "Scegli se il cambio pagina scorre o si sostituisce istantaneamente.",
       "page_translate": "Scorrimento",
       "page_teleport": "Teletrasporto",
       "ui_wireframe": "Wireframe UI",

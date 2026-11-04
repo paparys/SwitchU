@@ -209,7 +209,7 @@ ThemeShopScreen::Tab themeshop::tabs::InterfaceTab::build(ThemeShopScreen& scree
         it.type = ItemType::Selector;
         it.description = i18n.tr(
             "settings.display.page_transition_desc",
-            "Choose whether switching pages slides the grid or swaps it instantly.");
+            "Choose whether switching pages slides or swaps instantly.");
         it.options = {
             i18n.tr("settings.display.page_translate", "Translate"),
             i18n.tr("settings.display.page_teleport", "Teleport")

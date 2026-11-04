@@ -92,7 +92,7 @@
       "cursor_translate": "Плавно",
       "cursor_teleport": "Мгновенно",
       "page_transition": "Переход страницы",
-      "page_transition_desc": "Выберите, плавно прокручивать сетку при смене страницы или менять её мгновенно.",
+      "page_transition_desc": "Выберите, плавно прокручивать при смене страницы или менять мгновенно.",
       "page_translate": "Плавно",
       "page_teleport": "Мгновенно",
       "ui_wireframe": "Каркас интерфейса",

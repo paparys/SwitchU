@@ -92,7 +92,7 @@
       "cursor_translate": "Gleiten",
       "cursor_teleport": "Springen",
       "page_transition": "Seitenwechsel",
-      "page_transition_desc": "Legt fest, ob beim Seitenwechsel das Raster gleitet oder sofort wechselt.",
+      "page_transition_desc": "Legt fest, ob beim Seitenwechsel geglitten oder sofort gewechselt wird.",
       "page_translate": "Gleiten",
       "page_teleport": "Springen",
       "ui_wireframe": "UI-Wireframe",

@@ -92,7 +92,7 @@
       "cursor_translate": "Deslizar",
       "cursor_teleport": "Teletransportar",
       "page_transition": "Transição de página",
-      "page_transition_desc": "Escolha se a troca de página desliza a grade ou a substitui instantaneamente.",
+      "page_transition_desc": "Escolha se a troca de página desliza ou substitui instantaneamente.",
       "page_translate": "Deslizar",
       "page_teleport": "Teletransportar",
       "ui_wireframe": "Wireframe da UI",
