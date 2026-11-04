@@ -69,14 +69,9 @@ bool AppConfig::load() {
     }
     readJsonOpt(j, "gridColumns", gridColumns);
     readJsonOpt(j, "gridRows", gridRows);
-    {
-        std::string modeStr;
-        readJsonOpt(j, "appLayoutMode", modeStr);
-        if (modeStr == "dynamic_line" || modeStr == "line")
-            appLayoutMode = AppLayoutMode::DynamicLine;
-        else if (modeStr == "grid")
-            appLayoutMode = AppLayoutMode::Grid;
-    }
+    // Grid view removed: HOME is always the single row. Old configs that still
+    // say "grid" are migrated on load instead of being asked which view to use.
+    appLayoutMode = AppLayoutMode::DynamicLine;
     readJsonOpt(j, "actionHintStyle", actionHintStyle);
     readJsonOpt(j, "cursorMotionMode", cursorMotionMode);
     readJsonOpt(j, "pageTransitionMode", pageTransitionMode);
@@ -100,12 +95,16 @@ bool AppConfig::load() {
     readJsonOpt(j, "steamGridDbShowLogoInDynamicLine", steamGridDbShowLogoInDynamicLine);
     readJsonOpt(j, "steamGridDbAspect", steamGridDbAspect);
     readJsonOpt(j, "steamGridDbApiKey", steamGridDbApiKey);
+    readJsonOpt(j, "glassTint", glassTint);
+    readJsonOpt(j, "glassSolid", glassSolid);
+    readJsonOpt(j, "highlightTint", highlightTint);
     readJsonOpt(j, "iconAspect", iconAspect);
     readJsonOpt(j, "iconCorners", iconCorners);
     readJsonOpt(j, "iconCornerPct", iconCornerPct);
     readJsonOpt(j, "iconScale", iconScale);
     readJsonOpt(j, "sidebarScale", sidebarScale);
     readJsonOpt(j, "shortcutEdge", shortcutEdge);
+    readJsonOpt(j, "shortcutSide", shortcutSide);
     readJsonOpt(j, "shortcutNudgeX", shortcutNudgeX);
     if (j.find("shortcutNudgeXRight") == j.end())
         shortcutNudgeXRight = shortcutNudgeX;
@@ -131,6 +130,9 @@ bool AppConfig::load() {
     readJsonOpt(j, "uiRadiusPct", uiRadiusPct);
     readJsonOpt(j, "iconShadowOffset", iconShadowOffset);
     readJsonOpt(j, "iconShadowAlpha", iconShadowAlpha);
+    readJsonOpt(j, "iconVignette", iconVignette);
+    readJsonOpt(j, "iconHighlight", iconHighlight);
+    readJsonOpt(j, "iconDepth", iconDepth);
     readJsonOpt(j, "motionStyle", motionStyle);
     readJsonOpt(j, "lineNudgeX", lineNudgeX);
     for (int preset = 0; preset < 3; ++preset) {
@@ -147,6 +149,8 @@ bool AppConfig::load() {
     readJsonOpt(j, "wallpaperPath", wallpaperPath);
     readJsonOpt(j, "wallpaperAnimated", wallpaperAnimated);
     readJsonOpt(j, "wallpaperFps", wallpaperFps);
+    readJsonOpt(j, "backgroundDrift", backgroundDrift);
+    readJsonOpt(j, "backgroundDriftSpeed", backgroundDriftSpeed);
     readJsonOpt(j, "sortMode", sortMode);
     readJsonOpt(j, "alphaOrder", alphaOrder);
     readJsonOpt(j, "sortLargeTiles", sortLargeTiles);
@@ -161,6 +165,10 @@ bool AppConfig::load() {
     readJsonOpt(j, "lockScreenZoomDir", lockScreenZoomDir);
     lockScreenZoomDir = std::clamp(lockScreenZoomDir, 0, 1);
     readJsonOpt(j, "lockScreenWipeDir", lockScreenWipeDir);
+    readJsonOpt(j, "heroBackdropResolution", heroBackdropResolution);
+    heroBackdropResolution = std::clamp(heroBackdropResolution, 0, 2);
+    readJsonOpt(j, "heroBackdropBlur", heroBackdropBlur);
+    heroBackdropBlur = std::clamp(heroBackdropBlur, 0, 100);
     lockScreenWipeDir = std::clamp(lockScreenWipeDir, 0, 3);
     readJsonOpt(j, "lockPadCodeEnabled", lockPadCodeEnabled);
     readJsonOpt(j, "lockPadCode", lockPadCode);
@@ -174,6 +182,8 @@ bool AppConfig::load() {
     readJsonOpt(j, "dockedShortcutScale", dockedShortcutScale);
     if (handheldIconScale == 0) handheldIconScale = iconScale;
     if (handheldShortcutScale == 0) handheldShortcutScale = sidebarScale;
+    if (dockedIconScale <= 0) dockedIconScale = handheldIconScale;
+    if (dockedShortcutScale <= 0) dockedShortcutScale = handheldShortcutScale;
     dockedIconScale = std::clamp(dockedIconScale, 70, 130);
     dockedShortcutScale = std::clamp(dockedShortcutScale, 70, 150);
     readJsonOpt(j, "themeLockClockFontOverride", themeLockClockFontOverride);
@@ -275,12 +285,15 @@ bool AppConfig::load() {
     accessibilitySpeechRate = std::clamp(accessibilitySpeechRate, 120, 320);
     sortMode = std::clamp(sortMode, 0, 2);
     steamGridDbAspect = std::clamp(steamGridDbAspect, 0, 3);
+    glassTint = std::clamp(glassTint, 0, 9);
+    highlightTint = std::clamp(highlightTint, 0, 9);
     iconAspect = std::clamp(iconAspect, 0, 2);
     iconCorners = std::clamp(iconCorners, 0, 1);
     iconCornerPct = std::clamp(iconCornerPct, 0, 100);
     iconScale = std::clamp(iconScale, 70, 130);
     sidebarScale = std::clamp(sidebarScale, 70, 150);
     shortcutEdge = std::clamp(shortcutEdge, 0, 1);
+    shortcutSide = std::clamp(shortcutSide, 0, 1);
     shortcutNudgeX = std::clamp(shortcutNudgeX, -25, 25);
     shortcutNudgeXRight = std::clamp(shortcutNudgeXRight, -25, 25);
     // 2px steps only: truncate toward zero, which also covers negatives.
@@ -301,9 +314,13 @@ bool AppConfig::load() {
     uiRadiusPct = std::clamp(uiRadiusPct, 50, 200);
     iconShadowOffset = std::clamp(iconShadowOffset, 0, 20);
     iconShadowAlpha = std::clamp(iconShadowAlpha, 0, 60);
+    iconVignette = std::clamp(iconVignette, 0, 100);
+    iconHighlight = std::clamp(iconHighlight, 0, 100);
+    iconDepth = std::clamp(iconDepth, 0, 100);
     motionStyle = std::clamp(motionStyle, 0, 2);
     lineNudgeX = std::clamp(lineNudgeX, -25, 25);
     wallpaperFps = std::clamp(wallpaperFps, 5, 30);
+    backgroundDriftSpeed = std::clamp(backgroundDriftSpeed, 1, 100);
     // Animated wallpapers are no longer offered in Settings. Drop a path saved
     // by an earlier build so the background stays on the theme image.
     wallpaperPath.clear();
@@ -368,7 +385,7 @@ bool AppConfig::save() const {
     j["musicPlaylistOrder"] = musicPlaylistOrder;
     j["gridColumns"] = std::clamp(gridColumns, 1, 8);
     j["gridRows"] = std::clamp(gridRows, 1, 5);
-    j["appLayoutMode"] = (appLayoutMode == AppLayoutMode::DynamicLine) ? "dynamic_line" : "grid";
+    j["appLayoutMode"] = "dynamic_line";
     j["actionHintStyle"] = actionHintStyle == "panel" ? "panel" : "capsules";
     j["cursorMotionMode"] = std::clamp(cursorMotionMode, 0, 1);
     j["pageTransitionMode"] = std::clamp(pageTransitionMode, 0, 1);
@@ -392,12 +409,16 @@ bool AppConfig::save() const {
     j["steamGridDbShowLogoInDynamicLine"] = steamGridDbShowLogoInDynamicLine;
     j["steamGridDbAspect"] = std::clamp(steamGridDbAspect, 0, 3);
     j["steamGridDbApiKey"] = steamGridDbApiKey;
+    j["glassTint"] = std::clamp(glassTint, 0, 9);
+    j["glassSolid"] = glassSolid;
+    j["highlightTint"] = std::clamp(highlightTint, 0, 9);
     j["iconAspect"] = std::clamp(iconAspect, 0, 2);
     j["iconCorners"] = std::clamp(iconCorners, 0, 1);
     j["iconCornerPct"] = std::clamp(iconCornerPct, 0, 100);
     j["iconScale"] = std::clamp(iconScale, 70, 130);
     j["sidebarScale"] = std::clamp(sidebarScale, 70, 150);
     j["shortcutEdge"] = std::clamp(shortcutEdge, 0, 1);
+    j["shortcutSide"] = std::clamp(shortcutSide, 0, 1);
     j["shortcutNudgeX"] = std::clamp(shortcutNudgeX, -25, 25);
     j["shortcutNudgeXRight"] = std::clamp(shortcutNudgeXRight, -25, 25);
     j["shortcutStrip"] = shortcutStrip;
@@ -420,6 +441,9 @@ bool AppConfig::save() const {
     j["uiRadiusPct"] = std::clamp(uiRadiusPct, 50, 200);
     j["iconShadowOffset"] = std::clamp(iconShadowOffset, 0, 20);
     j["iconShadowAlpha"] = std::clamp(iconShadowAlpha, 0, 60);
+    j["iconVignette"] = std::clamp(iconVignette, 0, 100);
+    j["iconHighlight"] = std::clamp(iconHighlight, 0, 100);
+    j["iconDepth"] = std::clamp(iconDepth, 0, 100);
     j["motionStyle"] = std::clamp(motionStyle, 0, 2);
     j["lineNudgeX"] = std::clamp(lineNudgeX, -25, 25);
     for (int preset = 0; preset < 3; ++preset)
@@ -427,6 +451,8 @@ bool AppConfig::save() const {
     j["wallpaperPath"] = wallpaperPath;
     j["wallpaperAnimated"] = wallpaperAnimated;
     j["wallpaperFps"] = std::clamp(wallpaperFps, 5, 30);
+    j["backgroundDrift"] = backgroundDrift;
+    j["backgroundDriftSpeed"] = std::clamp(backgroundDriftSpeed, 1, 100);
     j["sortMode"] = std::clamp(sortMode, 0, 2);
     j["alphaOrder"] = alphaOrder;
     j["sortLargeTiles"] = sortLargeTiles;
@@ -438,6 +464,8 @@ bool AppConfig::save() const {
     j["lockScreenTransition"] = std::clamp(lockScreenTransition, 0, 3);
     j["lockScreenZoomDir"] = std::clamp(lockScreenZoomDir, 0, 1);
     j["lockScreenWipeDir"] = std::clamp(lockScreenWipeDir, 0, 3);
+    j["heroBackdropResolution"] = std::clamp(heroBackdropResolution, 0, 2);
+    j["heroBackdropBlur"] = std::clamp(heroBackdropBlur, 0, 100);
     j["lockPadCodeEnabled"] = lockPadCodeEnabled;
     j["lockPadCode"] = lockPadCode;
     j["gameShortcuts"] = gameShortcuts;

@@ -22,7 +22,9 @@ struct AppConfig {
     std::vector<std::string> musicPlaylistOrder;
     int   gridColumns  = 5;
     int   gridRows     = 3;
-    AppLayoutMode appLayoutMode = AppLayoutMode::Grid;
+    // The grid view is gone: HOME is always the single row (carousel). Keep the
+    // field so older configs still round-trip through load/save cleanly.
+    AppLayoutMode appLayoutMode = AppLayoutMode::DynamicLine;
     std::string actionHintStyle = "capsules";
     // 0 = animated translation, 1 = immediate jump.
     int cursorMotionMode = 0;
@@ -74,6 +76,8 @@ struct AppConfig {
     int sidebarScale = 100;
     // Where the shortcut strip sits: 0 = top of the screen, 1 = bottom.
     int shortcutEdge = 0;
+    // Which applet cluster pinned game sockets sit next to: 0 = left, 1 = right.
+    int shortcutSide = 0;
     // Horizontal travel for the shortcuts, in 1/25 screen steps (like the
     // other nudges): the strip slides, the two columns move in/out.
     int shortcutNudgeX = 0;
@@ -123,7 +127,21 @@ struct AppConfig {
     // Tile drop shadow: vertical offset in px and veil strength in %.
     int iconShadowOffset = 6;
     int iconShadowAlpha = 20;
+    // Darkens every tile edge so the artwork sits inside the glass (0..100).
+    int iconVignette = 0;
+    // Glass sheen across the top of each tile (0..100).
+    int iconHighlight = 0;
+    // Bevel depth on every tile: light along the top/left inner edge, shadow
+    // along the bottom/right, so icons read as raised plates (0..100).
+    int iconDepth = 35;
     int motionStyle = 1;
+    // Liquid glass. 0 = the theme's own glass colour; 1..9 = a fixed tint
+    // applied to every glass surface. glassSolid drops refraction entirely and
+    // draws an opaque plate in that same colour.
+    int glassTint = 0;
+    bool glassSolid = false;
+    // Focus ring around the highlighted icon, same palette (0 = theme).
+    int highlightTint = 0;
     // Carousel horizontal offset: moves the focused tile left or right of
     // centre without touching the grid.
     int lineNudgeX = 0;
@@ -136,6 +154,10 @@ struct AppConfig {
     std::string wallpaperPath;
     bool wallpaperAnimated = true;
     int  wallpaperFps = 15;
+    // Slow horizontal pan of the wallpaper / per-game backdrop. The speed is a
+    // 1..100 travel rate, not a pixel value, so it reads the same on any art.
+    bool backgroundDrift = false;
+    int  backgroundDriftSpeed = 35;
 
     float iconAspectRatio() const {
         switch (iconAspect) {
@@ -177,6 +199,13 @@ struct AppConfig {
     // any-button unlock while this is false.
     bool lockPadCodeEnabled = false;
     std::string lockPadCode = "UDLR";
+    // Per-game SteamGridDB backdrop canvas: 0 = 1280x720 (full), 1 = 960x540,
+    // 2 = 640x360. Lower sizes cut RAM and SD traffic while scrolling; the
+    // sharpness of the hero follows whatever canvas it is decoded at.
+    int heroBackdropResolution = 0;
+    // Blur applied to the per-game backdrop: 0 = untouched, 100 = softest. The
+    // decode worker applies it, so the cost is paid once per decoded hero.
+    int heroBackdropBlur = 0;
     // Six comma-separated shortcut slot ids (0 = stock applet). Any installed
     // game or homebrew can occupy a slot from its Game Options page.
     std::string gameShortcuts;
@@ -189,8 +218,10 @@ struct AppConfig {
     bool dockedSizeOverrides = true;
     int handheldIconScale = 0;
     int handheldShortcutScale = 0;
-    int dockedIconScale = 100;
-    int dockedShortcutScale = 100;
+    // 0 = not configured yet: Config::load inherits the handheld sizes, so a
+    // custom icon/shortcut size keeps working when the console is docked.
+    int dockedIconScale = 0;
+    int dockedShortcutScale = 0;
     // Theme Shop → Lock Screen: applying a theme with fonts may set clock face.
     bool themeLockClockFontOverride = true;
     // Theme Shop → Interface: applying a theme with icons may switch icon pack.
