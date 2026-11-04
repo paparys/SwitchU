@@ -40,10 +40,18 @@ public:
     std::uint64_t revision() const { return m_revision; }
 
 private:
-    // Render full string to texture (cache by string)
-    Texture* getOrRender(GpuDevice& gpu, Renderer& ren, const std::string& text);
+    // Render full string to texture. Keyed by text + raster pixel size, so a
+    // label drawn at 120% is rasterized at 120% instead of magnified.
+    Texture* getOrRender(GpuDevice& gpu, Renderer& ren, const std::string& text,
+                         float scale);
+    TTF_Font* fontForPixels(int pixelSize);
 
     TTF_Font* m_font = nullptr;
+    std::string m_path;
+    // Extra faces opened at the raster size a scaled label asks for. A handful
+    // of sizes covers every scale the UI uses; the base face stays for measure().
+    std::unordered_map<int, TTF_Font*> m_sizeFonts;
+    mutable std::unordered_map<std::string, Vec2> m_measureCache;
     int       m_ptSize = 0;
     GpuDevice* m_gpu = nullptr;
     Renderer*  m_ren = nullptr;

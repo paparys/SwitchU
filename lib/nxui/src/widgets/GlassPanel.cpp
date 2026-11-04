@@ -94,17 +94,23 @@ void GlassPanel::onRender(Renderer& ren) {
         ren.drawRoundedRect(r, m_backingColor.withAlpha(op), m_radius);
     }
 
+    const bool solidGlass = ren.liquidGlassSolid();
     const bool useShaderGlass = m_liquidGlassEnabled
         && m_liquidGlassShaderEnabled
-        && ren.gpu().offscreenReady();
-    const bool needsBackdrop = (m_blurEnabled || useShaderGlass) && op > 0.01f;
+        && ren.gpu().offscreenReady()
+        && !solidGlass;
+    const bool needsBackdrop = ((m_blurEnabled && !solidGlass) || useShaderGlass) && op > 0.01f;
     if (needsBackdrop) {
         ren.captureToOffscreen(useShaderGlass && !m_blurEnabled);
         if (m_blurEnabled)
             ren.applyBlur(m_blurRadius, m_blurPasses);
     }
 
-    if (useShaderGlass && op > 0.01f) {
+    if (m_liquidGlassEnabled && solidGlass && op > 0.01f) {
+        // Renderer draws the opaque plate; skipping the offscreen capture here
+        // means solid glass also costs no extra GPU pass.
+        ren.drawLiquidGlass(0, r, m_radius, m_base, op, m_liquidGlassShade);
+    } else if (useShaderGlass && op > 0.01f) {
         ren.drawLiquidGlass(0, r, m_radius, m_base, op, m_liquidGlassShade);
     } else if (m_liquidGlassEnabled && op > 0.01f) {
         Color body = m_base;

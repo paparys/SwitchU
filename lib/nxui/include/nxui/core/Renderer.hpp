@@ -51,7 +51,7 @@ enum class ShaderProgram {
 struct LiquidGlassSettings {
     float refractionIntensity = 0.08f;
     float blurIntensity = 0.65f;
-    float noiseIntensity = 0.0f;
+    float noiseIntensity = 0.03f;
 
     float glowIntensity = 0.22f;
     float saturation = 0.96f;
@@ -149,6 +149,18 @@ public:
 
     LiquidGlassSettings& liquidGlassSettings() { return m_liquidGlassSettings; }
     const LiquidGlassSettings& liquidGlassSettings() const { return m_liquidGlassSettings; }
+
+    // User-facing glass style shared by every liquid-glass surface.
+    // tintEnabled replaces each panel's own tint colour; solid skips refraction
+    // and draws an opaque plate in that tint colour instead.
+    void setLiquidGlassStyle(bool tintEnabled, const Color& tint, bool solid) {
+        m_glassTintEnabled = tintEnabled;
+        m_glassTint = tint;
+        m_glassSolid = solid;
+    }
+    bool liquidGlassTintEnabled() const { return m_glassTintEnabled; }
+    const Color& liquidGlassTint() const { return m_glassTint; }
+    bool liquidGlassSolid() const { return m_glassSolid; }
     void resetLiquidGlassSettings();
     void setLiquidGlassDebugRawBackdrop(bool enabled) { m_liquidGlassDebugRawBackdrop = enabled; }
     bool liquidGlassDebugRawBackdrop() const { return m_liquidGlassDebugRawBackdrop; }
@@ -259,6 +271,9 @@ private:
     bool m_liquidGlassDebugRawBackdrop = false;
     bool m_reusableOffscreenCaptureValid = false;
     LiquidGlassSettings m_liquidGlassSettings;
+    bool  m_glassTintEnabled = false;
+    Color m_glassTint {1.f, 1.f, 1.f, 1.f};
+    bool  m_glassSolid = false;
 
     static inline std::string s_shaderBasePath = "romfs:/shaders/";
 };

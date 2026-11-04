@@ -521,6 +521,16 @@ void Renderer::drawLiquidGlass(int target, const Rect& panelRect, float radius,
                                const Color& tint, float opacity, float shade) {
     if (opacity <= 0.01f || target < 0 || target >= GpuDevice::NUM_OFFSCREEN)
         return;
+    // Solid glass: no backdrop sampling, no refraction. Draw one opaque plate
+    // in the chosen colour so busy wallpapers cannot wash the panel out.
+    if (m_glassSolid) {
+        Color plate = m_glassTintEnabled ? m_glassTint : tint;
+        plate.a = 1.f;
+        useShader(ShaderProgram::Basic);
+        drawRoundedRect(panelRect, plate.withAlpha(opacity), radius);
+        return;
+    }
+
     if (!m_gpu.offscreenReady()) {
         drawFrostedInset(panelRect, tint, Color::white().withAlpha(0.18f),
                          Color::white().withAlpha(0.08f), radius, opacity);
@@ -550,10 +560,15 @@ void Renderer::drawLiquidGlass(int target, const Rect& panelRect, float radius,
     fs.extra[13] = glass.glowBias;
     fs.extra[14] = glass.glowEdge0;
     fs.extra[15] = glass.glowEdge1;
-    fs.extra[16] = tint.r;
-    fs.extra[17] = tint.g;
-    fs.extra[18] = tint.b;
-    fs.extra[19] = tint.a;
+    // A user-picked glass colour wins over the panel's own tint. The shader
+    // only mixes up to 34%, so lift the alpha to keep the choice visible.
+    const Color glassTintUsed = m_glassTintEnabled
+        ? Color(m_glassTint.r, m_glassTint.g, m_glassTint.b, std::max(tint.a, 0.86f))
+        : tint;
+    fs.extra[16] = glassTintUsed.r;
+    fs.extra[17] = glassTintUsed.g;
+    fs.extra[18] = glassTintUsed.b;
+    fs.extra[19] = glassTintUsed.a;
     fs.extra[20] = panelRect.x;
     fs.extra[21] = panelRect.y;
     fs.extra[22] = panelRect.width;
@@ -763,8 +778,17 @@ void Renderer::drawFrostedInset(const Rect& r, const Color& tint,
     if (alpha <= 0.01f || r.width <= 0.f || r.height <= 0.f)
         return;
 
-    drawRoundedRect({r.x, r.y + 3.f, r.width, r.height},
-                    Color::black().withAlpha(0.12f * alpha), radius);
+    // Layered shadow: the plate covers the core of each pass, leaving a soft
+    // falloff around it instead of one hard offset rectangle.
+    constexpr float kShadowSpread[3] = {6.f, 3.f, 0.f};
+    constexpr float kShadowWeight[3] = {0.35f, 0.65f, 1.f};
+    for (int layer = 0; layer < 3; ++layer) {
+        const float s = kShadowSpread[layer];
+        drawRoundedRect({r.x - s * 0.5f, r.y + 3.f - s * 0.25f,
+                         r.width + s, r.height + s * 1.25f},
+                        Color::black().withAlpha(0.12f * alpha * kShadowWeight[layer]),
+                        radius + s);
+    }
     drawRoundedRect(r, tint.withAlpha(tint.a * alpha), radius);
     drawRoundedRectOutline(r, border.withAlpha(border.a * alpha), radius, 1.f);
     drawRoundedRectOutline(r.shrunk(1.5f),
