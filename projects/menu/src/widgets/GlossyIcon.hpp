@@ -48,8 +48,22 @@ public:
         m_shadowOffsetY = offsetY;
         m_shadowAlpha = alpha;
     }
+    // Edge darkening drawn over the artwork, 0..1.
+    void setVignette(float strength) {
+        m_vignetteStrength = std::clamp(strength, 0.f, 1.f);
+    }
+    // Glass sheen + rim light drawn over the artwork, 0..1.
+    void setHighlight(float strength) {
+        m_highlightStrength = std::clamp(strength, 0.f, 1.f);
+    }
+    // Directional bevel: light along the top/left inner edge, shadow along the
+    // bottom/right. Reads as a raised plate rather than a flat decal, 0..1.
+    void setDepth(float depth) { m_depth = std::clamp(depth, 0.f, 1.f); }
     float m_shadowOffsetY = 6.f;
     float m_shadowAlpha = 0.20f;
+    float m_vignetteStrength = 0.f;
+    float m_highlightStrength = 0.f;
+    float m_depth = 0.f;
     bool motionPaused() const { return m_motionPaused; }
 
     void setIsGameCard(bool gc)     { m_isGameCard = gc; }
@@ -165,6 +179,11 @@ protected:
     void onRender(nxui::Renderer& ren) override;
     void onContentUpdate(float dt) override;
     void onContentRender(nxui::Renderer& ren) override;
+    // Vignette / highlight pass over a tile face, clamped to its rounded shape.
+    void drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r, float radius);
+    // One-shot light sweep across the tile face, fired when the tile takes
+    // focus. Empty/continuation tiles have no face to light up, so they skip it.
+    void drawShine(nxui::Renderer& ren, const nxui::Rect& r, float radius);
 
 private:
     std::string m_title;
@@ -192,6 +211,8 @@ private:
     nxui::AnimatedFloat m_appearOpacity;
     nxui::AnimatedFloat m_focusScale;
     nxui::AnimatedFloat m_focusGlow;
+    // Progress of the focus shine, 0..1; negative means idle.
+    float         m_shineT      = -1.f;
     nxui::AnimatedFloat m_jiggleAmount;
     bool          m_jiggle      = false;
     float         m_jigglePhase = 0.f;

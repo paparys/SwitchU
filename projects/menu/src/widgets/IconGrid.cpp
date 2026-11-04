@@ -508,63 +508,106 @@ nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
 
     float d = static_cast<float>(index) - offset;
     const float absD = std::abs(d);
-    float s = 1.f;
-    float a = 1.f;
     // Depth shrinks or grows the row: at -1 side tiles are noticeably smaller
     // (more neighbours on screen), at +1 they are larger and fewer fit.
-    const float sSide = (poster ? 0.72f : 0.82f) + 0.18f * m_carouselDepth;
-    const float sFocus = (poster ? 1.12f : 1.36f) + 0.10f * m_carouselDepth;
     float focusBlend = 0.f;
-    if (absD <= 1.0f) {
-        // Position drives the visual state: the departing icon now shrinks as
-        // it leaves centre while the incoming icon travels and grows into it.
+    if (absD <= 1.f) {
+        // Position drives the visual state: the departing icon shrinks as it
+        // leaves centre while the incoming icon travels and grows into it.
         const float centerBlend = 1.f - absD;
         focusBlend = centerBlend * centerBlend * (3.f - 2.f * centerBlend);
-        s = sSide + focusBlend * (sFocus - sSide);
-        a = 0.76f + focusBlend * 0.24f;
-    } else {
-        // Smooth shrink with distance rather than a linear staircase. A curve
-        // keeps each neighbour visibly related to the one beside it, which reads
-        // as a receding row of covers instead of unrelated cards.
-        const float far = absD - 1.0f;
+    }
+    // Row scale at a given distance from the focus. Shared by this tile and by
+    // the gap accumulation below, so the width used for layout is always the
+    // width that gets drawn.
+    auto scaleAt = [&](float absDist, bool isPoster) {
+        const float side = (isPoster ? 0.72f : 0.82f) + 0.18f * m_carouselDepth;
+        const float focus = (isPoster ? 1.12f : 1.36f) + 0.10f * m_carouselDepth;
+        if (absDist <= 1.f) {
+            const float cb = 1.f - absDist;
+            return side + cb * cb * (3.f - 2.f * cb) * (focus - side);
+        }
+        const float far = absDist - 1.f;
         const float soften = 1.f - std::exp(-far * 1.1f);
         const float shrinkTo = 0.46f - 0.10f * std::max(0.f, m_carouselDepth);
-        s = std::max(shrinkTo, sSide - (sSide - shrinkTo) * soften);
-        // Pulled back, neighbours keep a readable floor for longer so the extra
-        // visible icons actually read as artwork; pushed forward they fade away
-        // sooner and the focused tile dominates.
-        // Carousel fade: how fast neighbours drop away from the focused tile.
-        // 0.5 keeps the original falloff and floor; below that the row stays
-        // lit further out, above it the next tiles fade toward invisible.
-        const float fadeRate = 0.30f + 1.40f * m_carouselFade;
-        const float floorScale = 1.f - std::max(0.f, m_carouselFade - 0.5f) * 2.f;
-        const float floorAlpha = (0.10f + 0.20f * std::max(0.f, -m_carouselDepth))
-                               * floorScale;
-        a = std::max(floorAlpha, 0.76f - far * 0.24f * fadeRate
-                                       * (1.f + 0.6f * m_carouselDepth));
+        return std::max(shrinkTo, side - (side - shrinkTo) * soften);
+    };
+    auto isPosterAt = [&](int j) {
+        if (!m_linePosterAspect || j < 0 || j >= static_cast<int>(m_allIcons.size()))
+            return false;
+        const auto& ic = m_allIcons[static_cast<std::size_t>(j)];
+        return ic && ic->usesPosterFrame();
+    };
+    auto widthAt = [&](int j) {
+        const bool p = isPosterAt(j);
+        const float base = (p ? kPosterBaseW : kLineIconBase) * m_iconScale;
+        return base * scaleAt(std::abs(static_cast<float>(j) - offset), p);
+    };
+
+    const float s = scaleAt(absD, poster);
+    float a = 0.76f;
+    if (absD <= 1.f) {
+        a = 0.76f + focusBlend * 0.24f;
+    } else {
+        // Fade to nothing over a finite run. The old curve ramped linearly into
+        // a flat floor alpha and then dropped the tile entirely at a fixed 4.5
+        // tiles, so the row ended on a dim plateau and the next tile popped off
+        // the screen. A smoothstep that reaches zero exactly where the run ends
+        // has no plateau and no pop: the strip dissolves instead of being cut.
+        // The slider sets the run length (light keeps neighbours lit out towards
+        // the screen edge, heavy keeps only the next tile or two), and pulling
+        // the row back stretches it so its extra visible tiles stay readable.
+        const float far = absD - 1.f;
+        const float span = (1.8f + 5.2f * (1.f - m_carouselFade))
+                         * (1.f - 0.22f * m_carouselDepth);
+        const float fadeT = std::clamp(1.f - far / std::max(0.25f, span),
+                                       0.f, 1.f);
+        const float curve = fadeT * fadeT * (3.f - 2.f * fadeT);
+        a = 0.76f * curve;
     }
 
     const float w = baseCellW * s;
     const float h = baseCellH * s;
-    float centerY = lineCenterY + m_lineNudgeY;
-    if (poster && focusBlend > 0.f) {
-        // Clear the clock capsule (~y 70) and leave room for the title pill.
-        constexpr float kTopPad = 100.f;
-        constexpr float kBottomPad = 128.f;
-        // Centre the hero in the band that is actually free. Hardcoding 720
-        // ignored the reserved strip, so with the shortcuts at the bottom the
-        // focused tile stayed put while only its neighbours rose.
-        const float bandTop = m_rect.y + m_insetTop + kTopPad;
-        const float bandBottom = m_rect.y + m_rect.height - m_insetBottom - kBottomPad;
-        const float focusedCenterY = (bandTop + bandBottom) * 0.5f;
-        // Keep the vertical nudge here too. Without it the focused tile snaps
-        // back to the stock centre while its neighbours move, so the strip never
-        // stays where the setting put it.
-        centerY = lineCenterY + m_lineNudgeY
-                + (focusedCenterY - lineCenterY) * focusBlend;
+    // Equal gaps: walk out from the tile under the focus one step at a time,
+    // charging each step the widths of the two tiles it joins plus one shared
+    // gap. A constant pitch gave a wide focused tile almost no air beside it
+    // while small neighbours sat far apart; here every adjacent pair keeps the
+    // same gap no matter how different their scales are. The fractional part of
+    // the scroll offset interpolates between the layout anchored on the lower
+    // tile and the one anchored on the next, so dragging stays continuous.
+    const float anchorF = std::floor(offset);
+    const int anchor = static_cast<int>(anchorF);
+    const float frac = offset - anchorF;
+    const float gap = std::max(6.f, lineSpacing - kLineIconBase * m_iconScale);
+    float shift = 0.f;
+    if (index != anchor) {
+        const int dir = index > anchor ? 1 : -1;
+        for (int j = anchor; j != index; j += dir)
+            shift += dir * (0.5f * (widthAt(j) + widthAt(j + 1)) + gap);
     }
-    const float x = centerX + d * lineSpacing - w * 0.5f;
-    const float y = centerY - h * 0.5f;
+    if (frac > 0.0001f)
+        shift -= frac * (0.5f * (widthAt(anchor) + widthAt(anchor + 1)) + gap);
+    const float x = centerX + shift - w * 0.5f;
+    // Shelf alignment: every tile rests on the focused tile's bottom edge, so
+    // the smaller neighbours sit down beside the big one instead of floating at
+    // their own centres. The shelf is taken from the anchor tile under the
+    // focus, which is also what carries a focused poster up into the middle
+    // band while its neighbours follow to the same line.
+    const bool anchorPoster = isPosterAt(anchor);
+    const float anchorBaseH = anchorPoster
+        ? kPosterBaseW * 1.5f * m_iconScale
+        : kLineIconBase * m_iconScale / std::max(0.2f, m_iconAspect);
+    const float anchorScale = (anchorPoster ? 1.12f : 1.36f)
+                            + 0.10f * m_carouselDepth;
+    // Clear the clock capsule (~y 70) and leave room for the title pill.
+    constexpr float kTopPad = 100.f;
+    constexpr float kBottomPad = 128.f;
+    const float bandTop = m_rect.y + m_insetTop + kTopPad;
+    const float bandBottom = m_rect.y + m_rect.height - m_insetBottom - kBottomPad;
+    const float anchorCenterY =
+        (anchorPoster ? (bandTop + bandBottom) * 0.5f : lineCenterY) + m_lineNudgeY;
+    const float baseline = anchorCenterY + anchorBaseH * anchorScale * 0.5f;
+    const float y = baseline - h;
 
     if (outScale) *outScale = s;
     if (outOpacity) *outOpacity = a;
@@ -978,7 +1021,10 @@ void IconGrid::renderDynamicLine(nxui::Renderer& ren) {
         float a = 1.f;
         float absD = 0.f;
         const nxui::Rect r = dynamicIconRect(i, &s, &a, &absD);
-        if (absD > 4.5f && i != focusedIndex) continue;
+        // Cull on the alpha the curve actually produced instead of a fixed tile
+        // distance: the fade now reaches zero on its own, so the last visible
+        // tile is the one the curve zeroed and nothing pops at an arbitrary edge.
+        if (a <= 0.004f && i != focusedIndex) continue;
         const float d = r.center().x - m_rect.center().x;
         candidates.push_back({i, absD, d, s, a, r});
     }
@@ -1015,9 +1061,10 @@ void IconGrid::renderLayoutMorph(nxui::Renderer& ren) {
     for (int i = 0; i < (int)m_allIcons.size(); ++i) {
         if (!m_allIcons[i]) continue;
         float absD = 0.f;
-        dynamicIconRect(i, nullptr, nullptr, &absD);
+        float lineAlpha0 = 1.f;
+        dynamicIconRect(i, nullptr, &lineAlpha0, &absD);
         const bool inGrid = i >= gridStart && i < gridEnd;
-        if (!inGrid && absD > 4.5f) continue;
+        if (!inGrid && lineAlpha0 <= 0.004f) continue;
         candidates.push_back({i, absD});
     }
     

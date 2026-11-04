@@ -21,6 +21,17 @@ public:
                         nxui::ThreadPool* threadPool);
 
     void setEnabled(bool enabled);
+    // Canvas the per-game hero is decoded at: 1280x720 (Full), 960x540
+    // (Balanced) or 640x360 (Fast). Changing it drops the uploaded sets so the
+    // next focus decodes at the new size.
+    void setHeroCanvas(int width, int height);
+    // Softens the per-game hero, 0..1. Applied on the decode worker, so the
+    // uploaded pixels are already blurred and the render thread never pays for
+    // it; changing it drops the sets so the next decode re-applies the amount.
+    void setBlur(float strength);
+    // Slow horizontal pan of the hero. The art is overscanned while drifting
+    // so the pan never exposes an edge.
+    void setDrift(bool enabled, int speedPercent);
     // Drops every artwork cache (uploaded sets, decoded images and the list of
     // titles known to have none) so the next showTitle() re-reads the card.
     // Needed whenever SteamGridDB settings change what is available.
@@ -53,6 +64,10 @@ private:
         nxui::Texture hero;
         nxui::Texture logo;
         std::uint64_t titleId = 0;
+        // Canvas this set's hero was decoded at. A reduced one is upgraded to
+        // the configured canvas once the selection stops moving.
+        int canvasW = 0;
+        int canvasH = 0;
         bool hasHero = false;
         bool hasLogo = false;
         float heroLuminance = -1.f;
@@ -84,13 +99,17 @@ private:
     };
 
     static DecodedImage decodeImage(const std::string& path, int outputWidth,
-                                    int outputHeight, bool fill);
+                                    int outputHeight, bool fill,
+                                    const std::atomic<bool>* cancel = nullptr,
+                                    bool useCache = true);
     static float sampleLuminance(const DecodedImage& image);
     static nxui::Rect fillRect(const nxui::Texture& texture, const nxui::Rect& area);
     static nxui::Rect containRect(const nxui::Texture& texture, const nxui::Rect& area);
     bool useFullHeroOpacity() const;
     void drawSet(nxui::Renderer& renderer, const ArtworkSet& set, float alpha) const;
-    void startPendingDecode(std::uint64_t titleId);
+    void startPendingDecode(std::uint64_t titleId, int canvasW, int canvasH,
+                            bool useCache);
+    void cancelPendingDecode();
     void beginCrossfade(int nextSet, std::uint64_t titleId);
     bool hasGpuArtwork(std::uint64_t titleId) const;
 
@@ -111,11 +130,23 @@ private:
     std::vector<DecodedArtwork> m_decodedCache;
     int m_uploadStage = 0;
     bool m_waitForGpuBeforeUpload = false;
-    // Cruise neighbour warm (~0.9 MiB hero reads). 0 = as soon as free (too
+    // Cruise neighbour warm (~3.5 MiB hero reads). 0 = as soon as free (too
     // aggressive on SD while browsing single-row with heroes).
     float m_preloadMinInterval = 0.35f;
     float m_preloadGapSec = 0.f;
     bool m_preloadPaused = false;
+    int m_heroCanvasW = 1280;
+    int m_heroCanvasH = 720;
+    float m_heroBlur = 0.f;
+    bool m_driftEnabled = false;
+    int m_driftSpeed = 35;
+    float m_driftPhase = 0.f;
+    // Seconds the current selection has been on screen. Short means the user is
+    // scrolling, so the next hero is decoded at the preview canvas.
+    float m_sinceFocusChange = 10.f;
+    int m_nextCanvasW = 1280;
+    int m_nextCanvasH = 720;
+    bool m_nextUseCache = true;
     AppLayoutMode m_layoutMode = AppLayoutMode::Grid;
     // Band the logo is centred in while single-row mode is active. The app
     // raises it above the folder title bubble when a folder is open.
@@ -124,6 +155,8 @@ private:
     bool m_showPreviousDuringCrossfade = false;
     nxui::AnimatedFloat m_fade{1.f};
     nxui::AnimatedFloat m_artworkOpacity{1.f};
-    static constexpr std::size_t kDecodedCacheLimit = 2;
+    // One prefetched neighbour at 1280x720 (~3.5 MiB) instead of two at
+    // 640x360. The two uploaded slots plus this entry are the whole budget.
+    static constexpr std::size_t kDecodedCacheLimit = 1;
     static constexpr std::size_t kMissingCacheLimit = 64;
 };

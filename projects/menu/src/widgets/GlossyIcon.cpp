@@ -511,12 +511,18 @@ void GlossyIcon::onFocusGained() {
     m_focused = true;
     m_focusScale.set(1.075f, 0.18f, nxui::Easing::outBack);
     m_focusGlow.set(1.f, 0.16f, nxui::Easing::outCubic);
+    if (!m_motionPaused)
+        m_shineT = 0.f;
 }
 
 void GlossyIcon::onFocusLost() {
     m_focused = false;
     m_focusScale.set(1.f, 0.20f, nxui::Easing::outCubic);
     m_focusGlow.set(0.f, 0.16f, nxui::Easing::outCubic);
+    // Drop an in-flight sweep too: scrolling fast can hand focus to a new tile
+    // every few frames, and letting each old tile finish would pile many
+    // stepped bands (and their vertices) on screen at once.
+    m_shineT = -1.f;
 }
 
 void GlossyIcon::startAppear(float delay) {
@@ -590,6 +596,14 @@ void GlossyIcon::onContentUpdate(float dt) {
         m_widgetAnimation.update(dt, true);
     if (!m_motionPaused && (m_jiggle || m_jiggleAmount.value() > 0.001f))
         m_jigglePhase += dt;
+    if (m_shineT >= 0.f) {
+        // Short and one-shot: the sweep should read as a reflection catching the
+        // tile as the cursor lands, not as a looping marquee.
+        constexpr float kShineSeconds = 0.55f;
+        m_shineT += dt / kShineSeconds;
+        if (m_shineT >= 1.f)
+            m_shineT = -1.f;
+    }
 }
 
 void GlossyIcon::onRender(nxui::Renderer& ren) {
@@ -646,13 +660,33 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
     float savedOp = m_opacity;
     m_opacity = a * savedOp;
 
-    ren.drawRoundedRect({drawRect.x + 1.f, drawRect.y + m_shadowOffsetY,
-                         drawRect.width, drawRect.height},
-                        nxui::Color(0.02f, 0.04f, 0.06f,
-                                    (m_entryKind == GridEntryKind::Empty ? 0.6f : 1.f)
-                                        * m_shadowAlpha * m_opacity),
-                        cornerRadius() + 1.f);
+    // Focus lift: the tile already scales up, so also deepen and spread the
+    // shadow a touch. Without it the tile inflates but does not rise.
+    const float focusLift = std::clamp((m_focusScale.value() - 1.f) / 0.075f, 0.f, 1.f);
+    const float shadowStrength = (m_entryKind == GridEntryKind::Empty ? 0.6f : 1.f)
+                               * m_shadowAlpha * m_opacity * (1.f + 0.45f * focusLift);
+    if (shadowStrength > 0.001f) {
+        // Three concentric layers: the tile covers their cores, so all that
+        // shows around it is a soft falloff instead of a hard offset copy.
+        constexpr float kSpread[3] = {7.f, 3.5f, 0.f};
+        constexpr float kWeight[3] = {0.34f, 0.58f, 1.f};
+        const nxui::Color shadowColor(0.02f, 0.04f, 0.06f, 1.f);
+        const float offsetY = m_shadowOffsetY + 2.f * focusLift;
+        for (int layer = 0; layer < 3; ++layer) {
+            const float s = kSpread[layer] * (1.f + 0.22f * focusLift);
+            ren.drawRoundedRect({drawRect.x - s * 0.55f,
+                                 drawRect.y + offsetY - s * 0.30f,
+                                 drawRect.width + s * 1.10f,
+                                 drawRect.height + s * 1.30f},
+                                shadowColor.withAlpha(shadowStrength * kWeight[layer]),
+                                cornerRadius() + 1.f + s);
+        }
+    }
     nxui::GlassWidget::onRender(ren);
+
+    if (m_entryKind != GridEntryKind::Empty
+        && m_entryKind != GridEntryKind::WidgetContinuation)
+        drawShine(ren, drawRect, cornerRadius());
 
     // Time played, bottom-right: "12h 30m" / "45m" / "3d". Hidden below a
     // minute so titles that were never played stay clean.
@@ -777,6 +811,265 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
         nxui::Vec2 p2 = { badgeCenter.x - triW * 0.35f, badgeCenter.y + triH * 0.5f };
         nxui::Vec2 p3 = { badgeCenter.x + triW * 0.65f, badgeCenter.y };
         ren.drawTriangle(p1, p2, p3, glow.withAlpha(0.98f * a));
+    }
+}
+
+namespace {
+
+struct BevelSample {
+    float x = 0.f, y = 0.f;
+    float nx = 0.f, ny = 0.f;
+};
+
+// One segment of the bevel band: a quad hanging inward from two outline
+// samples, shaded by whether the surface normal faces the fixed top-left light
+// or away from it. Walking the real rounded-rect outline (straight runs and
+// corner arcs alike) is what makes the highlight run along the top and left and
+// the shadow along the bottom and right with no seam at the corners.
+void bevelSegment(nxui::Renderer& ren, const BevelSample& a, const BevelSample& b,
+                  float thickness, float lightAlpha, float darkAlpha) {
+    if (thickness <= 0.05f)
+        return;
+    const float dx = (a.nx + b.nx) * 0.5f;
+    const float dy = (a.ny + b.ny) * 0.5f;
+    // Light comes from the top-left, so a normal pointing up-left is lit and a
+    // normal pointing down-right is shadowed; the magnitude is the incidence.
+    const float d = dx * -0.6f + dy * -0.8f;
+    const bool light = d >= 0.f;
+    const float alpha = light ? lightAlpha * d : darkAlpha * -d;
+    if (alpha <= 0.002f)
+        return;
+    const nxui::Color c = light ? nxui::Color(1.f, 1.f, 1.f, alpha)
+                                : nxui::Color(0.f, 0.f, 0.f, alpha);
+    const nxui::Vec2 p0{a.x, a.y};
+    const nxui::Vec2 p1{b.x, b.y};
+    const nxui::Vec2 p2{b.x - b.nx * thickness, b.y - b.ny * thickness};
+    const nxui::Vec2 p3{a.x - a.nx * thickness, a.y - a.ny * thickness};
+    ren.drawTriangle(p0, p1, p2, c);
+    ren.drawTriangle(p0, p2, p3, c);
+}
+
+} // namespace
+
+void GlossyIcon::drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r,
+                                  float radius) {
+    if (m_opacity <= 0.01f
+        || (m_vignetteStrength <= 0.001f && m_highlightStrength <= 0.001f
+            && m_depth <= 0.001f))
+        return;
+    const float side = std::min(r.width, r.height);
+    if (side <= 2.f)
+        return;
+    const float rad = std::clamp(radius, 0.f, side * 0.5f);
+
+    // 3D bevel: a band that follows the tile's rounded outline, shaded by a
+    // fixed top-left light. Lit stretches (top, left, top-left corner) get a
+    // white band, the opposite stretches (bottom, right, bottom-right) get a
+    // black one, and the two pass through zero on the top-right and bottom-left
+    // corners where the surface turns away from the light. Because the band is
+    // walked along the outline itself, the highlight and shadow wrap every
+    // corner instead of stopping where the curve begins.
+    if (m_depth > 0.001f) {
+        const float band = std::clamp(side * 0.10f, 5.f, 16.f)
+                         * (0.55f + 0.45f * m_depth);
+        const float line = std::clamp(band * 0.20f, 1.f, 3.f);
+        const float softLight = 0.13f * m_depth * m_opacity;
+        const float softDark = 0.11f * m_depth * m_opacity;
+        const float lineLight = 0.30f * m_depth * m_opacity;
+        const float lineDark = 0.26f * m_depth * m_opacity;
+        const float rr = std::max(0.f, rad);
+        const float x0 = r.x, y0 = r.y, x1 = r.right(), y1 = r.bottom();
+
+        BevelSample prev;
+        bool havePrev = false;
+        auto push = [&](float px, float py, float nx, float ny) {
+            const BevelSample cur{px, py, nx, ny};
+            if (havePrev) {
+                bevelSegment(ren, prev, cur, band, softLight, softDark);
+                bevelSegment(ren, prev, cur, line, lineLight, lineDark);
+            }
+            prev = cur;
+            havePrev = true;
+        };
+        auto edge = [&](float ax, float ay, float bx, float by,
+                        float nx, float ny) {
+            const float len = std::hypot(bx - ax, by - ay);
+            const int steps = std::max(1, static_cast<int>(std::ceil(len / 16.f)));
+            for (int i = 0; i <= steps; ++i) {
+                const float t = static_cast<float>(i) / static_cast<float>(steps);
+                push(ax + (bx - ax) * t, ay + (by - ay) * t, nx, ny);
+            }
+        };
+        auto arc = [&](float cx, float cy, float a0, float a1) {
+            constexpr int kArcSteps = 8;
+            for (int i = 0; i <= kArcSteps; ++i) {
+                const float t = static_cast<float>(i) / kArcSteps;
+                const float a = a0 + (a1 - a0) * t;
+                const float ca = std::cos(a);
+                const float sa = std::sin(a);
+                push(cx + ca * rr, cy + sa * rr, ca, sa);
+            }
+        };
+        constexpr float kPi = 3.14159265f;
+        constexpr float kHalfPi = kPi * 0.5f;
+
+        // Clockwise from the top edge: top, top-right arc, right, bottom-right
+        // arc, bottom, bottom-left arc, left, top-left arc.
+        edge(x0 + rr, y0, x1 - rr, y0, 0.f, -1.f);
+        if (rr > 0.5f) arc(x1 - rr, y0 + rr, -kHalfPi, 0.f);
+        edge(x1, y0 + rr, x1, y1 - rr, 1.f, 0.f);
+        if (rr > 0.5f) arc(x1 - rr, y1 - rr, 0.f, kHalfPi);
+        edge(x1 - rr, y1, x0 + rr, y1, 0.f, 1.f);
+        if (rr > 0.5f) arc(x0 + rr, y1 - rr, kHalfPi, kPi);
+        edge(x0, y1 - rr, x0, y0 + rr, -1.f, 0.f);
+        if (rr > 0.5f) arc(x0 + rr, y0 + rr, kPi, kPi + kHalfPi);
+    }
+
+    // Vignette: a rim that darkens the edge and dissolves inward. The band is
+    // cut into rings roughly one pixel wide and each ring's alpha is the
+    // *average* of the falloff across its own width, so the ramp is the integral
+    // of the gradient instead of a point sample of it. Rings are exactly one
+    // step wide: the old version overlapped them by ~35%, which made every seam
+    // double-cover and read as concentric lines on the artwork. Every ring
+    // follows the tile's own radius, so nothing paints past a rounded corner.
+    if (m_vignetteStrength > 0.001f) {
+        const float band = std::clamp(side * 0.16f, 6.f, 26.f);
+        const int steps = std::clamp(static_cast<int>(std::lround(band * 1.25f)),
+                                     10, 30);
+        const float step = band / static_cast<float>(steps);
+        const float peak = 0.34f * m_vignetteStrength * m_opacity;
+        for (int i = 0; i < steps; ++i) {
+            const float d0 = step * static_cast<float>(i);
+            const float d1 = d0 + step;
+            if (d1 > band + 0.001f)
+                break;
+            const float a0 = 1.f - d0 / band;
+            const float a1 = 1.f - d1 / band;
+            // Mean of the squared falloff over [d0, d1].
+            const float avg = (a0 * a0 + a0 * a1 + a1 * a1) / 3.f;
+            const float mid = d0 + step * 0.5f;
+            const nxui::Rect ring = r.shrunk(mid);
+            if (ring.width <= 2.f || ring.height <= 2.f)
+                break;
+            ren.drawRoundedRectOutline(
+                ring, nxui::Color(0.f, 0.f, 0.f, peak * avg),
+                std::max(0.f, rad - mid), step + 0.3f);
+        }
+    }
+
+    // Highlight: a soft rim light that hugs the tile edge plus a specular catch
+    // along the top. The rim is stepped the same way as the vignette so it fades
+    // smoothly, and the catch light is inset past the corners so it can never
+    // paint a square patch onto a rounded tile.
+    if (m_highlightStrength > 0.001f) {
+        const float band = std::clamp(side * 0.07f, 3.f, 12.f);
+        const int steps = std::clamp(static_cast<int>(std::lround(band * 2.f)),
+                                     8, 24);
+        const float step = band / static_cast<float>(steps);
+        const float peakAlpha = 0.30f * m_highlightStrength * m_opacity;
+        for (int i = 0; i < steps; ++i) {
+            const float d0 = step * static_cast<float>(i);
+            const float d1 = d0 + step;
+            if (d1 > band + 0.001f)
+                break;
+            const float a0 = 1.f - d0 / band;
+            const float a1 = 1.f - d1 / band;
+            const float avg = (a0 * a0 + a0 * a1 + a1 * a1) / 3.f;
+            const float mid = d0 + step * 0.5f;
+            const nxui::Rect ring = r.shrunk(mid);
+            if (ring.width <= 2.f || ring.height <= 2.f)
+                break;
+            ren.drawRoundedRectOutline(
+                ring, nxui::Color(1.f, 1.f, 1.f, peakAlpha * avg),
+                std::max(0.f, rad - mid), step + 0.3f);
+        }
+
+        // Sheen: a pool of light just under the top rim. It ramps in over a few
+        // pixels instead of starting at full strength (that hard top edge is
+        // what read as a drawn line), then tails off over a third of the tile.
+        // Both ends are tucked under the corner arcs, where the rim light is at
+        // its brightest, so their cut-off is not visible.
+        const float inset = std::min(r.width * 0.5f, rad);
+        const float sheenW = std::max(1.f, r.width - inset * 2.f);
+        const float peakH = std::max(3.f, r.height * 0.08f);
+        const float tailH = std::max(4.f, r.height * 0.42f);
+        const nxui::Color clear = nxui::Color(1.f, 1.f, 1.f, 0.f);
+        const nxui::Color peak = nxui::Color(
+            1.f, 1.f, 1.f, 0.16f * m_highlightStrength * m_opacity);
+        const nxui::Rect ramp{r.x + inset, r.y + 0.5f, sheenW, peakH};
+        const nxui::Rect tail{r.x + inset, r.y + 0.5f + peakH, sheenW, tailH};
+        ren.drawGradientRect(ramp, clear, peak);
+        ren.drawGradientRect(tail, peak, clear);
+        // A wider, much fainter veil gives the tile glass body without adding an
+        // edge of its own.
+        const nxui::Rect veil{r.x + inset, r.y + 0.5f + peakH, sheenW,
+                              tailH * 1.6f};
+        ren.drawGradientRect(
+            veil, nxui::Color(1.f, 1.f, 1.f,
+                              0.05f * m_highlightStrength * m_opacity),
+            clear);
+    }
+}
+
+void GlossyIcon::drawShine(nxui::Renderer& ren, const nxui::Rect& r, float radius) {
+    if (m_shineT < 0.f || m_opacity <= 0.01f)
+        return;
+    const float side = std::min(r.width, r.height);
+    if (side <= 6.f)
+        return;
+    const float rad = std::clamp(radius, 0.f, side * 0.5f);
+
+    const float t = std::clamp(m_shineT, 0.f, 1.f);
+    // Smoothstep travel plus a fade at both ends so the band never pops in or
+    // out mid-tile, which would read as a white seam appearing from nowhere.
+    const float travel = t * t * (3.f - 2.f * t);
+    const float fade = std::clamp(std::min(t, 1.f - t) * 5.f, 0.f, 1.f);
+    const float peak = 0.20f * fade * m_opacity;
+    if (peak <= 0.002f)
+        return;
+
+    // The band leans to the right at the top (skew), the way a reflection does
+    // when the light sits above the screen. The margin keeps the leading edge
+    // fully outside the tile before the sweep starts and after it ends.
+    const float halfBand = std::max(6.f, side * 0.09f);
+    const float skew = r.height * 0.35f;
+    const float margin = halfBand + skew * 0.5f;
+    const float centerX = r.x - margin + (r.width + margin * 2.f) * travel;
+
+    // Rows are thin enough that the rounded silhouette is followed closely, and
+    // the band is cut into a handful of alpha steps across its width so the
+    // streak has soft edges instead of a hard-edged bar.
+    const int rows = std::max(6, static_cast<int>(std::lround(r.height / 4.f)));
+    const float rowH = r.height / static_cast<float>(rows);
+    constexpr int kSteps = 8;
+    for (int row = 0; row < rows; ++row) {
+        const float y0 = r.y + rowH * static_cast<float>(row);
+        const float yc = y0 + rowH * 0.5f;
+        // Horizontal reach of the rounded rect on this row, so no light paints
+        // the transparent pixels outside a corner arc.
+        const float dy = std::max(0.f, std::max((r.y + rad) - yc, yc - (r.bottom() - rad)));
+        const float inset = rad - std::sqrt(std::max(0.f, rad * rad - dy * dy));
+        const float xs0 = r.x + inset;
+        const float xs1 = r.right() - inset;
+        if (xs1 <= xs0)
+            continue;
+        const float yFrac = (yc - r.y) / std::max(1.f, r.height);
+        const float cx = centerX + skew * (0.5f - yFrac);
+        for (int i = 0; i < kSteps; ++i) {
+            const float u0 = -1.f + 2.f * static_cast<float>(i) / kSteps;
+            const float u1 = -1.f + 2.f * static_cast<float>(i + 1) / kSteps;
+            const float mid = (u0 + u1) * 0.5f;
+            const float w = 1.f - std::abs(mid);
+            const float a = peak * w * w;
+            if (a <= 0.002f)
+                continue;
+            const float x0 = std::max(xs0, cx + u0 * halfBand);
+            const float x1 = std::min(xs1, cx + u1 * halfBand);
+            if (x1 <= x0)
+                continue;
+            ren.drawRect({x0, y0, x1 - x0, rowH + 0.5f},
+                         nxui::Color(1.f, 1.f, 1.f, a));
+        }
     }
 }
 
@@ -1070,6 +1363,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             ren.drawRoundedRect(card,
                 m_loadingColor.withAlpha(0.18f * m_opacity), contentRadius);
         }
+        drawIconOverlays(ren, card, contentRadius);
         return;
     }
 
@@ -1090,6 +1384,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             ren.drawRoundedRect(card,
                 m_loadingColor.withAlpha(0.18f * m_opacity), contentRadius);
         }
+        drawIconOverlays(ren, card, contentRadius);
         const nxui::Rect logoArea{card.x + 12.f * s,
                                   card.y + card.height * 0.58f,
                                   card.width * 0.58f,
@@ -1174,4 +1469,5 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
         iconTint.b = 0.80f;
     }
     ren.drawTextureRounded(m_tex, texRect, rad - 3.f, iconTint);
+    drawIconOverlays(ren, texRect, std::max(0.f, rad - 3.f));
 }

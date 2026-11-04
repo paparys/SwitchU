@@ -297,9 +297,29 @@ void WaraWaraBackground::regenerate(int count) {
     }
 }
 
+void WaraWaraBackground::setDrift(bool enabled, int speedPercent) {
+    const int speed = std::clamp(speedPercent, 1, 100);
+    // Restart the pass from centre when the drift is switched on, so the first
+    // frame does not jump halfway through a sweep that was never seen.
+    if (enabled && !m_driftEnabled)
+        m_driftPhase = 0.f;
+    const bool changed = m_driftEnabled != enabled || m_driftSpeed != speed;
+    m_driftEnabled = enabled;
+    m_driftSpeed = speed;
+    if (changed)
+        DebugLog::log("[background] drift enabled=%d speed=%d", enabled ? 1 : 0, speed);
+}
+
 void WaraWaraBackground::onUpdate(float dt) {
     if (m_animWallpaper)
         m_animWallpaper->update(dt);
+    if (m_driftEnabled && !m_motionPaused) {
+        // Percent to seconds: 1% crawls a pass in 75 s, 100% in about 12 s.
+        const float period = 75.f - 0.63f * static_cast<float>(m_driftSpeed);
+        m_driftPhase += dt * (6.2831853f / std::max(6.f, period));
+        if (m_driftPhase > 6.2831853f)
+            m_driftPhase -= 6.2831853f;
+    }
     if (m_motionPaused || m_liteSuppressed)
         return;
     m_time += dt;
@@ -335,10 +355,24 @@ nxui::Rect WaraWaraBackground::backgroundImageRect() const {
     float sx = areaW / texW;
     float sy = areaH / texH;
     // Wallpapers always fill the screen; only theme still images may letterbox.
-    const bool cover = m_config.imageCover || hasAnimatedWallpaper();
+    // Drift needs slack, so a letterboxed still is filled while it is on —
+    // sliding a contained image would just rub it against the black bars.
+    const bool cover = m_config.imageCover || hasAnimatedWallpaper() || m_driftEnabled;
     float scale = cover ? std::max(sx, sy) : std::min(sx, sy);
     float drawW = texW * scale;
     float drawH = texH * scale;
+    // Drift needs slack on both sides or the pan would expose the clear colour
+    // at an edge. Overscan the cover art a little and slide it inside that
+    // margin; letterboxed still images (cover == false) stay centred.
+    if (m_driftEnabled && cover) {
+        constexpr float kDriftOverscan = 0.08f;
+        drawW *= 1.f + kDriftOverscan;
+        drawH *= 1.f + kDriftOverscan;
+        const float slack = (drawW - areaW) * 0.5f;
+        const float x = areaX + (areaW - drawW) * 0.5f
+                      + std::sin(m_driftPhase) * slack;
+        return {x, areaY + (areaH - drawH) * 0.5f, drawW, drawH};
+    }
     return {areaX + (areaW - drawW) * 0.5f, areaY + (areaH - drawH) * 0.5f, drawW, drawH};
 }
 

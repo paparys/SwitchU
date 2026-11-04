@@ -74,6 +74,11 @@ public:
     void setMotionPaused(bool paused) { m_motionPaused = paused; }
     bool motionPaused() const { return m_motionPaused; }
 
+    // Slow horizontal pan of the wallpaper/hero art. speedPercent 1..100 maps to
+    // one left-right pass every ~75s down to ~12s.
+    void setDrift(bool enabled, int speedPercent);
+    bool driftEnabled() const { return m_driftEnabled; }
+
     // Lite / Frame Tap: drop animated shapes only; theme wallpaper stays.
     void setLiteSuppressed(bool suppressed);
     bool liteSuppressed() const { return m_liteSuppressed; }
@@ -123,6 +128,10 @@ private:
     nxui::Texture m_backgroundImage;
     std::unique_ptr<class AnimatedWallpaper> m_animWallpaper;
     float m_time = 0.f;
+    bool m_driftEnabled = false;
+    int  m_driftSpeed = 35;
+    // Radians; one full sine cycle is one left-right pass.
+    float m_driftPhase = 0.f;
     bool m_motionPaused = false;
     bool m_liteSuppressed = false;
 };

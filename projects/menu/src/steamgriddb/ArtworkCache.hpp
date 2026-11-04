@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -12,8 +13,15 @@ struct DecodedImage {
     int height = 0;
 };
 
+// `cancel` is polled while scaling and right after the image loads: a request
+// that has been superseded by a newer focus stops early instead of holding the
+// worker (and the next hero's decode) for the whole 1280x720 pass.
+// `useCache == false` skips both the cache read and the cache write: used for
+// the fast-scroll preview, which must not leave a second decoded copy per game
+// on the SD card.
 DecodedImage decode(const std::string& source, int outputWidth, int outputHeight,
-                    bool fill);
+                    bool fill, const std::atomic<bool>* cancel = nullptr,
+                    bool useCache = true);
 bool prepare(const std::string& source, int outputWidth, int outputHeight, bool fill);
 void remove(const std::string& source, int outputWidth, int outputHeight);
 

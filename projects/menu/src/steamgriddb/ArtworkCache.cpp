@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <list>
@@ -16,7 +17,9 @@
 namespace {
 
 constexpr std::uint32_t kArtworkCacheMagic = 0x43415553; // "SUAC"
-constexpr std::uint32_t kArtworkCacheVersion = 1;
+// 2: decode() now samples bilinearly, so every older point-sampled cache is
+// stale and must be rebuilt instead of reused.
+constexpr std::uint32_t kArtworkCacheVersion = 2;
 
 // Decoded fit RGBA in RAM so neighbour poster warm after layout morph skips
 // repeated SD .fit320x480.rgba-cache reads (~10–30ms each). Disk cache remains.
@@ -240,7 +243,7 @@ void saveFit(const std::string& source, int maxWidth, int maxHeight,
 }
 
 bool load(const std::string& source, int width, int height,
-          std::vector<std::uint8_t>& rgba) {
+          std::vector<std::uint8_t>& rgba, const std::atomic<bool>* cancel = nullptr) {
     const SourceStamp stamp = sourceStamp(source);
     if (!stamp.valid) return false;
     const std::string cachePath = cachePathFor(source, width, height);
@@ -262,11 +265,25 @@ bool load(const std::string& source, int width, int height,
         return false;
     }
 
+    // Read in chunks so a superseded request can stop early: at 1280x720 this
+    // is a 3.5 MiB read, the single biggest cost of a cached hero while
+    // scrolling through titles that have already been decoded.
     rgba.resize(static_cast<std::size_t>(expected));
-    input.read(reinterpret_cast<char*>(rgba.data()), static_cast<std::streamsize>(expected));
-    if (!input) {
-        rgba.clear();
-        return false;
+    constexpr std::size_t kChunk = 1u << 20;
+    std::size_t offset = 0;
+    while (offset < rgba.size()) {
+        if (cancel && cancel->load()) {
+            rgba.clear();
+            return false;
+        }
+        const std::size_t block = std::min(kChunk, rgba.size() - offset);
+        input.read(reinterpret_cast<char*>(rgba.data() + offset),
+                   static_cast<std::streamsize>(block));
+        if (!input) {
+            rgba.clear();
+            return false;
+        }
+        offset += block;
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
@@ -322,11 +339,27 @@ void save(const std::string& source, int width, int height,
 namespace steamgriddb::artwork {
 
 DecodedImage decode(const std::string& source, int outputWidth, int outputHeight,
-                    bool fill) {
+                    bool fill, const std::atomic<bool>* cancel, bool useCache) {
     DecodedImage out;
     out.width = std::max(1, outputWidth);
     out.height = std::max(1, outputHeight);
-    if (load(source, out.width, out.height, out.rgba)) return out;
+    auto cacheSave = [useCache](const std::string& file, int w, int h,
+                                const std::vector<std::uint8_t>& pixels) {
+        if (useCache)
+            save(file, w, h, pixels);
+    };
+    if (cancel && cancel->load()) {
+        out.width = 0;
+        out.height = 0;
+        return out;
+    }
+    if (useCache && load(source, out.width, out.height, out.rgba, cancel))
+        return out;
+    if (cancel && cancel->load()) {
+        out.width = 0;
+        out.height = 0;
+        return out;
+    }
 
     const auto loadStarted = std::chrono::steady_clock::now();
     int width = 0, height = 0, channels = 0;
@@ -336,11 +369,19 @@ DecodedImage decode(const std::string& source, int outputWidth, int outputHeight
         return out;
     }
     const auto loadedAt = std::chrono::steady_clock::now();
+    // Bail before the scale pass: the selection has already moved on.
+    if (cancel && cancel->load()) {
+        stbi_image_free(raw);
+        out.rgba.clear();
+        out.width = 0;
+        out.height = 0;
+        return out;
+    }
 
     if (width == out.width && height == out.height) {
         out.rgba.assign(raw, raw + static_cast<std::size_t>(width) * height * 4);
         stbi_image_free(raw);
-        save(source, out.width, out.height, out.rgba);
+        cacheSave(source, out.width, out.height, out.rgba);
         DebugLog::log("[steamgriddb-ui] image path=%s source=%dx%d load=%ldms scale=0ms",
                       source.c_str(), width, height,
                       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -358,36 +399,80 @@ DecodedImage decode(const std::string& source, int outputWidth, int outputHeight
     const float offsetY = (out.height - drawnHeight) * 0.5f;
     const float inverseScale = 1.f / scale;
 
-    std::vector<int> sourceXs(static_cast<std::size_t>(out.width), -1);
-    std::vector<int> sourceYs(static_cast<std::size_t>(out.height), -1);
+    // Bilinear sampling, with the per-axis source maps built once. Doing a
+    // floor() per pixel per channel made the 1280x720 canvas noticeably more
+    // expensive to fill than the old 640x360 one.
+    struct AxisSample {
+        int i0 = 0;
+        int i1 = 0;
+        float f = 0.f;
+        bool valid = true;
+    };
+    std::vector<AxisSample> xAxis(static_cast<std::size_t>(out.width));
+    std::vector<AxisSample> yAxis(static_cast<std::size_t>(out.height));
     for (int x = 0; x < out.width; ++x) {
-        const float pixel = (x - offsetX) * inverseScale;
-        if (fill || (pixel >= 0.f && pixel < width))
-            sourceXs[static_cast<std::size_t>(x)] =
-                std::clamp(static_cast<int>(pixel), 0, width - 1);
+        const float srcX = (static_cast<float>(x) - offsetX) * inverseScale;
+        AxisSample& a = xAxis[static_cast<std::size_t>(x)];
+        if (!fill && (srcX < 0.f || srcX >= static_cast<float>(width))) {
+            a.valid = false;
+            continue;
+        }
+        const int base = static_cast<int>(std::floor(srcX));
+        a.i0 = std::clamp(base, 0, width - 1);
+        a.i1 = std::clamp(base + 1, 0, width - 1);
+        a.f = srcX - static_cast<float>(base);
     }
     for (int y = 0; y < out.height; ++y) {
-        const float pixel = (y - offsetY) * inverseScale;
-        if (fill || (pixel >= 0.f && pixel < height))
-            sourceYs[static_cast<std::size_t>(y)] =
-                std::clamp(static_cast<int>(pixel), 0, height - 1);
+        const float srcY = (static_cast<float>(y) - offsetY) * inverseScale;
+        AxisSample& a = yAxis[static_cast<std::size_t>(y)];
+        if (!fill && (srcY < 0.f || srcY >= static_cast<float>(height))) {
+            a.valid = false;
+            continue;
+        }
+        const int base = static_cast<int>(std::floor(srcY));
+        a.i0 = std::clamp(base, 0, height - 1);
+        a.i1 = std::clamp(base + 1, 0, height - 1);
+        a.f = srcY - static_cast<float>(base);
     }
 
-    const auto* sourcePixels = reinterpret_cast<const std::uint32_t*>(raw);
-    auto* destinationPixels = reinterpret_cast<std::uint32_t*>(out.rgba.data());
     for (int y = 0; y < out.height; ++y) {
-        const int sourceY = sourceYs[static_cast<std::size_t>(y)];
-        if (sourceY < 0) continue;
-        auto* destinationRow = destinationPixels + static_cast<std::size_t>(y) * out.width;
-        const auto* sourceRow = sourcePixels + static_cast<std::size_t>(sourceY) * width;
+        if (cancel && (y & 31) == 0 && cancel->load()) {
+            out.rgba.clear();
+            out.width = 0;
+            out.height = 0;
+            stbi_image_free(raw);
+            return out;
+        }
+        const AxisSample& ya = yAxis[static_cast<std::size_t>(y)];
+        if (!ya.valid) continue;
+        const std::uint8_t* row0 =
+            raw + static_cast<std::size_t>(ya.i0) * static_cast<std::size_t>(width) * 4;
+        const std::uint8_t* row1 =
+            raw + static_cast<std::size_t>(ya.i1) * static_cast<std::size_t>(width) * 4;
+        const float fy = ya.f;
+        const float ny = 1.f - fy;
+        std::uint8_t* destinationRow =
+            out.rgba.data() + static_cast<std::size_t>(y) * out.width * 4;
         for (int x = 0; x < out.width; ++x) {
-            const int sourceX = sourceXs[static_cast<std::size_t>(x)];
-            if (sourceX >= 0) destinationRow[x] = sourceRow[sourceX];
+            const AxisSample& xa = xAxis[static_cast<std::size_t>(x)];
+            if (!xa.valid) continue;
+            const std::uint8_t* p00 = row0 + static_cast<std::size_t>(xa.i0) * 4;
+            const std::uint8_t* p10 = row0 + static_cast<std::size_t>(xa.i1) * 4;
+            const std::uint8_t* p01 = row1 + static_cast<std::size_t>(xa.i0) * 4;
+            const std::uint8_t* p11 = row1 + static_cast<std::size_t>(xa.i1) * 4;
+            const float fx = xa.f;
+            const float nx = 1.f - fx;
+            std::uint8_t* dst = destinationRow + static_cast<std::size_t>(x) * 4;
+            for (int c = 0; c < 4; ++c) {
+                dst[c] = static_cast<std::uint8_t>(
+                    p00[c] * nx * ny + p10[c] * fx * ny
+                    + p01[c] * nx * fy + p11[c] * fx * fy + 0.5f);
+            }
         }
     }
     const auto scaledAt = std::chrono::steady_clock::now();
     stbi_image_free(raw);
-    save(source, out.width, out.height, out.rgba);
+    cacheSave(source, out.width, out.height, out.rgba);
     DebugLog::log("[steamgriddb-ui] image path=%s source=%dx%d load=%ldms scale=%ldms",
                   source.c_str(), width, height,
                   std::chrono::duration_cast<std::chrono::milliseconds>(

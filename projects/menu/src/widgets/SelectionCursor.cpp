@@ -182,6 +182,8 @@ void SelectionCursor::onRender(nxui::Renderer& ren) {
         cr += 4.f * arrival;
     }
 
+    const nxui::Color ringColor = m_color;
+
     float wave = std::sin(m_time * m_waveSpeed) * 0.5f + 0.5f;
     const float outerAlpha = (0.28f + 0.22f * wave) * m_opacity;
     const float innerAlpha = (0.72f + 0.20f * wave) * m_opacity;
@@ -189,13 +191,13 @@ void SelectionCursor::onRender(nxui::Renderer& ren) {
     if (arrival > 0.01f) {
         ren.drawRoundedRectOutline(
             r.expanded(7.f * arrival),
-            m_color.withAlpha(0.28f * arrival * m_opacity),
+            ringColor.withAlpha(0.28f * arrival * m_opacity),
             cr + 7.f * arrival, 2.f);
     }
     ren.drawRoundedRectOutline(r.expanded(5.f),
-                               m_color.withAlpha(outerAlpha * 0.55f),
+                               ringColor.withAlpha(outerAlpha * 0.55f),
                                cr + 5.f, m_borderWidth + 1.5f);
     ren.drawRoundedRectOutline(r.expanded(2.f),
-                               m_color.withAlpha(innerAlpha),
+                               ringColor.withAlpha(innerAlpha),
                                cr + 2.f, m_borderWidth);
 }
