@@ -31,6 +31,12 @@ vec3 saturateColor(vec3 color, float amount) {
     return mix(vec3(luminance), color, amount);
 }
 
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 vec4 overlappingBlur(vec2 uv, vec2 texel, float spread) {
     vec2 a = texel * spread * 1.25;
     vec2 b = texel * spread * 2.35;
@@ -95,6 +101,15 @@ void main() {
     float unavailable = clamp(screenSize.z, 0.0, 1.0);
     float luminance = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     color.rgb = mix(color.rgb, vec3(luminance) * 0.82, unavailable * 0.42);
+
+    // Fine frost grain. Frosted acrylic has micro-texture; without it a glass
+    // plate reads as tinted plastic and the refraction blur looks flat. Two
+    // offset hashes keep the pattern from repeating visibly.
+    if (noiseIntensity > 0.0001) {
+        float grain = hash12(gl_FragCoord.xy)
+                    + hash12(gl_FragCoord.xy + vec2(31.7, 47.3)) - 1.0;
+        color.rgb = clamp(color.rgb + grain * noiseIntensity * 0.5, 0.0, 1.0);
+    }
     color.a = coverage;
     outColor = color * fragColor;
 }

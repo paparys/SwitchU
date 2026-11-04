@@ -22,12 +22,34 @@ float sdRoundedBox(vec2 p, vec2 halfExtent, float radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
+// 4x4 ordered dither plus white noise. Large soft gradients (the background
+// wash, scrims, the corner vignette) band visibly in 8-bit output; one LSB of
+// screen-space noise breaks the stair-steps without reading as grain.
+float bayer4(vec2 p) {
+    int x = int(mod(p.x, 4.0));
+    int y = int(mod(p.y, 4.0));
+    const float m[16] = float[16](
+         0.0,  8.0,  2.0, 10.0,
+        12.0,  4.0, 14.0,  6.0,
+         3.0, 11.0,  1.0,  9.0,
+        15.0,  7.0, 13.0,  5.0);
+    return m[y * 4 + x] / 16.0;
+}
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 void main() {
     vec4 c = (useTexture != 0) ? texture(tex, fragUV) * fragColor : fragColor;
     float radius = fragShapeRound.x;
     if (radius > 0.0) {
         float distanceToEdge = sdRoundedBox(fragShapePos, fragShapeHalf, radius);
-        float ramp = max(length(vec2(dFdx(distanceToEdge), dFdy(distanceToEdge))), 1e-5);
+        // Floor the AA band at most of a pixel: a derivative that collapses on
+        // an axis-aligned edge would otherwise cut a hard, crawling line.
+        float ramp = max(length(vec2(dFdx(distanceToEdge), dFdy(distanceToEdge))), 0.75);
         float thickness = fragShapeRound.y;
         if (thickness > 0.0) {
             float halfStroke = max(thickness, 1.0) * 0.5;
@@ -38,5 +60,10 @@ void main() {
         }
     }
     if (c.a <= 0.0) discard;
+
+    float d = (bayer4(gl_FragCoord.xy) - 0.5
+             + hash12(gl_FragCoord.xy) - 0.5) * (0.6 / 255.0);
+    c.a = clamp(c.a + d, 0.0, 1.0);
+    c.rgb = clamp(c.rgb + d * c.a, 0.0, 1.0);
     outColor = c;
 }
