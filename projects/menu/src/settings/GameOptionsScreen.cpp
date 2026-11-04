@@ -72,6 +72,42 @@ void GameOptionsScreen::buildTabs() {
         data.items.push_back(std::move(move));
     }
 
+    SettingItem shortcut;
+    shortcut.label = m_shortcutPinned
+        ? i18n.tr("game.shortcut_remove", "Remove from shortcuts")
+        : i18n.tr("game.shortcut_add", "Add to shortcuts");
+    shortcut.buttonLabel = m_shortcutPinned
+        ? i18n.tr("button.remove", "Remove")
+        : i18n.tr("button.add", "Add");
+    shortcut.description = i18n.tr("game.shortcut_desc",
+        "Puts this title in the shortcut row on HOME. There are six slots; "
+        "the shortcut opens the game.");
+    shortcut.type = ItemType::Action;
+    shortcut.onChange = [this](SettingItem&) {
+        if (m_shortcutCb) m_shortcutCb();
+    };
+    data.items.push_back(std::move(shortcut));
+
+    SettingItem rename;
+    rename.label = i18n.tr("game.rename", "Rename game");
+    rename.buttonLabel = i18n.tr("button.rename", "Rename");
+    rename.description = i18n.tr("game.rename_desc",
+        "Changes the name shown on HOME and in the carousel. The title itself "
+        "is untouched.");
+    rename.type = ItemType::Action;
+    rename.onChange = [this](SettingItem&) { if (m_renameCb) m_renameCb(); };
+    data.items.push_back(std::move(rename));
+
+    SettingItem hide;
+    hide.label = i18n.tr("game.hide_from_home", "Hide from HOME");
+    hide.buttonLabel = i18n.tr("button.hide", "Hide");
+    hide.description = i18n.tr("game.hide_desc",
+        "Removes this title from the HOME menu. It stays installed and can be "
+        "brought back from Settings > Hidden Games.");
+    hide.type = ItemType::Action;
+    hide.onChange = [this](SettingItem&) { if (m_hideCb) m_hideCb(); };
+    data.items.push_back(std::move(hide));
+
     if (m_game.canResize) {
         SettingItem size;
         size.label = i18n.tr("game.tile_size", "Tile size");
@@ -211,4 +247,12 @@ void GameOptionsScreen::drawOverlayHeader(nxui::Renderer& ren, const nxui::Rect&
     float dividerY = panel.y + pad + overlayHeaderHeight() - 14.f;
     ren.drawRoundedRect({panel.x + pad, dividerY, panel.width - pad * 2.f, 1.5f},
                         m_theme->panelBorder.withAlpha(0.25f * opacity), 0.75f);
+}
+
+void GameOptionsScreen::setShortcutPinned(bool pinned) {
+    if (m_shortcutPinned == pinned)
+        return;
+    m_shortcutPinned = pinned;
+    if (isActive())
+        rebuildCurrentTab();
 }

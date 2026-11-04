@@ -36,6 +36,11 @@ public:
     void onResize(IntCb cb) { m_resizeCb = std::move(cb); }
     void onCloseSoftware(VoidCb cb) { m_closeSoftwareCb = std::move(cb); }
     void onDeleteSoftware(VoidCb cb) { m_deleteSoftwareCb = std::move(cb); }
+    void onToggleShortcut(VoidCb cb) { m_shortcutCb = std::move(cb); }
+    void onHideFromHome(VoidCb cb) { m_hideCb = std::move(cb); }
+    void onRenameGame(VoidCb cb) { m_renameCb = std::move(cb); }
+    void setShortcutPinned(bool pinned);
+    bool shortcutPinned() const { return m_shortcutPinned; }
     void onSelectArtwork(std::function<void(ArtworkKind)> cb) {
         m_selectArtworkCb = std::move(cb);
     }
@@ -55,6 +60,10 @@ private:
     IntCb m_resizeCb;
     VoidCb m_closeSoftwareCb;
     VoidCb m_deleteSoftwareCb;
+    VoidCb m_shortcutCb;
+    VoidCb m_hideCb;
+    VoidCb m_renameCb;
+    bool m_shortcutPinned = false;
     std::function<void(ArtworkKind)> m_selectArtworkCb;
     std::function<void(ArtworkKind)> m_clearArtworkCb;
 };

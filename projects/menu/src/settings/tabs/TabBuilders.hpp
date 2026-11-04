@@ -6,6 +6,11 @@
 
 namespace settings::tabs {
 
+class HiddenGamesTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
 class SystemTab {
 public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
@@ -66,6 +71,36 @@ public:
 };
 
 class AboutTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class LayoutTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class TreatmentTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class AppearanceTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class ShortcutsTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class DockedTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class LockScreenTab {
 public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };

@@ -312,6 +312,19 @@ void TabbedOverlayScreen::onPressX() {
     if (rawIdx < 0 || rawIdx >= (int)items.size())
         return;
     auto& item = items[rawIdx];
+    // X on a slider with a stock value puts it back, so a long nudging session
+    // never leaves someone dragging by eye to find the default again.
+    if (item.type == ItemType::Slider && item.hasReset) {
+        if (item.floatVal != item.resetValue) {
+            item.floatVal = item.resetValue;
+            item.anim01 = item.resetValue;
+            if (item.onChange)
+                item.onChange(item);
+            if (m_sliderSfxCb) m_sliderSfxCb(item.resetValue > 0.5f);
+            announceCurrentFocus();
+        }
+        return;
+    }
     if (item.type != ItemType::Action || !item.hasSecondaryAction())
         return;
     item.actionButtonFocus = 1;
@@ -1238,6 +1251,18 @@ void TabbedOverlayScreen::onContentUpdate(float dt) {
                 m_trackToastAnim.set(0.f, 0.35f, nxui::Easing::outCubic);
                 m_trackToastFading = true;
             }
+        }
+    }
+
+    // Queue pump. This is the only place that knows a toast has actually left
+    // the screen, so it is where the next waiting message is promoted.
+    if (m_trackToastFading && m_trackToastAnim.value() <= 0.01f) {
+        m_trackToastFading = false;
+        m_toastText.clear();
+        if (!m_toastQueue.empty()) {
+            const auto next = m_toastQueue.front();
+            m_toastQueue.pop_front();
+            showToastNow(next.first, next.second);
         }
     }
 

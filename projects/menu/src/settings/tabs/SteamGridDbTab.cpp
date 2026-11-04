@@ -139,6 +139,9 @@ SettingsScreen::Tab settings::tabs::SteamGridDbTab::build(SettingsScreen& screen
     };
     tab.items.push_back(std::move(scan));
 
+    // The 16:9 / 4:3 shape filter lives in the artwork picker, next to the
+    // search it affects (Y cycles it there).
+
     tab.onUpdate = [](SettingsScreen::Tab& current, TabbedOverlayScreen& base) {
         auto& owner = static_cast<SettingsScreen&>(base);
         // Section, master, 3 view toggles, poster, logo, API key, scan

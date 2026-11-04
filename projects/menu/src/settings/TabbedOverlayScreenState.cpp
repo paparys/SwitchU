@@ -112,8 +112,25 @@ void TabbedOverlayScreen::requestTextEntry(
 
 void TabbedOverlayScreen::requestToast(const std::string& msg, float holdSeconds) {
     if (msg.empty()) return;
+    // A toast already on screen (or waiting) means this one has to wait its
+    // turn. Overwriting was why a burst of messages - SteamGridDB filters, save
+    // confirmations - left only the last one visible, sometimes for one frame.
+    const bool busy = m_trackToastAnim.value() > 0.01f
+                   || !m_toastText.empty() || !m_toastQueue.empty();
+    if (!busy) {
+        showToastNow(msg, holdSeconds);
+        return;
+    }
+    if (!m_toastQueue.empty() && m_toastQueue.back().first == msg)
+        return; // identical repeat: coalesce rather than queue twice
+    if (m_toastQueue.size() >= 4)
+        m_toastQueue.pop_front(); // bounded, oldest waiting message loses
+    m_toastQueue.emplace_back(msg, std::max(0.f, holdSeconds));
+}
+
+void TabbedOverlayScreen::showToastNow(const std::string& msg, float holdSeconds) {
     m_toastText = msg;
-    m_trackToastHold = std::max(0.f, holdSeconds);
+    m_trackToastHold = std::max(0.05f, holdSeconds);
     m_trackToastFading = false;
     m_trackToastAnim.setImmediate(1.f);
 }

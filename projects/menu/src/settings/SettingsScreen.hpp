@@ -16,6 +16,10 @@ class BluetoothTab;
 class SleepTab;
 class StorageTab;
 class AboutTab;
+class LayoutTab;
+class TreatmentTab;
+class AppearanceTab;
+class ShortcutsTab;
 }
 
 class SettingsScreen : public TabbedOverlayScreen {
@@ -46,6 +50,156 @@ public:
     void onAccessibilitySpeechRateChange(IntCb cb) { m_accessibilitySpeechRateCb = std::move(cb); }
     void onNetConnect(VoidCb cb)        { m_netConnectCb = std::move(cb); }
     void onSteamGridDbEnabledChange(BoolCb cb) { m_steamGridDbEnabledCb = std::move(cb); }
+    void onSteamGridDbAspectChange(IntCb cb) { m_steamGridDbAspectCb = std::move(cb); }
+    void onIconAspectChange(IntCb cb) { m_iconAspectCb = std::move(cb); }
+    void onIconCornersChange(IntCb cb) { m_iconCornersCb = std::move(cb); }
+    void onIconCornerPctChange(IntCb cb) { m_iconCornerPctCb = std::move(cb); }
+    void onGridNudgeChange(IntCb cb) { m_gridNudgeCb = std::move(cb); }
+    void onLineNudgeChange(IntCb cb) { m_lineNudgeCb = std::move(cb); }
+    void onIconScaleChange(IntCb cb) { m_iconScaleCb = std::move(cb); }
+    void onSidebarScaleChange(IntCb cb) { m_sidebarScaleCb = std::move(cb); }
+    void onSortModeChange(IntCb cb) { m_sortModeCb = std::move(cb); }
+    void onAlphaOrderChange(BoolCb cb) { m_alphaOrderCb = std::move(cb); }
+    void setAlphaOrderState(bool on) { m_alphaOrder = on; }
+    bool alphaOrder() const { return m_alphaOrder; }
+    void setAlphaOrder(bool on) { m_alphaOrder = on; }
+    void notifyAlphaOrder(bool on) { if (m_alphaOrderCb) m_alphaOrderCb(on); }
+    void onDockedSizeOverridesChange(BoolCb cb) { m_dockedOverridesCb = std::move(cb); }
+    void onDockedIconScaleChange(IntCb cb) { m_dockedIconCb = std::move(cb); }
+    void onDockedShortcutScaleChange(IntCb cb) { m_dockedShortcutCb = std::move(cb); }
+    void setDockedState(bool overrides, int iconScale, int shortcutScale) {
+        m_dockedOverrides = overrides;
+        m_dockedIconScale = std::clamp(iconScale, 70, 130);
+        m_dockedShortcutScale = std::clamp(shortcutScale, 70, 150);
+    }
+    void setSortModeState(int mode) { m_sortMode = std::clamp(mode, 0, 2); }
+    void setHiddenGamesState(const std::vector<std::pair<std::uint64_t, std::string>>& games) {
+        m_hiddenGames = games;
+    }
+    const std::vector<std::pair<std::uint64_t, std::string>>& hiddenGames() const { return m_hiddenGames; }
+    void onRestoreHiddenGame(std::function<void(std::uint64_t)> cb) { m_restoreHiddenCb = std::move(cb); }
+    void notifyRestoreHidden(std::uint64_t id) { if (m_restoreHiddenCb) m_restoreHiddenCb(id); }
+    bool dockedSizeOverrides() const { return m_dockedOverrides; }
+    void setDockedSizeOverrides(bool on) { m_dockedOverrides = on; }
+    int dockedIconScale() const { return m_dockedIconScale; }
+    int dockedShortcutScale() const { return m_dockedShortcutScale; }
+    void setDockedIconScale(int v) { m_dockedIconScale = std::clamp(v, 70, 130); }
+    void setDockedShortcutScale(int v) { m_dockedShortcutScale = std::clamp(v, 70, 150); }
+    void notifyDockedOverrides(bool on) { if (m_dockedOverridesCb) m_dockedOverridesCb(on); }
+    void notifyDockedIcon(int v) { if (m_dockedIconCb) m_dockedIconCb(v); }
+    void notifyDockedShortcut(int v) { if (m_dockedShortcutCb) m_dockedShortcutCb(v); }
+    void onLockPadCodeChange(std::function<void(bool, const std::string&)> cb) {
+        m_lockPadCodeCb = std::move(cb);
+    }
+    void onShortcutEdgeChange(IntCb cb) { m_shortcutEdgeCb = std::move(cb); }
+    void onShortcutNudgeChange(IntCb cb) { m_shortcutNudgeXCb = std::move(cb); }
+    void onShortcutNudgeRightChange(IntCb cb) {
+        m_shortcutNudgeXCbRight = std::move(cb);
+    }
+    void onShortcutStripChange(BoolCb cb) { m_shortcutStripCb = std::move(cb); }
+    void onShortcutNudgeYChange(IntCb cb) { m_shortcutNudgeYCb = std::move(cb); }
+    void onIconSpacingChange(IntCb cb) { m_iconSpacingCb = std::move(cb); }
+    void onCarouselDepthChange(IntCb cb) { m_carouselDepthCb = std::move(cb); }
+    void onLineNudgeXChange(IntCb cb) { m_lineNudgeXCb = std::move(cb); }
+    void onSaveLayoutPreset(IntCb cb) { m_saveLayoutPresetCb = std::move(cb); }
+    void onLoadLayoutPreset(IntCb cb) { m_loadLayoutPresetCb = std::move(cb); }
+    void onResetIconLayout(VoidCb cb) { m_resetIconLayoutCb = std::move(cb); }
+    void onWallpaperDimChange(IntCb cb) { m_wallpaperDimCb = std::move(cb); }
+    void onVignetteChange(IntCb cb) { m_vignetteCb = std::move(cb); }
+    void onUiRadiusPctChange(IntCb cb) { m_uiRadiusPctCb = std::move(cb); }
+    void onIconShadowChange(VoidCb cb) { m_iconShadowCb = std::move(cb); }
+    void onMotionStyleChange(IntCb cb) { m_motionStyleCb = std::move(cb); }
+    void onCarouselFadeChange(IntCb cb) { m_carouselFadeCb = std::move(cb); }
+    void onTitlePillNudgeChange(IntCb cb) { m_titlePillNudgeCb = std::move(cb); }
+    void onTitlePillNudgeYChange(IntCb cb) { m_titlePillNudgeYCb = std::move(cb); }
+    void onGameTitleVisibilityChange(BoolCb cb) {
+        m_gameTitleVisibilityCb = std::move(cb);
+    }
+    void onHideActionHintsChange(BoolCb cb) { m_hideActionHintsCb = std::move(cb); }
+    void onHudScaleChange(IntCb cb) { m_hudScaleCb = std::move(cb); }
+    void onClockScaleChange(IntCb cb) { m_clockScaleCb = std::move(cb); }
+    void onClockNudgeXChange(IntCb cb) { m_clockNudgeXCb = std::move(cb); }
+    void onClockNudgeYChange(IntCb cb) { m_clockNudgeYCb = std::move(cb); }
+    int iconShadowOffset() const { return m_iconShadowOffset; }
+    int iconShadowAlpha() const { return m_iconShadowAlpha; }
+    void onWallpaperCycle(VoidCb cb) { m_wallpaperCycleCb = std::move(cb); }
+    void onWallpaperAnimatedChange(BoolCb cb) { m_wallpaperAnimatedCb = std::move(cb); }
+    void onWallpaperFpsChange(IntCb cb) { m_wallpaperFpsCb = std::move(cb); }
+    void setIconPresentationState(int aspect, int corners, int gridNudge, int lineNudge,
+                                  int iconScale = 100, int iconSpacing = 0,
+                                  int carouselDepth = 0, int lineNudgeX = 0) {
+        m_iconAspect = std::clamp(aspect, 0, 2);
+        m_iconCorners = std::clamp(corners, 0, 1);
+        m_gridNudgeX = std::clamp(gridNudge, -25, 25);
+        m_lineNudgeY = std::clamp(lineNudge, -25, 25);
+        m_iconScale = std::clamp(iconScale, 70, 130);
+        m_iconSpacing = std::clamp(iconSpacing, -50, 100);
+        m_carouselDepth = std::clamp(carouselDepth, -100, 100);
+        m_lineNudgeX = std::clamp(lineNudgeX, -25, 25);
+    }
+    void setWallpaperState(const std::string& path, bool animated, int fps) {
+        m_wallpaperPath = path;
+        m_wallpaperAnimated = animated;
+        m_wallpaperFps = std::clamp(fps, 5, 30);
+    }
+    void setIconCornerPctState(int pct) {
+        m_iconCornerPct = std::clamp(pct, 0, 100);
+    }
+    void setSidebarScaleState(int pct) { m_sidebarScale = std::clamp(pct, 70, 150); }
+    void setLockPadCodeState(bool enabled, const std::string& code) {
+        m_lockPadCodeEnabled = enabled;
+        m_lockPadCode.clear();
+        for (char c : code) {
+            if ((c == 'U' || c == 'D' || c == 'L' || c == 'R') && m_lockPadCode.size() < 4)
+                m_lockPadCode.push_back(c);
+        }
+        while (m_lockPadCode.size() < 4)
+            m_lockPadCode.push_back('U');
+    }
+    void setLockPadCodeEnabledState(bool enabled) { m_lockPadCodeEnabled = enabled; }
+    void setLockPadCodeStep(int index, char step) {
+        if (index >= 0 && index < static_cast<int>(m_lockPadCode.size()))
+            m_lockPadCode[static_cast<std::size_t>(index)] = step;
+    }
+    void notifyLockPadCodeChange() {
+        if (m_lockPadCodeCb)
+            m_lockPadCodeCb(m_lockPadCodeEnabled, m_lockPadCode);
+    }
+    bool lockPadCodeEnabled() const { return m_lockPadCodeEnabled; }
+    const std::string& lockPadCode() const { return m_lockPadCode; }
+    void setShortcutLayoutState(int edge, int nudgeLeft, int nudgeRight) {
+        m_shortcutEdge = std::clamp(edge, 0, 1);
+        m_shortcutNudgeX = std::clamp(nudgeLeft, -25, 25);
+        m_shortcutNudgeXRight = std::clamp(nudgeRight, -25, 25);
+    }
+    void setShortcutStripState(bool on) { m_shortcutStrip = on; }
+    void setShortcutNudgeYState(int px) {
+        m_shortcutNudgeY = (std::clamp(px, -24, 24) / 2) * 2;
+    }
+    void setHudChromeState(bool hideHints, int scale) {
+        m_hideActionHints = hideHints;
+        m_hudScale = std::clamp(scale, 70, 160);
+    }
+    void setClockLayoutState(int nudgeX, int scale) {
+        m_clockNudgeX = std::clamp(nudgeX, -25, 25);
+        m_clockScale = std::clamp(scale, 70, 160);
+    }
+    void setClockVerticalState(int px) { m_clockNudgeY = std::clamp(px, -14, 14); }
+    void setVisualTreatmentState(int dim, int vignette, int radiusPct) {
+        m_wallpaperDim = std::clamp(dim, 0, 100);
+        m_vignette = std::clamp(vignette, 0, 100);
+        m_uiRadiusPct = std::clamp(radiusPct, 50, 200);
+    }
+    void setMotionStyleState(int style) { m_motionStyle = std::clamp(style, 0, 2); }
+    void setCarouselFadeState(int fade) { m_carouselFade = std::clamp(fade, 0, 100); }
+    void setTitlePillNudgeState(int nudgeX, int nudgeY) {
+        m_titlePillNudgeX = std::clamp(nudgeX, -25, 25);
+        m_titlePillNudgeY = std::clamp(nudgeY, -25, 25);
+    }
+    void setGameTitleVisibilityState(bool show) { m_showGameTitle = show; }
+    void setSteamGridDbAspectState(int aspect) {
+        m_steamGridDbAspect = std::clamp(aspect, 0, 3);
+    }
     void onSteamGridDbViewFlagsChange(std::function<void(bool, bool, bool)> cb) {
         m_steamGridDbViewFlagsCb = std::move(cb);
     }
@@ -137,6 +291,10 @@ private:
     friend class settings::tabs::SleepTab;
     friend class settings::tabs::StorageTab;
     friend class settings::tabs::AboutTab;
+    friend class settings::tabs::AppearanceTab;
+    friend class settings::tabs::LayoutTab;
+    friend class settings::tabs::TreatmentTab;
+    friend class settings::tabs::ShortcutsTab;
 
     BoolCb m_wireframeCb;
     IntCb m_gridColumnsCb;
@@ -152,6 +310,62 @@ private:
     BoolCb m_accessibilitySpeakPositionCb;
     IntCb m_accessibilitySpeechRateCb;
     VoidCb m_netConnectCb;
+    IntCb m_steamGridDbAspectCb;
+    IntCb m_iconAspectCb;
+    IntCb m_iconCornersCb;
+    IntCb m_iconCornerPctCb;
+    IntCb m_gridNudgeCb;
+    IntCb m_lineNudgeCb;
+    IntCb m_iconScaleCb;
+    IntCb m_sidebarScaleCb;
+    std::function<void(bool, const std::string&)> m_lockPadCodeCb;
+    std::function<void(std::uint64_t)> m_restoreHiddenCb;
+    IntCb m_sortModeCb;
+    BoolCb m_alphaOrderCb;
+    bool m_alphaOrder = false;
+    BoolCb m_dockedOverridesCb;
+    IntCb m_dockedIconCb;
+    IntCb m_dockedShortcutCb;
+    bool m_dockedOverrides = true;
+    int m_dockedIconScale = 100;
+    int m_dockedShortcutScale = 100;
+    int m_sortMode = 0;
+    std::vector<std::pair<std::uint64_t, std::string>> m_hiddenGames;
+    IntCb m_shortcutEdgeCb;
+    IntCb m_shortcutNudgeXCb;
+    IntCb m_shortcutNudgeXCbRight;
+    BoolCb m_shortcutStripCb;
+    bool m_shortcutStrip = true;
+    BoolCb m_hideActionHintsCb;
+    IntCb m_hudScaleCb;
+    bool m_hideActionHints = false;
+    int m_hudScale = 100;
+    int m_clockScale = 100;
+    int m_clockNudgeX = 0;
+    int m_clockNudgeY = 0;
+    IntCb m_clockNudgeYCb;
+    IntCb m_clockScaleCb;
+    IntCb m_clockNudgeXCb;
+    int m_shortcutNudgeY = 0;
+    IntCb m_shortcutNudgeYCb;
+    IntCb m_iconSpacingCb;
+    IntCb m_carouselDepthCb;
+    IntCb m_lineNudgeXCb;
+    IntCb m_saveLayoutPresetCb;
+    IntCb m_loadLayoutPresetCb;
+    VoidCb m_resetIconLayoutCb;
+    VoidCb m_iconShadowCb;
+    IntCb m_motionStyleCb;
+    IntCb m_carouselFadeCb;
+    IntCb m_titlePillNudgeCb;
+    IntCb m_titlePillNudgeYCb;
+    BoolCb m_gameTitleVisibilityCb;
+    IntCb m_wallpaperDimCb;
+    IntCb m_vignetteCb;
+    IntCb m_uiRadiusPctCb;
+    VoidCb m_wallpaperCycleCb;
+    BoolCb m_wallpaperAnimatedCb;
+    IntCb m_wallpaperFpsCb;
     BoolCb m_steamGridDbEnabledCb;
     std::function<void(bool, bool, bool)> m_steamGridDbViewFlagsCb;
     BoolCb m_steamGridDbPosterInLineCb;
@@ -178,6 +392,35 @@ private:
     bool m_accessibilitySpeakContextEveryFocus = false;
     bool m_accessibilitySpeakPosition = true;
     int m_accessibilitySpeechRate = 190;
+    int m_steamGridDbAspect = 0;
+    int m_iconAspect = 0;
+    int m_iconCorners = 0;
+    int m_iconCornerPct = 100;
+    int m_wallpaperDim = 0;
+    int m_vignette = 0;
+    int m_uiRadiusPct = 100;
+    int m_iconShadowOffset = 6;
+    int m_iconShadowAlpha = 20;
+    int m_motionStyle = 1;
+    int m_carouselFade = 50;
+    int m_titlePillNudgeX = 0;
+    int m_titlePillNudgeY = 0;
+    bool m_showGameTitle = true;
+    int m_gridNudgeX = 0;
+    int m_lineNudgeY = 0;
+    int m_iconScale = 100;
+    int m_sidebarScale = 100;
+    bool m_lockPadCodeEnabled = false;
+    std::string m_lockPadCode = "UDLR";
+    int m_shortcutEdge = 0;
+    int m_shortcutNudgeX = 0;
+    int m_shortcutNudgeXRight = 0;
+    int m_iconSpacing = 0;
+    int m_carouselDepth = 0;
+    int m_lineNudgeX = 0;
+    std::string m_wallpaperPath;
+    bool m_wallpaperAnimated = true;
+    int m_wallpaperFps = 15;
     bool m_steamGridDbEnabled = true;
     bool m_steamGridDbShowInGrid = true;
     bool m_steamGridDbShowInDynamicLine = true;

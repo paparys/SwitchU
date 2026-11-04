@@ -100,6 +100,11 @@ SteamGridDbPickerScreen::SteamGridDbPickerScreen(nxui::GpuDevice& gpu,
         if (m_searchCb) m_searchCb();
     });
     addAction(static_cast<std::uint64_t>(nxui::Button::B), [this]() { goBack(); });
+    // Shape filter: Y cycles Any -> 16:9 -> both -> 4:3 without leaving the
+    // artwork browser, so 16:9 / 4:3 results are one press from a search.
+    addAction(static_cast<std::uint64_t>(nxui::Button::Y), [this]() {
+        if (m_shapeCycleCb) m_shapeCycleCb();
+    });
     addAction(static_cast<std::uint64_t>(nxui::Button::ZL), [this]() { adjustZoom(-1); });
     addAction(static_cast<std::uint64_t>(nxui::Button::ZR), [this]() { adjustZoom(+1); });
 }

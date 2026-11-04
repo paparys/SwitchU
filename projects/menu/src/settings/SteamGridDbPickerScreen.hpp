@@ -46,6 +46,8 @@ public:
 
     void onClosed(std::function<void()> cb) { m_closedCb = std::move(cb); }
     void onSearch(std::function<void()> cb) { m_searchCb = std::move(cb); }
+    // Y cycles the 16:9 / 4:3 artwork filter; handled by the owner.
+    void onShapeCycle(std::function<void()> cb) { m_shapeCycleCb = std::move(cb); }
     void onApply(std::function<void(const BrowseResult&, const Candidate&)> cb) {
         m_applyCb = std::move(cb);
     }
@@ -118,6 +120,7 @@ private:
     float m_spinner = 0.f;
     std::function<void()> m_closedCb;
     std::function<void()> m_searchCb;
+    std::function<void()> m_shapeCycleCb;
     std::function<void(const BrowseResult&, const Candidate&)> m_applyCb;
     std::function<void(const BrowseResult&, const GameMatch&)> m_pickGameCb;
 };

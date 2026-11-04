@@ -560,7 +560,17 @@ protected:
         }
 
         int pct = (int)std::round(t * 100.f);
-        std::string pctText = m_item.infoText.empty() ? (std::to_string(pct) + "%") : m_item.infoText;
+        std::string pctText;
+        if (!m_item.infoText.empty()) {
+            pctText = m_item.infoText;
+        } else if (m_item.valueSpan != 0) {
+            const int value = m_item.valueBase
+                + static_cast<int>(std::lround(t * static_cast<float>(m_item.valueSpan)));
+            pctText = (m_item.valueSigned && value > 0 ? "+" : "")
+                + std::to_string(value) + m_item.valueSuffix;
+        } else {
+            pctText = std::to_string(pct) + "%";
+        }
         if (pctText != m_cachedPctText) {
             m_cachedPctText = pctText;
             m_pct->setText(m_cachedPctText);
@@ -569,6 +579,13 @@ protected:
             m_cachedPctFont = rowSmallFont;
             if (rowSmallFont)
                 m_pct->setFont(rowSmallFont);
+        }
+
+        if (rowTheme) {
+            const bool modified = m_item.hasReset
+                && std::abs(t - m_item.resetValue) > 0.005f;
+            m_pct->setTextColor(modified ? rowTheme->cursorNormal
+                                         : rowTheme->textPrimary);
         }
 
         m_track->setRect(trackRect);

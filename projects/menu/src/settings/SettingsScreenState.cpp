@@ -22,6 +22,7 @@ bool isRetriableClockSyncError(const std::string& error) {
 void SettingsScreen::buildTabs() {
     auto& i18n = nxui::I18n::instance();
     m_tabs = {
+        {.name = i18n.tr("settings.tabs.hidden", "Hidden Games")},
         {.name = i18n.tr("settings.tabs.system", "System")},
         {.name = i18n.tr("settings.tabs.accessibility", "Accessibility")},
         {.name = i18n.tr("settings.tabs.storage", "Storage")},
@@ -33,6 +34,12 @@ void SettingsScreen::buildTabs() {
         {.name = i18n.tr("settings.tabs.bluetooth", "Bluetooth")},
         {.name = i18n.tr("settings.tabs.sleep", "Sleep")},
         {.name = i18n.tr("settings.tabs.about", "About")},
+        {.name = i18n.tr("settings.tabs.appearance", "Icons & Wallpaper")},
+        {.name = i18n.tr("settings.tabs.layout", "Layout presets")},
+        {.name = i18n.tr("settings.tabs.treatment", "Screen treatment")},
+        {.name = i18n.tr("settings.tabs.shortcuts", "Shortcuts")},
+        {.name = i18n.tr("settings.tabs.lockscreen", "Lock Screen")},
+        {.name = i18n.tr("settings.tabs.docked", "Docked mode")},
     };
     m_loadedTabs.assign(m_tabs.size(), false);
     m_loadingTabs.assign(m_tabs.size(), false);
@@ -60,7 +67,7 @@ void SettingsScreen::ensureTabLoaded(int tabIndex) {
     if (m_loadingTabs[static_cast<std::size_t>(tabIndex)])
         return;
 
-    if (tabIndex == 8 && !bluetooth::IsAvailable()) {
+    if (tabIndex == 9 && !bluetooth::IsAvailable()) {
         bluetooth::Initialize();
         DebugLog::log("[settings] Bluetooth audio manager initialized on demand");
     }
@@ -71,17 +78,24 @@ void SettingsScreen::ensureTabLoaded(int tabIndex) {
 
 SettingsScreen::Tab SettingsScreen::buildTabNow(int tabIndex) {
     switch (tabIndex) {
-        case 0: return settings::tabs::SystemTab::build(*this);
-        case 1: return settings::tabs::AccessibilityTab::build(*this);
-        case 2: return settings::tabs::StorageTab::build(*this);
-        case 3: return settings::tabs::AudioTab::build(*this);
-        case 4: return settings::tabs::DisplayTab::build(*this);
-        case 5: return settings::tabs::InternetTab::build(*this);
-        case 6: return settings::tabs::SteamGridDbTab::build(*this);
-        case 7: return settings::tabs::ControllersTab::build(*this);
-        case 8: return settings::tabs::BluetoothTab::build(*this);
-        case 9: return settings::tabs::SleepTab::build(*this);
-        case 10: return settings::tabs::AboutTab::build(*this);
+        case 0: return settings::tabs::HiddenGamesTab::build(*this);
+        case 1: return settings::tabs::SystemTab::build(*this);
+        case 2: return settings::tabs::AccessibilityTab::build(*this);
+        case 3: return settings::tabs::StorageTab::build(*this);
+        case 4: return settings::tabs::AudioTab::build(*this);
+        case 5: return settings::tabs::DisplayTab::build(*this);
+        case 6: return settings::tabs::InternetTab::build(*this);
+        case 7: return settings::tabs::SteamGridDbTab::build(*this);
+        case 8: return settings::tabs::ControllersTab::build(*this);
+        case 9: return settings::tabs::BluetoothTab::build(*this);
+        case 10: return settings::tabs::SleepTab::build(*this);
+        case 11: return settings::tabs::AboutTab::build(*this);
+        case 12: return settings::tabs::AppearanceTab::build(*this);
+        case 13: return settings::tabs::LayoutTab::build(*this);
+        case 14: return settings::tabs::TreatmentTab::build(*this);
+        case 15: return settings::tabs::ShortcutsTab::build(*this);
+        case 16: return settings::tabs::LockScreenTab::build(*this);
+        case 17: return settings::tabs::DockedTab::build(*this);
         default: break;
     }
 
@@ -161,7 +175,7 @@ void SettingsScreen::prefetchOneTab() {
 
         // Keep the optional btmsys client out of the normal menu/application
         // handoff. Initialize it only when the user explicitly visits the tab.
-        if (idx == 8 && idx != static_cast<std::size_t>(m_tabIndex))
+        if (idx == 9 && idx != static_cast<std::size_t>(m_tabIndex))
             continue;
 
         if (idx != static_cast<std::size_t>(m_tabIndex))

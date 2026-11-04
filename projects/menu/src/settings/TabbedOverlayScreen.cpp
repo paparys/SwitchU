@@ -1,4 +1,5 @@
 #include "TabbedOverlayScreen.hpp"
+#include "core/UiTokens.hpp"
 #include "SettingItemWidgets.hpp"
 #include "core/DebugLog.hpp"
 #include <nxui/core/I18n.hpp>
@@ -211,6 +212,7 @@ TabbedOverlayScreen::TabbedOverlayScreen(ScreenMode mode)
     m_trackToastAnim.setImmediate(0.f);
     m_trackToastHold = 0.f;
     m_trackToastFading = false;
+    m_toastQueue.clear();
     m_contentSlideAnim.setImmediate(1.f);
     m_tabAccentW.setImmediate(3.f);
 
@@ -314,6 +316,7 @@ void TabbedOverlayScreen::show() {
     m_trackToastAnim.setImmediate(0.f);
     m_trackToastHold = 0.f;
     m_trackToastFading = false;
+    m_toastQueue.clear();
     m_contentSlideAnim.setImmediate(1.f);
     // Opening the panel already fades the content in via m_tabReveal; the
     // cascade is reserved for tab switches.
@@ -338,6 +341,7 @@ void TabbedOverlayScreen::hide() {
     m_trackToastAnim.setImmediate(0.f);
     m_trackToastHold = 0.f;
     m_trackToastFading = false;
+    m_toastQueue.clear();
     m_animating = true;
     m_showing   = false;
     m_animT     = 0.f;
@@ -679,7 +683,7 @@ void TabbedOverlayScreen::drawContent(nxui::Renderer& ren, const nxui::Rect& pan
 
     const float reveal = opacity * std::clamp(m_tabReveal.value(), 0.f, 1.f);
 
-    float y = cr.y + 16.f - m_scrollY;
+    float y = cr.y + ui::kSpace4 - m_scrollY;
     float x = cr.x;
     int visibleRank = 0;
     int n = std::min((int)itemChildren.size(), (int)items.size());
@@ -765,6 +769,36 @@ void TabbedOverlayScreen::drawContent(nxui::Renderer& ren, const nxui::Rect& pan
         ren.drawRoundedRect(rail, m_theme->panelBorder.withAlpha(0.16f * opacity), 1.5f);
         ren.drawRoundedRect(thumb, m_theme->cursorNormal.withAlpha(0.46f * opacity), 2.f);
     }
+
+    // Scroll affordance: a proportional gutter bar plus edge fades, drawn only
+    // when the list actually overflows. Long tabs used to scroll with no cue
+    // that anything existed below the fold.
+    {
+        const float pad = ui::kSpace4;
+        float totalH = pad * 2.f;
+        for (const auto& item : items) {
+            if (item.hidden) continue;
+            const float h = itemHeight(item, cr.width);
+            if (h > 0.f) totalH += h;
+        }
+        const float maxScroll = std::max(0.f, totalH - cr.height);
+        if (maxScroll > 1.f) {
+            const float fadeH = std::min(ui::kScrollFadeHeight, cr.height * 0.25f);
+            ren.pushClipRect(cr);
+            if (m_scrollY > 2.f) {
+                ren.drawGradientRect({cr.x, cr.y, cr.width, fadeH},
+                                     nxui::Color(0.f, 0.f, 0.f, 0.30f * opacity),
+                                     nxui::Color(0.f, 0.f, 0.f, 0.f));
+            }
+            if (m_scrollY < maxScroll - 2.f) {
+                ren.drawGradientRect({cr.x, cr.bottom() - fadeH, cr.width, fadeH},
+                                     nxui::Color(0.f, 0.f, 0.f, 0.f),
+                                     nxui::Color(0.f, 0.f, 0.f, 0.34f * opacity));
+            }
+            ren.popClipRect();
+
+        }
+    }
 }
 
 void TabbedOverlayScreen::drawDropdown(nxui::Renderer& ren, const nxui::Rect& panel, float opacity) {
@@ -780,7 +814,7 @@ void TabbedOverlayScreen::drawDropdown(nxui::Renderer& ren, const nxui::Rect& pa
 
     nxui::Rect cr = contentRect(panel);
 
-    float y = cr.y + 16.f - m_scrollY;
+    float y = cr.y + ui::kSpace4 - m_scrollY;
     for (int i = 0; i < m_dropdownRawIdx; ++i)
         y += itemHeight(items[i], cr.width);
     float rowH = itemHeight(item, cr.width);
@@ -907,20 +941,54 @@ void TabbedOverlayScreen::drawTrackChangedToast(nxui::Renderer& ren, const nxui:
     float t = m_trackToastAnim.value();
     if (t <= 0.01f || m_toastText.empty()) return;
 
-    std::string displayText = m_toastText;
-    float maxTextWidth = 420.f - 40.f;
-    nxui::Vec2 tsz = m_smallFont->measure(displayText);
-    if (tsz.x * 0.78f > maxTextWidth) {
-        while (!displayText.empty() && m_smallFont->measure(displayText + "...").x * 0.78f > maxTextWidth)
-            displayText.pop_back();
-        displayText += "...";
-        tsz = m_smallFont->measure(displayText);
+    // Wrap to at most two lines instead of truncating with "...". Status
+    // messages here carry real information ("4:3 only - reloading..."), and a
+    // silently cut sentence is worse than a slightly taller toast.
+    const float maxTextWidth = 420.f - ui::kSpace5;
+    std::string lines[2];
+    {
+        std::string rest = m_toastText;
+        for (int line = 0; line < 2 && !rest.empty(); ++line) {
+            std::size_t cut = rest.size();
+            if (m_smallFont->measure(rest).x * ui::kTypeTitle > maxTextWidth) {
+                cut = 0;
+                std::size_t search = 0;
+                while (true) {
+                    const std::size_t space = rest.find(' ', search);
+                    if (space == std::string::npos)
+                        break;
+                    if (m_smallFont->measure(rest.substr(0, space)).x * ui::kTypeTitle
+                        > maxTextWidth)
+                        break;
+                    cut = space;
+                    search = space + 1;
+                }
+                if (cut == 0)
+                    cut = rest.size();
+            }
+            lines[line] = rest.substr(0, cut);
+            rest = (cut < rest.size()) ? rest.substr(std::min(rest.size(), cut + 1))
+                                       : std::string();
+        }
+        if (!rest.empty()) {
+            std::string trimmed = lines[1];
+            while (!trimmed.empty()
+                   && m_smallFont->measure(trimmed + "...").x * ui::kTypeTitle > maxTextWidth)
+                trimmed.pop_back();
+            lines[1] = trimmed + "...";
+        }
     }
-
-    float textWidth = std::min(maxTextWidth, tsz.x * 0.78f);
+    const bool twoLines = !lines[1].empty();
+    nxui::Vec2 tsz = m_smallFont->measure(twoLines ? lines[0] : m_toastText);
+    const float lineH = tsz.y * 0.72f;
+    float textWidth = 0.f;
+    for (int line = 0; line < (twoLines ? 2 : 1); ++line)
+        textWidth = std::max(textWidth,
+            m_smallFont->measure(lines[line]).x * ui::kTypeTitle);
+    textWidth = std::min(maxTextWidth, textWidth);
     float scale = 0.96f + 0.04f * t;
-    float w = std::clamp(textWidth + 40.f, 220.f, 420.f) * scale;
-    float h = 40.f * scale;
+    float w = std::clamp(textWidth + ui::kSpace6, 220.f, 420.f) * scale;
+    float h = (twoLines ? 58.f : 40.f) * scale;
     float x = panel.right() - 24.f - w;
     float y = panel.y + 18.f;
     nxui::Rect r = {x, y, w, h};
@@ -933,7 +1001,14 @@ void TabbedOverlayScreen::drawTrackChangedToast(nxui::Renderer& ren, const nxui:
     ren.drawRoundedRect(r, bg, 10.f);
     ren.drawRoundedRectOutline(r, bd, 10.f, 1.5f);
 
-    float tx = r.x + 12.f;
-    float ty = r.y + (r.height - tsz.y * 0.72f) * 0.5f;
-    ren.drawText(displayText, {tx, ty}, m_smallFont, m_theme->textPrimary.withAlpha(t * opacity), 0.78f);
+    const int lineCount = twoLines ? 2 : 1;
+    const float blockH = lineH * static_cast<float>(lineCount);
+    const float firstY = r.y + (r.height - blockH) * 0.5f;
+    for (int line = 0; line < lineCount; ++line) {
+        const std::string& text = twoLines ? lines[line] : m_toastText;
+        const float tx = r.x + ui::kSpace3;
+        const float ty = firstY + lineH * static_cast<float>(line);
+        ren.drawText(text, {tx, ty}, m_smallFont,
+                     m_theme->textPrimary.withAlpha(t * opacity), ui::kTypeTitle);
+    }
 }

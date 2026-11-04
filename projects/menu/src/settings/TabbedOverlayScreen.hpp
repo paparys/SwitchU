@@ -7,6 +7,8 @@
 #include <nxui/widgets/GlassWidget.hpp>
 #include "widgets/SelectionCursor.hpp"
 #include <string>
+#include <deque>
+#include <utility>
 #include <vector>
 #include <functional>
 #include <algorithm>
@@ -160,6 +162,16 @@ public:
         int                      sliderSteps = 20;
         std::vector<std::string> options;
         std::string              infoText;
+        // Honest readout. valueSpan == 0 keeps the stock "travel %" label;
+        // otherwise the label shows valueBase..valueBase+valueSpan in the real
+        // unit, so a size slider at stock reads 100 % instead of 50 %.
+        int                      valueBase   = 0;
+        int                      valueSpan   = 0;
+        std::string              valueSuffix = "%";
+        bool                     valueSigned = false;
+        // Stock position (0..1 travel) for the Y-to-reset gesture.
+        float                    resetValue = 0.f;
+        bool                     hasReset   = false;
         float                    anim01 = 0.f;
         bool                     wrapLabel = false;
         // Optional large sample under the row (Theme Shop lock clock fonts).
@@ -247,6 +259,7 @@ protected:
     void onNavLeft();
     void onNavRight();
     void scrollToFocused();
+    void showToastNow(const std::string& msg, float holdSeconds);
     void announceCurrentFocus();
     void announceCurrentValue();
     virtual void currentAccessibilityParts(std::string& context,
@@ -335,6 +348,9 @@ protected:
     float m_trackToastHold = 0.f;
     bool  m_trackToastFading = false;
     std::string m_toastText;
+    // Waiting messages, oldest first. One toast owns the screen at a time;
+    // a burst of status lines queues instead of overwriting itself.
+    std::deque<std::pair<std::string, float>> m_toastQueue;
     float m_uiTime = 0.f;
 
     int   m_tabSwitchDir    = 0;
