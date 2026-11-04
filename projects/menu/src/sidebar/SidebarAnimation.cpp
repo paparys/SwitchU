@@ -275,7 +275,12 @@ void SidebarAnimation::update(float dt, bool focused) {
     }
 
     m_elapsedMs += dt * 1000.f;
-    while (m_elapsedMs >= static_cast<float>(m_durationsMs[m_frameIndex])) {
+    // A partial load can leave frames without matching durations; indexing the
+    // duration list blind would read past its end on the first tick.
+    while (!m_durationsMs.empty()
+           && m_frameIndex >= 0
+           && m_frameIndex < static_cast<int>(m_durationsMs.size())
+           && m_elapsedMs >= static_cast<float>(m_durationsMs[m_frameIndex])) {
         m_elapsedMs -= static_cast<float>(m_durationsMs[m_frameIndex]);
         m_frameIndex = (m_frameIndex + 1) % static_cast<int>(m_frames.size());
     }
