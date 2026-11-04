@@ -17,6 +17,11 @@ public:
     void setSecondaryTextColor(const nxui::Color& c) { m_secondaryColor = c; }
     void setClockService(switchu::services::ClockService* service) { m_clockService = service; }
     void setUse12HourClock(bool enabled);
+    // Scales the drawn time and date (the pill rect is sized to match).
+    void setVisualScale(float s) { m_scale = s; }
+    // Draws a hairline rule at each edge, so the clock reads as one cell of the
+    // HOME bar rather than text floating on it.
+    void setCellDividers(bool on) { m_cellDividers = on; }
 
 protected:
     void onContentUpdate(float dt) override;
@@ -30,6 +35,8 @@ private:
     std::string m_timeStr;
     std::string m_dateStr;
     bool m_use12HourClock = false;
+    bool m_cellDividers = false;
+    float m_scale = 1.f;
     switchu::services::ClockService* m_clockService = nullptr;
     nxui::Color m_textColor      {1.f, 1.f, 1.f, 1.f};
     nxui::Color m_secondaryColor {0.7f, 0.7f, 0.8f, 0.8f};

@@ -25,6 +25,10 @@ void BatteryWidget::setBatteryStatus(uint32_t percentage, bool charging) {
     refreshAccessibility();
 }
 
+void BatteryWidget::setVisualScale(float s) {
+    m_scale = std::clamp(s, 0.5f, 2.f);
+}
+
 void BatteryWidget::refreshAccessibility() {
     auto& i18n = nxui::I18n::instance();
     char buf[32];
@@ -67,14 +71,14 @@ void BatteryWidget::onContentUpdate(float dt) {
 
 void BatteryWidget::onContentRender(nxui::Renderer& ren) {
     nxui::Rect cr = contentRect();
-    float bw = 46.f, bh = 22.f;
-    float boltSlotW = m_charging ? 22.f : 0.f;
-    float gap = m_charging ? 8.f : 0.f;
-    // Battery body + terminal (+ bolt when charging). Center this group in the pill.
-    float groupW = bw + 2.f + 4.8f + gap + boltSlotW;
+    const float s = m_scale;
+    float bw = 46.f * s, bh = 22.f * s;
+    // The bolt is drawn inside the shell now, so the group is just the body and
+    // its terminal; there is no charging slot to reserve on the right.
+    float groupW = bw + 1.6f * s + 5.f * s;
     float bx = cr.x + (cr.width - groupW) * 0.5f;
-    float textH = m_font ? m_font->measure("100%").y * 0.75f : 14.f;
-    float contentH = bh + 6.f + textH;
+    float textH = m_font ? m_font->measure("100%").y * 0.75f * s : 14.f * s;
+    float contentH = bh + 6.f * s + textH;
     float by = cr.y + (cr.height - contentH) * 0.5f;
     float op = m_opacity;
 
@@ -82,57 +86,100 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
     float level = known ? std::clamp(m_level, 0.f, 1.f) : 0.f;
 
     nxui::Rect body = {bx, by, bw, bh};
-    float radius = bh * 0.44f;
-    nxui::Color shell = m_textColor.withAlpha(0.20f * op);
-    nxui::Color shellTop = nxui::Color::white().withAlpha(0.16f * op);
-    nxui::Color shellEdge = m_textColor.withAlpha(0.52f * op);
-    nxui::Color terminal = m_textColor.withAlpha(0.38f * op);
+    const float radius = bh * 0.46f;
+    const float capW = 5.f * s;
+    const float capH = bh * 0.40f;
 
-    ren.drawRoundedRect(body, shell, radius);
-    ren.drawRoundedRect({body.x + 2.f, body.y + 2.f, body.width - 4.f, body.height * 0.42f},
-                        shellTop, radius * 0.72f);
-    ren.drawRoundedRectOutline(body, shellEdge, radius, 1.35f);
-    ren.drawRoundedRect({body.right() + 2.f, body.y + bh * 0.32f, 4.8f, bh * 0.36f},
-                        terminal, 2.4f);
+    // Shell: a dark well under a lit rim, so the cells read as sitting inside
+    // the battery rather than floating on a flat plate.
+    ren.drawRoundedRect(body, nxui::Color(0.f, 0.f, 0.f, 0.24f * op), radius);
+    ren.drawRoundedRect(body.shrunk(1.2f * s), m_textColor.withAlpha(0.09f * op),
+                        radius * 0.92f);
+    ren.drawRoundedRectOutline(body, m_textColor.withAlpha(0.56f * op),
+                               radius, 1.5f * s);
+    // Glass: a highlight across the top and a shade along the bottom, so the
+    // body has a light direction like the tiles do.
+    ren.drawRoundedRect({body.x + 2.6f * s, body.y + 2.f * s,
+                         body.width - 5.2f * s, body.height * 0.34f},
+                        nxui::Color::white().withAlpha(0.12f * op), radius * 0.58f);
+    ren.drawRoundedRect({body.x + 2.6f * s,
+                         body.bottom() - 2.f * s - body.height * 0.16f,
+                         body.width - 5.2f * s, body.height * 0.16f},
+                        nxui::Color(0.f, 0.f, 0.f, 0.12f * op), radius * 0.50f);
 
-    float chargePulse = m_charging ? (0.74f + 0.26f * (0.5f + 0.5f * std::sin(m_chargeAnim * 5.2f))) : 1.f;
-    if (known) {
-        nxui::Color fill = level > 0.20f
-            ? nxui::Color(0.32f, 0.93f, 0.52f, op * chargePulse)
-            : nxui::Color(0.95f, 0.24f, 0.20f, op);
-        if (m_charging && level > 0.20f)
-            fill = nxui::Color(0.46f, 0.96f, 0.66f, op * chargePulse);
+    // Terminal: a rounded cap, not a square tab.
+    nxui::Rect cap = {body.right() + 1.6f * s, body.y + (bh - capH) * 0.5f,
+                      capW, capH};
+    ren.drawRoundedRect(cap, m_textColor.withAlpha(0.44f * op), capH * 0.44f);
+    ren.drawRoundedRect({cap.x + 0.6f * s, cap.y + 1.f * s,
+                         cap.width - 1.2f * s, cap.height * 0.34f},
+                        nxui::Color::white().withAlpha(0.18f * op), capH * 0.30f);
 
-        nxui::Rect inner = body.shrunk(3.4f);
-        float innerW = std::max(0.f, inner.width * level);
-        if (innerW > 0.5f) {
-            nxui::Rect fillRect = {inner.x, inner.y, innerW, inner.height};
-            ren.drawRoundedRect(fillRect, fill, std::min(radius * 0.68f, fillRect.width * 0.5f));
-            ren.drawRoundedRect({fillRect.x + 1.4f, fillRect.y + 1.2f,
-                                 std::max(0.f, fillRect.width - 2.8f), fillRect.height * 0.34f},
-                                nxui::Color::white().withAlpha(0.16f * op * chargePulse),
-                                std::min(radius * 0.45f, fillRect.width * 0.45f));
-        }
+    const float chargePulse = m_charging
+        ? (0.74f + 0.26f * (0.5f + 0.5f * std::sin(m_chargeAnim * 5.2f))) : 1.f;
+
+    // Five cells: structure for the eye, and the leading cell fills by fraction
+    // so the readout still tracks single percent steps.
+    constexpr int kCells = 5;
+    const nxui::Rect track = body.shrunk(3.4f * s);
+    const float cellGap = 2.2f * s;
+    const float cellW = std::max(1.f,
+        (track.width - cellGap * static_cast<float>(kCells - 1)) / kCells);
+    const float cellR = std::min(track.height, cellW) * 0.36f;
+
+    nxui::Color levelColor;
+    if (m_charging)
+        levelColor = nxui::Color(0.44f, 0.95f, 0.78f, op * chargePulse);
+    else if (level > 0.50f)
+        levelColor = nxui::Color(0.36f, 0.92f, 0.56f, op);
+    else if (level > 0.20f)
+        levelColor = nxui::Color(0.98f, 0.77f, 0.26f, op);
+    else
+        levelColor = nxui::Color(0.96f, 0.32f, 0.28f, op * chargePulse);
+
+    const float litCells = known ? std::clamp(m_level, 0.f, 1.f) * kCells : 0.f;
+    for (int i = 0; i < kCells; ++i) {
+        const nxui::Rect cell = {track.x + static_cast<float>(i) * (cellW + cellGap),
+                                 track.y, cellW, track.height};
+        ren.drawRoundedRect(cell, nxui::Color(1.f, 1.f, 1.f, 0.10f * op), cellR);
+        const float share = std::clamp(litCells - static_cast<float>(i), 0.f, 1.f);
+        if (share <= 0.f)
+            continue;
+        const nxui::Rect filled = {cell.x, cell.y,
+                                   std::max(cellW * share, 1.2f * s), cell.height};
+        ren.drawRoundedRect(filled, levelColor, cellR);
+        ren.drawRoundedRect({filled.x + 0.8f * s, filled.y + 0.9f * s,
+                             std::max(0.f, filled.width - 1.6f * s),
+                             filled.height * 0.28f},
+                            nxui::Color::white().withAlpha(0.22f * op * chargePulse),
+                            cellR * 0.70f);
     }
 
-    float groupRight = body.right() + 2.f + 4.8f;
+    float groupRight = cap.right();
     if (m_charging) {
         float boltPulse = 0.70f + 0.30f * (0.5f + 0.5f * std::sin(m_chargeAnim * 6.8f));
-        float boltH = 27.f + 1.6f * boltPulse;
-        float boltW = boltH * 0.78f;
-        // Sit the bolt just past the terminal nub.
-        float boltX = body.right() + 2.f + 4.8f + 4.f + (boltSlotW - boltW) * 0.5f;
-        float boltY = by + (bh - boltH) * 0.5f - 0.5f;
+        // Larger than the shell on purpose: the bolt overlaps the battery and
+        // spills past its top and bottom edges, so it reads as charge sitting
+        // on the icon rather than a symbol trapped inside it.
+        float boltH = bh * (1.24f + 0.06f * boltPulse);
+        float boltW = boltH * 0.56f;
+        float boltX = body.x + (body.width - boltW) * 0.5f;
+        float boltY = body.y + (bh - boltH) * 0.5f;
         nxui::Rect boltRect = {boltX, boltY, boltW, boltH};
-        groupRight = std::max(groupRight, boltRect.right());
+
+        // Dark halo so the bolt keeps its edge over the lit (mint) cells.
+        ren.drawRoundedRect(boltRect.expanded(2.2f * s),
+                            nxui::Color(0.03f, 0.06f, 0.05f, 0.42f * op),
+                            boltH * 0.28f);
 
         nxui::Color glow = nxui::Color(1.f, 0.74f, 0.12f, 0.18f * op * boltPulse);
-        drawLightningBolt(ren, boltRect.expanded(2.8f), glow, glow.withAlpha(0.f), 0.f);
+        drawLightningBolt(ren, boltRect.expanded(2.8f * s), glow,
+                          glow.withAlpha(0.f), 0.f);
 
         nxui::Color boltColor = nxui::Color(1.f, 0.86f, 0.18f, op * (0.88f + 0.12f * boltPulse));
         nxui::Color boltEdge = nxui::Color(1.f, 0.64f, 0.08f, op * 0.72f);
-        drawLightningBolt(ren, boltRect, boltColor, boltEdge, 1.15f);
-        drawLightningBolt(ren, boltRect.shrunk(2.4f),
+        drawLightningBolt(ren, boltRect, boltColor, boltEdge, 1.15f * s);
+        drawLightningBolt(ren, boltRect.shrunk(2.4f * s),
                           nxui::Color::white().withAlpha(0.12f * op),
                           nxui::Color::white().withAlpha(0.f), 0.f);
     }
@@ -144,9 +191,9 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
         else
             std::snprintf(buf, sizeof(buf), "--%%");
         nxui::Vec2 sz = m_font->measure(buf);
-        float tx = cr.x + (cr.width - sz.x * 0.75f) * 0.5f;
-        float ty = by + bh + 6.f;
-        ren.drawText(buf, {tx, ty}, m_font, m_textColor.withAlpha(op), 0.75f);
+        float tx = cr.x + (cr.width - sz.x * 0.75f * s) * 0.5f;
+        float ty = by + bh + 6.f * s;
+        ren.drawText(buf, {tx, ty}, m_font, m_textColor.withAlpha(op), 0.75f * s);
     }
 
     // Chevron centered in the free space to the right of the battery group.
@@ -156,14 +203,14 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
         const float cx = (freeLeft + freeRight) * 0.5f;
         const float cy = cr.y + cr.height * 0.5f;
         const nxui::Color chev = m_textColor.withAlpha(0.42f * op);
-        ren.drawLine({cx - 3.5f, cy - 5.5f}, {cx + 2.5f, cy}, chev, 1.7f);
-        ren.drawLine({cx + 2.5f, cy}, {cx - 3.5f, cy + 5.5f}, chev, 1.7f);
+        ren.drawLine({cx - 3.5f * s, cy - 5.5f * s}, {cx + 2.5f * s, cy}, chev, 1.7f * s);
+        ren.drawLine({cx + 2.5f * s, cy}, {cx - 3.5f * s, cy + 5.5f * s}, chev, 1.7f * s);
     }
 }
 
 nxui::Vec2 BatteryWidget::computeContentSize() const {
-    float bw = 46.f, bh = 22.f;
-    float iconExtra = 8.f + 22.f;
-    float textH = m_font ? m_font->measure("100%").y * 0.75f : 14.f;
-    return {bw + 4.f + iconExtra, bh + 6.f + textH};
+    const float s = m_scale;
+    float bw = 46.f * s, bh = 22.f * s;
+    float textH = m_font ? m_font->measure("100%").y * 0.75f * s : 14.f * s;
+    return {bw + 6.6f * s, bh + 6.f * s + textH};
 }

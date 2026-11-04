@@ -104,11 +104,13 @@ void SelectionCursor::moveTo(const nxui::Rect& target, float duration) {
         m_teleportPulse = 1.f;
         return;
     }
-    float adaptiveDuration = computeAdaptiveDuration(target, m_cornerRadius.value(), duration);
-    m_x.set(target.x, adaptiveDuration, nxui::Easing::outCubic);
-    m_y.set(target.y, adaptiveDuration, nxui::Easing::outCubic);
-    m_w.set(target.width, adaptiveDuration, nxui::Easing::outCubic);
-    m_h.set(target.height, adaptiveDuration, nxui::Easing::outCubic);
+    const float adaptiveDuration = motion::scaled(
+        computeAdaptiveDuration(target, m_cornerRadius.value(), duration), m_motionStyle);
+    float (*curve)(float) = motion::ease(m_motionStyle);
+    m_x.set(target.x, adaptiveDuration, curve);
+    m_y.set(target.y, adaptiveDuration, curve);
+    m_w.set(target.width, adaptiveDuration, curve);
+    m_h.set(target.height, adaptiveDuration, curve);
 }
 
 void SelectionCursor::moveTo(const nxui::Rect& target, float cornerRadius, float duration) {
@@ -137,12 +139,14 @@ void SelectionCursor::moveTo(const nxui::Rect& target, float cornerRadius, float
         m_teleportPulse = 1.f;
         return;
     }
-    float adaptiveDuration = computeAdaptiveDuration(target, cornerRadius, duration);
-    m_x.set(target.x, adaptiveDuration, nxui::Easing::outCubic);
-    m_y.set(target.y, adaptiveDuration, nxui::Easing::outCubic);
-    m_w.set(target.width, adaptiveDuration, nxui::Easing::outCubic);
-    m_h.set(target.height, adaptiveDuration, nxui::Easing::outCubic);
-    m_cornerRadius.set(cornerRadius, adaptiveDuration, nxui::Easing::outCubic);
+    const float adaptiveDuration = motion::scaled(
+        computeAdaptiveDuration(target, cornerRadius, duration), m_motionStyle);
+    float (*curve)(float) = motion::ease(m_motionStyle);
+    m_x.set(target.x, adaptiveDuration, curve);
+    m_y.set(target.y, adaptiveDuration, curve);
+    m_w.set(target.width, adaptiveDuration, curve);
+    m_h.set(target.height, adaptiveDuration, curve);
+    m_cornerRadius.set(cornerRadius, adaptiveDuration, curve);
 }
 
 nxui::Rect SelectionCursor::currentRect() const {

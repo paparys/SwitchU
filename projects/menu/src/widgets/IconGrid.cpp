@@ -62,8 +62,8 @@ void IconGrid::setLayoutMode(AppLayoutMode mode, bool animate) {
 
     m_layoutMorphing = true;
     m_layoutMorph.setImmediate(toLine ? 0.f : 1.f);
-    m_layoutMorph.set(toLine ? 1.f : 0.f, kLayoutMorphDuration,
-                      nxui::Easing::inOutCubic);
+    m_layoutMorph.set(toLine ? 1.f : 0.f, motion::scaled(kLayoutMorphDuration, m_motionStyle),
+                      motion::inOutEase(m_motionStyle));
 }
 
 void IconGrid::rebindLayoutMorphAnchor() {
@@ -88,7 +88,10 @@ bool IconGrid::isDynamicLineScrolling() const {
 }
 
 float IconGrid::lineItemSpacing() const {
-    return kLineIconBase + std::max(8.f, m_padX * 0.4f);
+    // Depth tightens the pitch as the row moves back, so fewer pixels per
+    // icon means more icons are visible at once.
+    return (kLineIconBase * m_iconScale + std::max(8.f, m_padX * 0.4f))
+         * (1.f + 0.11f * m_carouselDepth);
 }
 
 void IconGrid::beginLineDrag() {
@@ -187,7 +190,8 @@ void IconGrid::reconfigureLayout(int cols, int rows,
     float gridW = m_cols * m_cellW + (m_cols - 1) * m_padX;
     float gridH = m_rows * m_cellH + (m_rows - 1) * m_padY;
     m_originX = (m_rect.width  - gridW) * 0.5f + m_rect.x;
-    m_originY = (m_rect.height - gridH) * 0.5f + m_rect.y;
+    const float availH = std::max(0.f, m_rect.height - m_insetTop - m_insetBottom);
+    m_originY = m_rect.y + m_insetTop + (availH - gridH) * 0.5f;
 
     if (m_layoutMode == AppLayoutMode::DynamicLine)
         layoutLine();
@@ -196,11 +200,15 @@ void IconGrid::reconfigureLayout(int cols, int rows,
 }
 
 nxui::Rect IconGrid::contentRect() const {
-    if (m_layoutMode == AppLayoutMode::DynamicLine)
-        return m_rect.shrunk(40.f);
+    if (m_layoutMode == AppLayoutMode::DynamicLine) {
+        nxui::Rect line = m_rect.shrunk(40.f);
+        line.y += m_insetTop;
+        line.height = std::max(1.f, line.height - m_insetTop - m_insetBottom);
+        return line;
+    }
     const float gridW = m_cols * m_cellW + (m_cols - 1) * m_padX;
     const float gridH = m_rows * m_cellH + (m_rows - 1) * m_padY;
-    return {m_originX, m_originY, gridW, gridH};
+    return {m_originX + m_gridNudgeX, m_originY, gridW, gridH};
 }
 
 void IconGrid::setPage(int page) {
@@ -331,7 +339,7 @@ nxui::Rect IconGrid::gridSpanRect(int globalIndex, int columns, int rows) const 
     const int row = local / std::max(1, m_cols);
     const int spanColumns = std::max(1, columns);
     const int spanRows = std::max(1, rows);
-    const nxui::Rect slot{m_originX + column * (m_cellW + m_padX),
+    const nxui::Rect slot{m_originX + m_gridNudgeX + column * (m_cellW + m_padX),
                           m_originY + row * (m_cellH + m_padY),
                           m_cellW * spanColumns + m_padX * (spanColumns - 1),
                           m_cellH * spanRows + m_padY * (spanRows - 1)};
@@ -430,12 +438,25 @@ void IconGrid::bindEdgeActions(int start, int end) {
 void IconGrid::positionPage(int page, float dx) {
     const int start = page * iconsPerPage();
     const int end   = std::min(start + iconsPerPage(), (int)m_allIcons.size());
+    // Stagger: trailing columns lag the page by up to 30px per column and catch
+    // up as the slide completes. The page still arrives together, but it enters
+    // as a cascade instead of one rigid slab. Only during a slide, so the edge
+    // bump and static layout are untouched.
+    float stagger = 0.f;
+    if (m_sliding) {
+        const float t = std::clamp(m_slideT / motion::scaled(kSlideDuration, m_motionStyle),
+                                   0.f, 1.f);
+        const float trail = (1.f - t) * (1.f - t);
+        stagger = trail * 30.f * static_cast<float>(m_slideDir);
+    }
     for (int i = start; i < end; ++i) {
         const int local = i - start;
         auto& icon = m_allIcons[i];
         const int spanColumns = std::max(1, icon->gridSpanColumns());
         const int spanRows = std::max(1, icon->gridSpanRows());
-        icon->setRect({m_originX + (local % m_cols) * (m_cellW + m_padX) + dx,
+        const float columnLag = stagger * static_cast<float>(local % std::max(1, m_cols));
+        icon->setRect({m_originX + m_gridNudgeX + (local % m_cols) * (m_cellW + m_padX)
+                           + dx + columnLag,
                        m_originY + (local / m_cols) * (m_cellH + m_padY),
                        m_cellW * spanColumns + m_padX * (spanColumns - 1),
                        m_cellH * spanRows + m_padY * (spanRows - 1)});
@@ -461,10 +482,11 @@ int IconGrid::focusedGlobalIndex() const {
 nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
                                      float* outOpacity,
                                      float* outDistance) const {
-    const float centerX = m_rect.x + m_rect.width * 0.5f;
+    const float centerX = m_rect.x + m_rect.width * 0.5f + m_lineNudgeX;
     // Unfocused row sits in the lower half; a focused Poster rises to true
     // vertical centre so the title pill has equal air above/below.
-    const float lineCenterY = m_rect.y + m_rect.height * 0.66f;
+    const float lineAvailH = std::max(0.f, m_rect.height - m_insetTop - m_insetBottom);
+    const float lineCenterY = m_rect.y + m_insetTop + lineAvailH * 0.66f;
     const float offset = m_lineScrollOffset.value();
     // Carousel sizing is independent of grid density. Square icons stay square;
     // apps with a Poster and folders (when posters are enabled) use tall 2:3.
@@ -475,8 +497,12 @@ nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
         const auto& icon = m_allIcons[(std::size_t)index];
         poster = icon && icon->usesPosterFrame();
     }
-    const float baseCellW = poster ? kPosterBaseW : kLineIconBase;
-    const float baseCellH = poster ? (kPosterBaseW * 1.5f) : kLineIconBase;
+    // Icon size applies to the carousel too; spacing scales with it so larger
+    // tiles keep a steady gap instead of overlapping.
+    const float baseCellW = (poster ? kPosterBaseW : kLineIconBase) * m_iconScale;
+    const float baseCellH = poster
+        ? (kPosterBaseW * 1.5f * m_iconScale)
+        : (kLineIconBase * m_iconScale / std::max(0.2f, m_iconAspect));
     // Scroll pitch stays icon-sized so posters can hero-overlap neighbours.
     const float lineSpacing = lineItemSpacing();
 
@@ -484,8 +510,10 @@ nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
     const float absD = std::abs(d);
     float s = 1.f;
     float a = 1.f;
-    const float sSide = poster ? 0.72f : 0.82f;
-    const float sFocus = poster ? 1.12f : 1.36f;
+    // Depth shrinks or grows the row: at -1 side tiles are noticeably smaller
+    // (more neighbours on screen), at +1 they are larger and fewer fit.
+    const float sSide = (poster ? 0.72f : 0.82f) + 0.18f * m_carouselDepth;
+    const float sFocus = (poster ? 1.12f : 1.36f) + 0.10f * m_carouselDepth;
     float focusBlend = 0.f;
     if (absD <= 1.0f) {
         // Position drives the visual state: the departing icon now shrinks as
@@ -495,19 +523,45 @@ nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
         s = sSide + focusBlend * (sFocus - sSide);
         a = 0.76f + focusBlend * 0.24f;
     } else {
-        s = std::max(0.54f, sSide - (absD - 1.0f) * 0.12f);
-        a = std::max(0.0f, 0.76f - (absD - 1.0f) * 0.24f);
+        // Smooth shrink with distance rather than a linear staircase. A curve
+        // keeps each neighbour visibly related to the one beside it, which reads
+        // as a receding row of covers instead of unrelated cards.
+        const float far = absD - 1.0f;
+        const float soften = 1.f - std::exp(-far * 1.1f);
+        const float shrinkTo = 0.46f - 0.10f * std::max(0.f, m_carouselDepth);
+        s = std::max(shrinkTo, sSide - (sSide - shrinkTo) * soften);
+        // Pulled back, neighbours keep a readable floor for longer so the extra
+        // visible icons actually read as artwork; pushed forward they fade away
+        // sooner and the focused tile dominates.
+        // Carousel fade: how fast neighbours drop away from the focused tile.
+        // 0.5 keeps the original falloff and floor; below that the row stays
+        // lit further out, above it the next tiles fade toward invisible.
+        const float fadeRate = 0.30f + 1.40f * m_carouselFade;
+        const float floorScale = 1.f - std::max(0.f, m_carouselFade - 0.5f) * 2.f;
+        const float floorAlpha = (0.10f + 0.20f * std::max(0.f, -m_carouselDepth))
+                               * floorScale;
+        a = std::max(floorAlpha, 0.76f - far * 0.24f * fadeRate
+                                       * (1.f + 0.6f * m_carouselDepth));
     }
 
     const float w = baseCellW * s;
     const float h = baseCellH * s;
-    float centerY = lineCenterY;
+    float centerY = lineCenterY + m_lineNudgeY;
     if (poster && focusBlend > 0.f) {
         // Clear the clock capsule (~y 70) and leave room for the title pill.
         constexpr float kTopPad = 100.f;
         constexpr float kBottomPad = 128.f;
-        const float focusedCenterY = kTopPad + (720.f - kTopPad - kBottomPad) * 0.5f;
-        centerY = lineCenterY + (focusedCenterY - lineCenterY) * focusBlend;
+        // Centre the hero in the band that is actually free. Hardcoding 720
+        // ignored the reserved strip, so with the shortcuts at the bottom the
+        // focused tile stayed put while only its neighbours rose.
+        const float bandTop = m_rect.y + m_insetTop + kTopPad;
+        const float bandBottom = m_rect.y + m_rect.height - m_insetBottom - kBottomPad;
+        const float focusedCenterY = (bandTop + bandBottom) * 0.5f;
+        // Keep the vertical nudge here too. Without it the focused tile snaps
+        // back to the stock centre while its neighbours move, so the strip never
+        // stays where the setting put it.
+        centerY = lineCenterY + m_lineNudgeY
+                + (focusedCenterY - lineCenterY) * focusBlend;
     }
     const float x = centerX + d * lineSpacing - w * 0.5f;
     const float y = centerY - h * 0.5f;
@@ -527,7 +581,7 @@ nxui::Rect IconGrid::gridSlotRect(int globalIndex) const {
     const int local  = globalIndex % std::max(1, iconsPerPage());
     const int column = local % std::max(1, m_cols);
     const int row    = local / std::max(1, m_cols);
-    return {m_originX + column * (m_cellW + m_padX),
+    return {m_originX + m_gridNudgeX + column * (m_cellW + m_padX),
             m_originY + row * (m_cellH + m_padY),
             m_cellW * spanColumns + m_padX * (spanColumns - 1),
             m_cellH * spanRows + m_padY * (spanRows - 1)};
@@ -570,7 +624,8 @@ bool IconGrid::focusGlobalIndex(int idx, bool instant, float durationSec) {
             m_lineScrollOffset.setImmediate(static_cast<float>(idx));
         else {
             const float dur = durationSec > 0.f ? durationSec : kLineScrollDuration;
-            m_lineScrollOffset.set(static_cast<float>(idx), dur, nxui::Easing::outCubic);
+            m_lineScrollOffset.set(static_cast<float>(idx), motion::scaled(dur, m_motionStyle),
+                                   motion::ease(m_motionStyle));
         }
         return true;
     }
@@ -800,9 +855,13 @@ void IconGrid::bumpEdge(int dir) {
     if (dir == 0 || m_sliding || m_bumping)
         return;
     m_bumping = true;
-    m_edgeBump.set(-dir * kEdgeBumpDistance, 0.10f, nxui::Easing::outCubic);
+    m_edgeBump.set(-dir * kEdgeBumpDistance, motion::scaled(0.10f, m_motionStyle),
+                   motion::inOutEase(m_motionStyle));
     m_edgeBump.onComplete([this]() {
-        m_edgeBump.set(0.f, 0.34f, nxui::Easing::outElastic);
+        // Springy keeps the elastic snap back; Crisp lands flat, no wobble.
+        m_edgeBump.set(0.f, motion::scaled(0.34f, m_motionStyle),
+                       m_motionStyle == 0 ? nxui::Easing::outCubic
+                                          : nxui::Easing::outElastic);
     });
 }
 
@@ -822,8 +881,9 @@ void IconGrid::onUpdate(float dt) {
         if (!m_lineDragActive
             && cur >= 0
             && std::abs(m_lineScrollOffset.target() - static_cast<float>(cur)) > 0.001f) {
-            m_lineScrollOffset.set(static_cast<float>(cur), kLineScrollDuration,
-                                   nxui::Easing::outCubic);
+            m_lineScrollOffset.set(static_cast<float>(cur),
+                                   motion::scaled(kLineScrollDuration, m_motionStyle),
+                                   motion::ease(m_motionStyle));
         }
 
         // Every rect on the line is a pure function of the scroll offset and
@@ -862,8 +922,9 @@ void IconGrid::onUpdate(float dt) {
         return;
 
     m_slideT += dt;
-    const float t = std::clamp(m_slideT / kSlideDuration, 0.f, 1.f);
-    const float eased = nxui::Easing::inOutCubic(t);
+    const float t = std::clamp(m_slideT / motion::scaled(kSlideDuration, m_motionStyle),
+                               0.f, 1.f);
+    const float eased = motion::inOutEase(m_motionStyle)(t);
     const float stride = pageStride();
 
     m_slideInDx  = (1.f - eased) * stride * (float)m_slideDir;
@@ -886,7 +947,7 @@ void IconGrid::renderPageAt(nxui::Renderer& ren, int page, float dx) {
         const int local = i - start;
         const int spanColumns = std::max(1, icon->gridSpanColumns());
         const int spanRows = std::max(1, icon->gridSpanRows());
-        icon->setRect({m_originX + (local % m_cols) * (m_cellW + m_padX) + dx,
+        icon->setRect({m_originX + m_gridNudgeX + (local % m_cols) * (m_cellW + m_padX) + dx,
                        m_originY + (local / m_cols) * (m_cellH + m_padY),
                        m_cellW * spanColumns + m_padX * (spanColumns - 1),
                        m_cellH * spanRows + m_padY * (spanRows - 1)});
@@ -1016,4 +1077,21 @@ void IconGrid::render(nxui::Renderer& ren) {
 }
 
 void IconGrid::onRender(nxui::Renderer&) {
+}
+
+void IconGrid::setVerticalInsets(float top, float bottom) {
+    top = std::max(0.f, top);
+    bottom = std::max(0.f, bottom);
+    if (std::abs(m_insetTop - top) < 0.5f && std::abs(m_insetBottom - bottom) < 0.5f)
+        return;
+    m_insetTop = top;
+    m_insetBottom = bottom;
+    m_lineLayoutCacheCount = -1;
+    const float gridH = m_rows * m_cellH + (m_rows - 1) * m_padY;
+    const float availH = std::max(0.f, m_rect.height - m_insetTop - m_insetBottom);
+    m_originY = m_rect.y + m_insetTop + (availH - gridH) * 0.5f;
+    if (m_layoutMode == AppLayoutMode::DynamicLine)
+        layoutLine();
+    else
+        positionPage(m_page, 0.f);
 }

@@ -1,6 +1,7 @@
 #include "DateTimeWidget.hpp"
 #include "services/ClockService.hpp"
 #include <nxui/core/Renderer.hpp>
+#include <algorithm>
 #include <cstdio>
 
 void DateTimeWidget::setUse12HourClock(bool enabled) {
@@ -50,16 +51,28 @@ void DateTimeWidget::onContentRender(nxui::Renderer& ren) {
     nxui::Rect cr = contentRect();
     nxui::Font* sf = m_smallFont ? m_smallFont : m_font;
 
+    const float s = m_scale;
+    if (m_cellDividers) {
+        // Short rules, not full-height walls: they separate the clock from the
+        // profile and battery without cutting the band into boxes.
+        const float ruleH = std::min(cr.height, 30.f * s);
+        const float ruleY = cr.y + (cr.height - ruleH) * 0.5f;
+        const nxui::Color rule = m_secondaryColor.withAlpha(0.22f * m_opacity);
+        ren.drawRoundedRect({cr.x - 2.f, ruleY, 1.f, ruleH}, rule, 0.5f);
+        ren.drawRoundedRect({cr.right() + 1.f, ruleY, 1.f, ruleH}, rule, 0.5f);
+    }
     nxui::Vec2 timeSz = m_font->measure(m_timeStr);
     nxui::Vec2 dateSz = sf->measure(m_dateStr);
-    float contentH = timeSz.y + 2.f + dateSz.y * 0.7f;
-    float tx = cr.x + (cr.width - timeSz.x) * 0.5f;
+    const float dateScale = 0.7f * s;
+    float contentH = timeSz.y * s + 2.f * s + dateSz.y * dateScale;
+    float tx = cr.x + (cr.width - timeSz.x * s) * 0.5f;
     float ty = cr.y + (cr.height - contentH) * 0.5f;
-    ren.drawText(m_timeStr, {tx, ty}, m_font, m_textColor.withAlpha(m_opacity), 1.f);
+    ren.drawText(m_timeStr, {tx, ty}, m_font, m_textColor.withAlpha(m_opacity), s);
 
-    float dx = cr.x + (cr.width - dateSz.x * 0.7f) * 0.5f;
-    float dy = ty + timeSz.y + 2.f;
-    ren.drawText(m_dateStr, {dx, dy}, sf, m_secondaryColor.withAlpha(m_opacity), 0.7f);
+    float dx = cr.x + (cr.width - dateSz.x * dateScale) * 0.5f;
+    float dy = ty + timeSz.y * s + 2.f * s;
+    ren.drawText(m_dateStr, {dx, dy}, sf, m_secondaryColor.withAlpha(m_opacity),
+                 dateScale);
 }
 
 nxui::Vec2 DateTimeWidget::computeContentSize() const {
@@ -69,5 +82,5 @@ nxui::Vec2 DateTimeWidget::computeContentSize() const {
     nxui::Vec2 dateSz = sf->measure("00/00/0000");
     float w = std::max(timeSz.x, dateSz.x * 0.7f);
     float h = timeSz.y + 2.f + dateSz.y * 0.7f;
-    return {w, h};
+    return {w * m_scale, h * m_scale};
 }

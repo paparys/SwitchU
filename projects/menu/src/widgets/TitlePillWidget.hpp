@@ -12,6 +12,14 @@ public:
 
     void setFont(nxui::Font* f)              { m_font = f; }
     void setTextColor(const nxui::Color& c)  { m_textColor = c; }
+    // Horizontal offset of the capsule from screen centre; the pill re-aims
+    // immediately instead of waiting for the next title change.
+    void setNudgeX(float x);
+    // Hide the capsule completely. Unlike hideAnimated this is not a
+    // transition: the pill paints nothing until suppression is lifted, no
+    // matter which show path runs in the meantime.
+    void setSuppressed(bool s);
+    bool suppressed() const { return m_suppressed; }
 
     void setText(const std::string& text, float screenWidth = 1280.f);
     void hideAnimated(float screenWidth = 1280.f);
@@ -27,9 +35,12 @@ private:
     std::string m_sourceText;
     std::string m_text;
     nxui::Color       m_textColor {1.f, 1.f, 1.f, 1.f};
+    float             m_nudgeX = 0.f;
+    float             m_screenWidth = 1280.f;
     nxui::AnimatedFloat m_animX{0.f};
     nxui::AnimatedFloat m_animW{0.f};
     nxui::AnimatedFloat m_textReveal{1.f};
     bool m_layoutInitialized = false;
     bool m_hideOnCollapse = false;
+    bool m_suppressed = false;
 };

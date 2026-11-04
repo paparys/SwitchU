@@ -4,6 +4,8 @@
 #include <nxui/core/Renderer.hpp>
 #include <nxui/core/Texture.hpp>
 #include <nxui/core/Types.hpp>
+#include <memory>
+#include <string>
 #include <vector>
 
 
@@ -54,12 +56,20 @@ public:
     };
 
     WaraWaraBackground();
+    ~WaraWaraBackground();
 
     void setConfig(const Config& config);
     const Config& config() const { return m_config; }
 
     bool loadImage(nxui::GpuDevice& gpu, nxui::Renderer& ren, const std::string& path);
     void clearImage();
+
+    // Animated / video wallpaper. Plays over the theme image and falls back to
+    // it when cleared or when the file cannot be decoded.
+    bool loadAnimatedWallpaper(nxui::GpuDevice& gpu, nxui::Renderer& ren,
+                               const std::string& path, int fps);
+    void clearAnimatedWallpaper();
+    bool hasAnimatedWallpaper() const;
 
     void setMotionPaused(bool paused) { m_motionPaused = paused; }
     bool motionPaused() const { return m_motionPaused; }
@@ -101,6 +111,8 @@ private:
     };
 
     ShapeType pickShapeType() const;
+    const nxui::Texture* activeWallpaperTexture() const;
+    void drawWallpaper(nxui::Renderer& ren, float opacityScale) const;
     nxui::Rect backgroundImageRect() const;
     void drawShapeWithSymmetry(nxui::Renderer& ren, const Shape& s) const;
     void drawGlassShape(nxui::Renderer& ren, const Shape& s) const;
@@ -109,6 +121,7 @@ private:
     Config m_config;
     std::vector<Shape> m_shapes;
     nxui::Texture m_backgroundImage;
+    std::unique_ptr<class AnimatedWallpaper> m_animWallpaper;
     float m_time = 0.f;
     bool m_motionPaused = false;
     bool m_liteSuppressed = false;

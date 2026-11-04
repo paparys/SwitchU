@@ -1,4 +1,5 @@
 #pragma once
+#include "MotionPreset.hpp"
 #include <nxui/widgets/Widget.hpp>
 #include <nxui/core/Animation.hpp>
 
@@ -17,6 +18,8 @@ public:
     bool motionPaused() const { return m_motionPaused; }
     void setInstantMotion(bool instant);
     bool instantMotion() const { return m_instantMotion; }
+    // 0 = Crisp, 1 = Smooth, 2 = Springy.
+    void setMotionStyle(int style) { m_motionStyle = motion::clampStyle(style); }
 
 protected:
     void onUpdate(float dt) override;
@@ -31,6 +34,7 @@ private:
     float m_borderWidth  = 3.f;
     float m_time = 0.f;
     float m_waveSpeed = 3.5f;
+    int   m_motionStyle = 1;
     bool  m_initialized = false;
     bool  m_motionPaused = false;
     bool  m_instantMotion = false;

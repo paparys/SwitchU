@@ -1,6 +1,7 @@
 #pragma once
 #include <nxui/widgets/GlassWidget.hpp>
 #include <nxui/Theme.hpp>
+#include <nxui/core/Animation.hpp>
 
 class PageIndicator : public nxui::GlassWidget {
 public:
@@ -26,6 +27,8 @@ private:
     // echoes the sliding page instead of silently re-colouring.
     static constexpr float kDotPopDuration = 0.30f;
     float m_popT = kDotPopDuration;
+    // Slides the active pill between page slots instead of recolouring a dot.
+    nxui::AnimatedFloat m_slide{0.f};
 
     int m_total   = 1;
     int m_current = 0;

@@ -21,9 +21,14 @@ void PageIndicator::setCurrentPage(int page) {
     if (clamped == m_current) return;
     m_current = clamped;
     m_popT = 0.f;
+    if (!m_geometryReady)
+        m_slide.setImmediate(static_cast<float>(clamped));
+    else
+        m_slide.set(static_cast<float>(clamped), 0.22f, nxui::Easing::outCubic);
 }
 
 void PageIndicator::onUpdate(float dt) {
+    m_slide.update(dt);
     if (m_popT < kDotPopDuration)
         m_popT = std::min(kDotPopDuration, m_popT + dt);
 }
@@ -44,47 +49,40 @@ void PageIndicator::onContentRender(nxui::Renderer& ren) {
     nxui::Rect cr = contentRect();
     if (m_total <= 1) return;
 
-    constexpr float dotR = 4.f;
-    constexpr float gap  = 14.f;
+    // One capsule, not a row of dots: a low track with a single bright pill that
+    // slides to the active page. Stretching a pill reads as a position on a line
+    // rather than as N unrelated pips, and it cannot go out of sync with the
+    // page slide because it is driven by the same page index.
+    constexpr float kSegW = 18.f;
+    constexpr float kGap  = 6.f;
+    constexpr float kH    = 6.f;
 
-    float dotsW = m_total * dotR * 2.f + (m_total - 1) * gap;
-    float startX = cr.x + (cr.width - dotsW) * 0.5f;
-    float cy = cr.y + cr.height * 0.5f;
-    float op = m_opacity;
+    const float trackW = m_total * kSegW + (m_total - 1) * kGap;
+    const float x0 = cr.x + (cr.width - trackW) * 0.5f;
+    const float top = cr.y + cr.height * 0.5f - kH * 0.5f;
+    const float op = m_opacity;
 
-    nxui::Color inactive = m_theme ? m_theme->pageIndicator : nxui::Color(1.f, 1.f, 1.f, 0.35f);
+    nxui::Color inactive = m_theme ? m_theme->pageIndicator
+                                   : nxui::Color(1.f, 1.f, 1.f, 0.35f);
     nxui::Color active   = m_hasActiveColor
         ? m_activeColor
-        : (m_theme ? m_theme->pageIndicatorActive : nxui::Color(1.f, 1.f, 1.f, 0.95f));
+        : (m_theme ? m_theme->pageIndicatorActive
+                   : nxui::Color(1.f, 1.f, 1.f, 0.95f));
 
-    // Pop: the fresh dot swells then settles while a ripple fades outwards,
-    // echoing the page slide without moving the pill's layout.
-    const bool popping = m_popT < kDotPopDuration;
-    const float popP = popping
-        ? std::clamp(m_popT / kDotPopDuration, 0.f, 1.f) : 1.f;
-    const float activeR = dotR * (1.f + 0.34f * std::sin(popP * 3.14159265f));
+    ren.drawRoundedRect({x0, top, trackW, kH},
+                        inactive.withAlpha(inactive.a * 0.55f * op), kH * 0.5f);
 
-    for (int i = 0; i < m_total; ++i) {
-        float cx = startX + i * (dotR * 2.f + gap) + dotR;
-        nxui::Color c = (i == m_current) ? active : inactive;
-        if (i == m_current && popping) {
-            const float ringR = dotR + 11.f * popP;
-            ren.drawCircle({cx, cy}, ringR,
-                           active.withAlpha(active.a * 0.30f * (1.f - popP) * op), 20);
-        }
-        const float r = (i == m_current) ? activeR : dotR;
-        ren.drawCircle({cx, cy}, r, c.withAlpha(c.a * op), 16);
-    }
-
+    const float slot = kSegW + kGap;
+    const float pos = std::clamp(m_slide.value(), 0.f, static_cast<float>(m_total - 1));
+    const float px = x0 + pos * slot;
+    ren.drawRoundedRect({px, top, kSegW, kH},
+                        active.withAlpha(active.a * op), kH * 0.5f);
 }
 
 nxui::Vec2 PageIndicator::computeContentSize() const {
     if (m_total <= 1) return {0.f, 0.f};
-
-    constexpr float dotR = 4.f;
-    constexpr float gap  = 14.f;
-
-    float dotsW = m_total * dotR * 2.f + (m_total - 1) * gap;
-    float dotsH = dotR * 2.f;
-    return {dotsW, dotsH};
+    constexpr float kSegW = 18.f;
+    constexpr float kGap  = 6.f;
+    constexpr float kH    = 6.f;
+    return {m_total * kSegW + (m_total - 1) * kGap, kH};
 }

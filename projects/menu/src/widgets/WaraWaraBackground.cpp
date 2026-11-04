@@ -1,4 +1,5 @@
 #include "WaraWaraBackground.hpp"
+#include "AnimatedWallpaper.hpp"
 #include "core/DebugLog.hpp"
 #include <algorithm>
 #include <cmath>
@@ -162,6 +163,56 @@ void WaraWaraBackground::clearImage() {
     m_backgroundImage = nxui::Texture{};
 }
 
+WaraWaraBackground::~WaraWaraBackground() = default;
+
+bool WaraWaraBackground::hasAnimatedWallpaper() const {
+    return m_animWallpaper && m_animWallpaper->valid();
+}
+
+bool WaraWaraBackground::loadAnimatedWallpaper(nxui::GpuDevice& gpu,
+                                               nxui::Renderer& ren,
+                                               const std::string& path, int fps) {
+    clearAnimatedWallpaper();
+    if (path.empty())
+        return false;
+    auto wallpaper = std::make_unique<AnimatedWallpaper>();
+    if (!wallpaper->load(gpu, ren, path, fps))
+        return false;
+    m_animWallpaper = std::move(wallpaper);
+    return true;
+}
+
+void WaraWaraBackground::clearAnimatedWallpaper() {
+    m_animWallpaper.reset();
+}
+
+const nxui::Texture* WaraWaraBackground::activeWallpaperTexture() const {
+    if (m_animWallpaper) {
+        const nxui::Texture* frame = m_animWallpaper->texture();
+        if (frame && frame->valid())
+            return frame;
+    }
+    return m_backgroundImage.valid() ? &m_backgroundImage : nullptr;
+}
+
+void WaraWaraBackground::drawWallpaper(nxui::Renderer& ren, float opacityScale) const {
+    const nxui::Texture* wallpaper = activeWallpaperTexture();
+    if (!wallpaper)
+        return;
+    // A moving wallpaper owns the background slot, so it draws at full strength
+    // even when the theme ships no still image. ThemePreset defaults
+    // imageOpacity to 0, and gating on it made every wallpaper invisible unless
+    // the theme happened to set a background image.
+    const bool animated = hasAnimatedWallpaper();
+    float alpha = m_opacity * std::clamp(opacityScale, 0.f, 1.f);
+    if (!animated)
+        alpha *= m_config.imageOpacity;
+    if (alpha <= 0.f)
+        return;
+    ren.drawTexture(const_cast<nxui::Texture*>(wallpaper), backgroundImageRect(),
+                    nxui::Color::white().withAlpha(alpha));
+}
+
 WaraWaraBackground::ShapeType WaraWaraBackground::pickShapeType() const {
     switch (m_config.shapeSet) {
         case ShapeSet::Circle:
@@ -247,6 +298,8 @@ void WaraWaraBackground::regenerate(int count) {
 }
 
 void WaraWaraBackground::onUpdate(float dt) {
+    if (m_animWallpaper)
+        m_animWallpaper->update(dt);
     if (m_motionPaused || m_liteSuppressed)
         return;
     m_time += dt;
@@ -269,18 +322,21 @@ void WaraWaraBackground::onUpdate(float dt) {
 }
 
 nxui::Rect WaraWaraBackground::backgroundImageRect() const {
-    if (!m_backgroundImage.valid() || m_backgroundImage.width() <= 0 || m_backgroundImage.height() <= 0)
+    const nxui::Texture* wallpaper = activeWallpaperTexture();
+    if (!wallpaper || wallpaper->width() <= 0 || wallpaper->height() <= 0)
         return m_rect;
 
     float areaX = m_rect.x;
     float areaY = m_rect.y;
     float areaW = (m_rect.width > 1.f) ? m_rect.width : 1280.f;
     float areaH = (m_rect.height > 1.f) ? m_rect.height : 720.f;
-    float texW = static_cast<float>(m_backgroundImage.width());
-    float texH = static_cast<float>(m_backgroundImage.height());
+    float texW = static_cast<float>(wallpaper->width());
+    float texH = static_cast<float>(wallpaper->height());
     float sx = areaW / texW;
     float sy = areaH / texH;
-    float scale = m_config.imageCover ? std::max(sx, sy) : std::min(sx, sy);
+    // Wallpapers always fill the screen; only theme still images may letterbox.
+    const bool cover = m_config.imageCover || hasAnimatedWallpaper();
+    float scale = cover ? std::max(sx, sy) : std::min(sx, sy);
     float drawW = texW * scale;
     float drawH = texH * scale;
     return {areaX + (areaW - drawW) * 0.5f, areaY + (areaH - drawH) * 0.5f, drawW, drawH};
@@ -294,11 +350,7 @@ void WaraWaraBackground::onRender(nxui::Renderer& ren) {
     // A batched gradient is cheaper, deterministic and visually close enough.
     ren.drawGradientRect(m_rect, m_secondary, m_accent);
 
-    if (m_backgroundImage.valid() && m_config.imageOpacity > 0.f) {
-        ren.drawTexture(&m_backgroundImage,
-                        backgroundImageRect(),
-                        nxui::Color::white().withAlpha(m_config.imageOpacity * m_opacity));
-    }
+    drawWallpaper(ren, 1.f);
 
     // Lite keeps wallpaper; only the floating/grid glass shapes are skipped.
     if (!m_liteSuppressed) {
@@ -313,11 +365,7 @@ void WaraWaraBackground::renderLetterboxOverlay(nxui::Renderer& ren, float opaci
     const float prev = m_opacity;
     m_opacity = prev * std::clamp(opacityMul, 0.f, 1.f);
     // Skip the opaque gradient so the blurred cover stays visible in the bars.
-    if (m_backgroundImage.valid() && m_config.imageOpacity > 0.f) {
-        ren.drawTexture(&m_backgroundImage,
-                        backgroundImageRect(),
-                        nxui::Color::white().withAlpha(m_config.imageOpacity * m_opacity * 0.55f));
-    }
+    drawWallpaper(ren, 0.55f);
     if (!m_liteSuppressed) {
         for (const auto& s : m_shapes)
             drawShapeWithSymmetry(ren, s);
@@ -357,11 +405,7 @@ void WaraWaraBackground::renderShifted(nxui::Renderer& ren, float dy, float opac
     ren.drawGradientRect(m_rect,
                          m_secondary.withAlpha(m_secondary.a * m_opacity),
                          m_accent.withAlpha(m_accent.a * m_opacity));
-    if (m_backgroundImage.valid() && m_config.imageOpacity > 0.f) {
-        ren.drawTexture(&m_backgroundImage,
-                        backgroundImageRect(),
-                        nxui::Color::white().withAlpha(m_config.imageOpacity * m_opacity));
-    }
+    drawWallpaper(ren, 1.f);
     if (!m_liteSuppressed) {
         for (const auto& sh : m_shapes)
             drawShapeWithSymmetry(ren, sh);

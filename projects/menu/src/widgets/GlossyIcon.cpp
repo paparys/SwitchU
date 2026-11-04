@@ -1,4 +1,5 @@
 #include "GlossyIcon.hpp"
+#include "core/PlaytimeStore.hpp"
 #include "FolderPalette.hpp"
 #include "FolderStyleDraw.hpp"
 #include "core/FolderStore.hpp"
@@ -580,6 +581,11 @@ void GlossyIcon::onContentUpdate(float dt) {
     }
     if (!m_motionPaused)
         m_suspendPulse += dt * 2.8f;
+    // Skeletons: while a tile has no artwork, run a brief shimmer so a cold
+    // start reads as loading instead of as a row of blank cards. It stops on
+    // its own, so a title that genuinely has no icon does not shimmer forever.
+    if ((!m_tex || !m_tex->valid()) && m_skeletonT < 1.6f)
+        m_skeletonT = std::min(1.6f, m_skeletonT + dt);
     if (!m_motionPaused && m_entryKind == GridEntryKind::Widget && m_widgetAnimation.hasFrames())
         m_widgetAnimation.update(dt, true);
     if (!m_motionPaused && (m_jiggle || m_jiggleAmount.value() > 0.001f))
@@ -640,12 +646,60 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
     float savedOp = m_opacity;
     m_opacity = a * savedOp;
 
-    ren.drawRoundedRect({drawRect.x + 1.f, drawRect.y + 6.f,
+    ren.drawRoundedRect({drawRect.x + 1.f, drawRect.y + m_shadowOffsetY,
                          drawRect.width, drawRect.height},
                         nxui::Color(0.02f, 0.04f, 0.06f,
-                                    (m_entryKind == GridEntryKind::Empty ? 0.12f : 0.20f) * m_opacity),
+                                    (m_entryKind == GridEntryKind::Empty ? 0.6f : 1.f)
+                                        * m_shadowAlpha * m_opacity),
                         cornerRadius() + 1.f);
     nxui::GlassWidget::onRender(ren);
+
+    // Time played, bottom-right: "12h 30m" / "45m" / "3d". Hidden below a
+    // minute so titles that were never played stay clean.
+    if (m_entryKind == GridEntryKind::Application && m_titleId != 0 && m_font) {
+        const std::uint64_t seconds = switchu::playtime::secondsFor(m_titleId);
+        if (seconds >= 60ULL) {
+            std::string label;
+            if (seconds >= 86400ULL) {
+                label = std::to_string(seconds / 86400ULL) + "d";
+            } else if (seconds >= 3600ULL) {
+                const std::uint64_t hours = seconds / 3600ULL;
+                const std::uint64_t mins = (seconds % 3600ULL) / 60ULL;
+                label = std::to_string(hours) + "h";
+                if (mins != 0)
+                    label += " " + std::to_string(mins) + "m";
+            } else {
+                label = std::to_string(seconds / 60ULL) + "m";
+            }
+            constexpr float kTextScale = 1.20f; // 3x the old 0.40 badge
+            const nxui::Vec2 measured = m_font->measure(label);
+            constexpr float padX = 12.f;
+            constexpr float padY = 6.f;
+            const float pillW = measured.x * kTextScale + padX * 2.f;
+            const float pillH = measured.y * kTextScale + padY * 2.f;
+            const float inset = 6.f;
+            const nxui::Rect pill{drawRect.x + drawRect.width - pillW - inset,
+                                  drawRect.y + drawRect.height - pillH - inset,
+                                  pillW, pillH};
+            ren.drawRoundedRect(pill, nxui::Color(0.f, 0.f, 0.f, 0.46f * m_opacity),
+                                pillH * 0.5f);
+            ren.drawText(label, {pill.x + padX, pill.y + padY}, m_font,
+                         nxui::Color(1.f, 1.f, 1.f, 0.92f * m_opacity), kTextScale);
+        }
+    }
+
+    if (m_skeletonT < 1.6f && m_entryKind == GridEntryKind::Application
+        && (!m_tex || !m_tex->valid())) {
+        // Drawn under the artwork, so a tile that streams in simply covers it.
+        const nxui::Rect sk = drawRect;
+        const float skRad = cornerRadius();
+        ren.drawRoundedRect(sk, nxui::Color(1.f, 1.f, 1.f, 0.055f * m_opacity), skRad);
+        const float bandW = sk.width * 0.34f;
+        const float sweep = std::clamp(std::fmod(m_skeletonT / 1.1f, 1.f), 0.f, 1.f);
+        const float bx = sk.x + (sk.width - bandW) * sweep;
+        ren.drawRoundedRect({bx, sk.y, bandW, sk.height},
+                            nxui::Color(1.f, 1.f, 1.f, 0.065f * m_opacity), skRad);
+    }
 
     m_opacity = savedOp;
     m_rect = savedRect;
@@ -708,7 +762,7 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
                                    rad + 2.f * s, 3.2f * s);
 
         float badgeSize = 28.f * s;
-        float badgeX = r.x + r.width  - badgeSize - 4.f * s;
+        float badgeX = r.x + 4.f * s;
         float badgeY = r.y + r.height - badgeSize - 4.f * s;
 
         nxui::Vec2 badgeCenter = { badgeX + badgeSize * 0.5f, badgeY + badgeSize * 0.5f };

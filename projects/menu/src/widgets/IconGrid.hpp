@@ -1,9 +1,11 @@
 #pragma once
+#include "MotionPreset.hpp"
 #include <nxui/widgets/Widget.hpp>
 #include <nxui/focus/FocusManager.hpp>
 #include <nxui/core/Types.hpp>
 #include <nxui/core/Animation.hpp>
 #include "core/AppLayoutMode.hpp"
+#include <cmath>
 #include <vector>
 #include <memory>
 #include <functional>
@@ -51,6 +53,62 @@ public:
     void setDynamicLineUpTarget(nxui::Widget* target);
     void setDynamicLineDownTarget(nxui::Widget* target);
     // When true, single-row may use per-tile Poster frames (apps with poster.img).
+    // Tile aspect for the single-row carousel (1 = square, 16:9, 4:3).
+    // Posters keep their 2:3 frame; this only shapes plain icon tiles.
+    void setIconAspectRatio(float ratio) {
+        if (ratio <= 0.f) return;
+        if (std::abs(m_iconAspect - ratio) < 0.001f) return;
+        m_iconAspect = ratio;
+        m_lineLayoutCacheCount = -1;
+    }
+    float iconAspectRatio() const { return m_iconAspect; }
+    // Horizontal nudge for the grid and vertical nudge for the carousel row.
+    // Both are pure layout offsets; hit tests follow the drawn rects.
+    void setGridNudgeX(float px) {
+        if (std::abs(m_gridNudgeX - px) < 0.01f) return;
+        m_gridNudgeX = px;
+    }
+    // Uniform tile scale for both views (1 = the built-in size). Spacing and
+    // hit rects follow, since every rect derives from the same base cell.
+    void setIconScale(float scale) {
+        if (scale < 0.5f) scale = 0.5f;
+        if (scale > 1.6f) scale = 1.6f;
+        if (std::abs(m_iconScale - scale) < 0.001f) return;
+        m_iconScale = scale;
+        m_lineLayoutCacheCount = -1;
+    }
+    // Re-apply the current page's tile rects after a layout offset changed;
+    // a nudge otherwise waits for the next page change to show up.
+    void refreshLayout() { positionPage(m_page, 0.f); }
+    // Carousel depth: -1 pulls the row back (smaller tiles, tighter pitch, so
+    // more of them fit on screen), +1 brings it forward.
+    void setCarouselDepth(float depth) {
+        if (depth < -1.f) depth = -1.f;
+        if (depth > 1.f) depth = 1.f;
+        if (std::abs(m_carouselDepth - depth) < 0.001f) return;
+        m_carouselDepth = depth;
+        m_lineLayoutCacheCount = -1;
+    }
+    void setLineNudgeY(float px) {
+        if (std::abs(m_lineNudgeY - px) < 0.01f) return;
+        m_lineNudgeY = px;
+        m_lineLayoutCacheCount = -1;
+    }
+    // Horizontal offset of the carousel row (focused tile sits left or right
+    // of centre). Independent of the grid nudge.
+    void setLineNudgeX(float px) {
+        if (std::abs(m_lineNudgeX - px) < 0.01f) return;
+        m_lineNudgeX = px;
+        m_lineLayoutCacheCount = -1;
+    }
+
+    // Space reserved at the top/bottom of this widget for HOME chrome (the
+    // shortcut strip). Tiles and the carousel centre inside what is left, so
+    // moving the shortcuts to the bottom never parks them on the tiles.
+    void setVerticalInsets(float top, float bottom);
+    // Rect the tiles actually occupy, chrome bands excluded. The shortcut
+    // stacks read this to know where the grid begins.
+    nxui::Rect tileBand() const { return contentRect(); }
     void setLinePosterAspect(bool enabled) {
         if (m_linePosterAspect == enabled) return;
         m_linePosterAspect = enabled;
@@ -101,6 +159,14 @@ public:
     bool isTransitioning() const { return m_sliding; }
 
     void bumpEdge(int dir);
+
+    // 0 = Crisp, 1 = Smooth, 2 = Springy: scales every tween this grid owns.
+    void setMotionStyle(int style) { m_motionStyle = motion::clampStyle(style); }
+    // 0 = neighbours stay visible to the screen edge, 1 = they fade out a
+    // couple of tiles from the focus. 0.5 is the shipped falloff.
+    void setCarouselFade(float fade) {
+        m_carouselFade = fade < 0.f ? 0.f : (fade > 1.f ? 1.f : fade);
+    }
 
     void setSlideTransition(bool enabled) { m_slideTransition = enabled; }
     void setEdgePaging(bool enabled) { m_edgePaging = enabled; }
@@ -166,6 +232,16 @@ private:
     nxui::Widget* m_lineUpTarget = nullptr;
     nxui::Widget* m_lineDownTarget = nullptr;
     bool m_linePosterAspect = false;
+    float m_iconAspect = 1.f;
+    float m_gridNudgeX = 0.f;
+    float m_lineNudgeY = 0.f;
+    float m_lineNudgeX = 0.f;
+    float m_iconScale = 1.f;
+    float m_carouselDepth = 0.f;
+    int m_motionStyle = 1;
+    float m_carouselFade = 0.5f;
+    float m_insetTop = 0.f;
+    float m_insetBottom = 0.f;
     std::vector<nxui::Widget*> m_gridLeftTargets;
     std::vector<nxui::Widget*> m_gridRightTargets;
 

@@ -96,6 +96,25 @@ LockScreen::LockScreen() {
 
 void LockScreen::wireActions() {
     clearActions();
+    if (m_padCodeEnabled) {
+        // Only the four directions, Select (submit) and B (clear) do anything.
+        // Nothing here can reach unlock() directly.
+        addAction(static_cast<std::uint64_t>(nxui::Button::DUp),
+                  [this]() { appendPadStep('U'); });
+        addAction(static_cast<std::uint64_t>(nxui::Button::DDown),
+                  [this]() { appendPadStep('D'); });
+        addAction(static_cast<std::uint64_t>(nxui::Button::DLeft),
+                  [this]() { appendPadStep('L'); });
+        addAction(static_cast<std::uint64_t>(nxui::Button::DRight),
+                  [this]() { appendPadStep('R'); });
+        addAction(static_cast<std::uint64_t>(nxui::Button::A),
+                  [this]() { submitPadCode(); });
+        addAction(static_cast<std::uint64_t>(nxui::Button::Plus),
+                  [this]() { submitPadCode(); });
+        addAction(static_cast<std::uint64_t>(nxui::Button::B),
+                  [this]() { clearPadInput(); });
+        return;
+    }
     auto primary = [this]() {
         if (m_canResume)
             resumeGame();
@@ -168,7 +187,12 @@ void LockScreen::loadPendingIcon() {
 
 void LockScreen::show(bool instant) {
     auto& i18n = nxui::I18n::instance();
-    if (m_canResume) {
+    m_padInput.clear();
+    m_padErrorT = 0.f;
+    if (m_padCodeEnabled) {
+        m_unlockText = i18n.tr("lock.enter_code", "Enter the D-pad code");
+        m_resumeText.clear();
+    } else if (m_canResume) {
         m_unlockText = i18n.tr("lock.unlock_home", "Press B to unlock");
         m_resumeText = i18n.tr("lock.resume", "Press A to resume");
     } else {
@@ -320,7 +344,57 @@ void LockScreen::beginCurtainUnlock() {
 void LockScreen::unlock() {
     if (!m_active || m_unlocking || m_age < kInputGuard)
         return;
+    // With a passcode set only the code path may open the view, so swipe,
+    // physical HOME and the button map cannot bypass it.
+    if (m_padCodeEnabled)
+        return;
     beginCurtainUnlock();
+}
+
+void LockScreen::setPadCode(bool enabled, const std::string& code) {
+    std::string clean;
+    for (char c : code) {
+        if (c == 'U' || c == 'D' || c == 'L' || c == 'R')
+            clean.push_back(c);
+        if (clean.size() == 4)
+            break;
+    }
+    while (clean.size() < 4)
+        clean.push_back('U');
+    m_padCodeEnabled = enabled;
+    m_padCode = std::move(clean);
+    m_padInput.clear();
+    m_padErrorT = 0.f;
+    wireActions();
+}
+
+void LockScreen::appendPadStep(char step) {
+    if (!m_active || m_unlocking || m_age < kInputGuard)
+        return;
+    if (m_padInput.size() >= 4)
+        m_padInput.clear();
+    m_padInput.push_back(step);
+    m_padErrorT = 0.f;
+    if (m_padInput.size() == 4)
+        submitPadCode();
+}
+
+void LockScreen::submitPadCode() {
+    if (!m_active || m_unlocking || m_age < kInputGuard)
+        return;
+    if (m_padInput.size() == 4 && m_padInput == m_padCode) {
+        m_padInput.clear();
+        m_padErrorT = 0.f;
+        beginCurtainUnlock();
+        return;
+    }
+    m_padInput.clear();
+    m_padErrorT = 1.4f;
+}
+
+void LockScreen::clearPadInput() {
+    m_padInput.clear();
+    m_padErrorT = 0.f;
 }
 
 void LockScreen::resumeGame() {
@@ -452,6 +526,8 @@ void LockScreen::refreshClock() {
 }
 
 void LockScreen::update(float dt) {
+    if (m_padErrorT > 0.f)
+        m_padErrorT = std::max(0.f, m_padErrorT - dt);
     if (!m_active)
         return;
     m_age += dt;
@@ -704,15 +780,55 @@ void LockScreen::render(nxui::Renderer& ren) {
         ren.drawRoundedRect({body.x + 2.5f * zoom, body.y + 2.5f * zoom,
                              (body.width - 5.f * zoom) * fill, body.height - 5.f * zoom},
                             ink.withAlpha(fade * 0.92f), 2.5f * zoom);
-        if (m_charging)
+        if (m_charging) {
+            // Overlaps the shell and spills past its edges, mirroring the HUD.
+            const float boltH = body.height * 1.24f;
+            const float boltW = boltH * 0.56f;
             switchu::battery_drawing::drawLightningBolt(
-                ren, {body.x + 10.f * zoom, body.y - 2.f * zoom, 18.f * zoom, 22.f * zoom},
+                ren, {body.x + (body.width - boltW) * 0.5f,
+                      body.y + (body.height - boltH) * 0.5f,
+                      boltW, boltH},
                 ink, th.background.withAlpha(fade), 1.f);
+        }
     }
 
     drawClock(ren, dx, dy, zoom, fade, ink, inkSoft);
 
-    if (m_canResume) {
+    if (m_padCodeEnabled) {
+        const float cellW = 46.f;
+        const float cellH = 58.f;
+        const float cellGap = 14.f;
+        const float totalW = cellW * 4.f + cellGap * 3.f;
+        const float x0 = (kScreenW - totalW) * 0.5f;
+        const float y0 = 352.f;
+        const nxui::Color bad(0.95f, 0.36f, 0.34f, 1.f);
+        const nxui::Color tick = (m_padErrorT > 0.f) ? bad : ink;
+        for (int i = 0; i < 4; ++i) {
+            const nxui::Rect cell = at({x0 + i * (cellW + cellGap), y0, cellW, cellH});
+            const bool filled = i < static_cast<int>(m_padInput.size());
+            ren.drawRoundedRect(cell, tick.withAlpha(fade * (filled ? 0.22f : 0.09f)),
+                                12.f * zoom);
+            ren.drawRoundedRectOutline(cell, tick.withAlpha(fade * (filled ? 0.95f : 0.42f)),
+                                       12.f * zoom, 2.f * zoom);
+            if (filled) {
+                const std::string glyph(1, m_padInput[static_cast<std::size_t>(i)]);
+                const nxui::Vec2 gs = m_font->measure(glyph);
+                ren.drawText(glyph,
+                             {cell.x + (cell.width - gs.x * zoom) * 0.5f,
+                              cell.y + (cell.height - gs.y * zoom) * 0.5f},
+                             m_font, tick.withAlpha(fade), zoom);
+            }
+        }
+        const std::string hint = (m_padErrorT > 0.f)
+            ? nxui::I18n::instance().tr("lock.code_wrong", "Wrong code")
+            : nxui::I18n::instance().tr("lock.code_hint",
+                                        "Press Up / Down / Left / Right. B clears.");
+        drawCentered(ren, hint, y0 + cellH + 16.f, m_smallFont ? m_smallFont : m_font,
+                     (m_padErrorT > 0.f) ? bad.withAlpha(fade) : inkSoft,
+                     0.92f, dx, dy, zoom);
+    }
+
+    if (m_canResume && !m_padCodeEnabled) {
         if (m_hasIcon) {
             const nxui::Rect ir = at(iconRect(0.f));
             // Tint with fade so the resume tile dissolves with the Lock plane.
@@ -759,7 +875,7 @@ void LockScreen::render(nxui::Renderer& ren) {
                       btn.y + (btn.height - rsz.y * zoom) * 0.5f},
                      m_font, ink, zoom);
         drawCentered(ren, m_unlockText, 600.f, small, inkSoft, 1.0f, dx, dy, zoom);
-    } else {
+    } else if (!m_padCodeEnabled) {
         drawCentered(ren, m_unlockText, 348.f, m_font, inkSoft, 1.05f, dx, dy, zoom);
     }
 

@@ -80,7 +80,11 @@ void AppletButton::onContentRender(nxui::Renderer& ren) {
     float ix = cr.x + (cr.width  - iconSz) * 0.5f;
     float iy = cr.y + (cr.height - iconSz) * 0.5f;
 
-    float iconCorner = m_iconCircular ? (iconSz * 0.5f) : (cornerRadius() - 4.f);
+    // Square shortcuts set the chrome radius to 0; the old -4.f then went
+    // negative and asked the renderer for an inverted corner.
+    float iconCorner = m_iconCircular
+        ? (iconSz * 0.5f)
+        : std::clamp(cornerRadius() - 4.f, 0.f, iconSz * 0.5f);
     ren.drawTextureRounded(tex, {ix, iy, iconSz, iconSz},
                            iconCorner,
                            m_iconTint.withAlpha(m_iconTint.a * m_opacity));

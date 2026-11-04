@@ -91,6 +91,10 @@ public:
     void refreshNow() { m_lastMinute = -1; refreshClock(); }
     void handleTouch(nxui::Input& input);
     void requestUnlock() { unlock(); }
+    /// D-pad passcode: four directional steps (U/D/L/R) that must be entered in
+    /// order before the view will open. Disabled restores the stock unlock.
+    void setPadCode(bool enabled, const std::string& code);
+    bool padCodeEnabled() const { return m_padCodeEnabled; }
 
     bool isActive() const { return m_active; }
     bool isUnlocking() const { return m_unlocking; }
@@ -108,6 +112,9 @@ private:
     void loadPendingHero();
     void loadPendingIcon();
     void resetSwipe();
+    void appendPadStep(char step);
+    void submitPadCode();
+    void clearPadInput();
     void drawAtmosphere(nxui::Renderer& ren, float dx, float dy, float zoom, float fade) const;
     void drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, float fade,
                    const nxui::Color& ink, const nxui::Color& inkSoft) const;
@@ -135,6 +142,10 @@ private:
     int m_battery = -1;
     bool m_charging = false;
     bool m_canResume = false;
+    bool m_padCodeEnabled = false;
+    std::string m_padCode = "UDLR";
+    std::string m_padInput;
+    float m_padErrorT = 0.f;
 
     nxui::Texture m_heroTex;
     std::vector<std::uint8_t> m_pendingHero;

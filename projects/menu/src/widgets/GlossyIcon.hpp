@@ -43,6 +43,13 @@ public:
     void setSuspended(bool s)     { m_suspended = s; }
     bool isSuspended() const      { return m_suspended; }
     void setMotionPaused(bool paused) { m_motionPaused = paused; }
+    // Drop shadow under the tile: offset in px, strength 0-1.
+    void setShadow(float offsetY, float alpha) {
+        m_shadowOffsetY = offsetY;
+        m_shadowAlpha = alpha;
+    }
+    float m_shadowOffsetY = 6.f;
+    float m_shadowAlpha = 0.20f;
     bool motionPaused() const { return m_motionPaused; }
 
     void setIsGameCard(bool gc)     { m_isGameCard = gc; }
@@ -175,6 +182,8 @@ private:
     bool        m_posterFrame = false;
     nxui::Color m_loadingColor = nxui::Color::white();
     float       m_suspendPulse = 0.f;
+    // Seconds spent without artwork; drives the short loading shimmer.
+    float       m_skeletonT = 0.f;
     int         m_consoleBatteryPercent = 0;
     bool        m_consoleBatteryCharging = false;
     nxui::Texture* m_batteryConsoleIcon = nullptr;
