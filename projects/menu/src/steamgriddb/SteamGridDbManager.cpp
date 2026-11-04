@@ -7,6 +7,7 @@
 #include <nxui/core/I18n.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -65,12 +66,40 @@ ArtworkKindInfo kindInfo(SteamGridDbManager::ArtworkKind kind) {
                 true, true, false, true, 460, 215};
     case Kind::Icon:
     default:
-        // Icons are PNG-only on SGDB. Grid icons draw at 160px; prefer 256/512,
-        // keep 1024 so games without smaller uploads still appear (ranked down).
+        // Icons are PNG-only on SGDB. No dimensions filter: the search returns
+        // every icon size the library holds (128, 256, 512, 1024 and anything
+        // else), so a title with only one unusual size is still found. Asking
+        // for a fixed set of sizes hid those titles entirely.
         return {"/icons", "Icon", "icon", "selectedIconId", "selectedIconIndex",
-                "&mimes=image/png&dimensions=256,512,1024",
+                "&mimes=image/png",
                 false, false, false, false, 0, 0};
     }
+}
+
+float aspectTargetFor(SteamGridDbManager::ArtworkAspect aspect) {
+    switch (aspect) {
+    case SteamGridDbManager::ArtworkAspect::Wide16x9:   return 16.f / 9.f;
+    case SteamGridDbManager::ArtworkAspect::Classic4x3: return 4.f / 3.f;
+    case SteamGridDbManager::ArtworkAspect::Any:
+    default: return 0.f;
+    }
+}
+
+// SteamGridDB validates the dimensions parameter against its own fixed enum, so
+// sending arbitrary pixel sizes is rejected outright with "invalid asset
+// dimensions specified". A shaped search therefore drops the server-side filter
+// and fetches every upload, keeping the shape check client-side in
+// rankedImages(). That also sees every resolution the library has, which no
+// fixed size list could cover.
+std::string querySuffixFor(const ArtworkKindInfo& info,
+                           SteamGridDbManager::ArtworkAspect aspect) {
+    std::string suffix = info.querySuffix;
+    if (aspect == SteamGridDbManager::ArtworkAspect::Any)
+        return suffix;
+    const std::size_t dimensions = suffix.find("&dimensions=");
+    if (dimensions != std::string::npos)
+        suffix.resize(dimensions);
+    return suffix;
 }
 
 std::string pathForKind(SteamGridDbManager::ArtworkKind kind, std::uint64_t titleId) {
@@ -305,9 +334,11 @@ const nlohmann::json* chooseImage(const nlohmann::json& images, bool portrait) {
     return best;
 }
 
-std::vector<const nlohmann::json*> rankedImages(const nlohmann::json& images,
-                                                bool requireLandscape,
-                                                bool requirePortrait = false) {
+std::vector<const nlohmann::json*> rankedImages(
+    const nlohmann::json& images, bool requireLandscape,
+    bool requirePortrait = false,
+    SteamGridDbManager::ArtworkAspect aspect = SteamGridDbManager::ArtworkAspect::Any,
+    float targetAspect = 0.f) {
     std::vector<const nlohmann::json*> ranked;
     if (!images.is_array()) return ranked;
     for (const auto& image : images) {
@@ -325,6 +356,31 @@ std::vector<const nlohmann::json*> rankedImages(const nlohmann::json& images,
             continue;
         if (requirePortrait && h <= w)
             continue;
+        if (aspect != SteamGridDbManager::ArtworkAspect::Any && w > 0 && h > 0) {
+            const float ratio = static_cast<float>(w) / static_cast<float>(h);
+            // SteamGridDB's wide grids are 460x215 / 920x430, i.e. 2.14, not the
+            // ideal 1.78, and "4:3" uploads run from 5:4 through 3:2. Matching a
+            // tight window around 16:9 therefore threw away almost every upload,
+            // which is why shaped searches looked empty.
+            const bool wide = ratio >= 1.50f && ratio <= 2.80f;
+            const bool classic = ratio >= 1.15f && ratio < 1.50f;
+            bool accept = true;
+            switch (aspect) {
+                case SteamGridDbManager::ArtworkAspect::WideAndClassic:
+                    accept = wide || classic;
+                    break;
+                case SteamGridDbManager::ArtworkAspect::Wide16x9:
+                    accept = wide;
+                    break;
+                case SteamGridDbManager::ArtworkAspect::Classic4x3:
+                    accept = classic;
+                    break;
+                default:
+                    break;
+            }
+            if (!accept)
+                continue;
+        }
         ranked.push_back(&image);
     }
     std::stable_sort(ranked.begin(), ranked.end(), [](const auto* a, const auto* b) {
@@ -334,6 +390,22 @@ std::vector<const nlohmann::json*> rankedImages(const nlohmann::json& images,
                           - b->value("downvotes", 0L);
         return scoreA > scoreB;
     });
+    if (targetAspect > 0.f) {
+        // Votes still order the list, but only inside a bucket: a 4:3 request
+        // must not show the widest upload first just because it has the most
+        // upvotes. 0 = on shape, 1 = usable, 2 = unknown size.
+        auto offTarget = [targetAspect](const nlohmann::json* image) {
+            const int w = image->value("width", 0);
+            const int h = image->value("height", 0);
+            if (w <= 0 || h <= 0) return 2;
+            const float diff = static_cast<float>(w) / static_cast<float>(h) - targetAspect;
+            return (diff < 0.f ? -diff : diff) <= 0.22f ? 0 : 1;
+        };
+        std::stable_sort(ranked.begin(), ranked.end(),
+            [&offTarget](const auto* a, const auto* b) {
+                return offTarget(a) < offTarget(b);
+            });
+    }
     return ranked;
 }
 
@@ -447,12 +519,13 @@ SteamGridDbManager::~SteamGridDbManager() {
 
 SteamGridDbManager::BrowseResult SteamGridDbManager::browse(
     const std::string& apiKey, std::uint64_t titleId, const std::string& title,
-    const std::string& query, ArtworkKind kind) {
+    const std::string& query, ArtworkKind kind, ArtworkAspect aspect) {
     BrowseResult result;
     result.titleId = titleId;
     result.title = title;
     result.query = query.empty() ? title : query;
     result.kind = kind;
+    result.aspect = aspect;
     if (apiKey.empty() || titleId == 0 || result.query.empty() || kind == ArtworkKind::None) {
         result.error = "Invalid SteamGridDB search";
         return result;
@@ -500,7 +573,16 @@ SteamGridDbManager::BrowseResult SteamGridDbManager::browse(
             probes.reserve(ranked.size());
             for (const auto& match : ranked) {
                 probes.push_back(std::async(std::launch::async,
-                    [apiKey, kind, id = match.id]() {
+                    [apiKey, kind, aspect, id = match.id]() {
+                        // A shaped icon search is really a grid search, so probe
+                        // grids too. Otherwise a game that only has landscape art
+                        // is dropped before the picker can show it.
+                        if (aspect != ArtworkAspect::Any && kind == ArtworkKind::Icon) {
+                            // Shaped icon searches prefer grids but fall back to the
+                            // square icon set, so keep games that have either.
+                            return probeGameHasArtwork(apiKey, id, ArtworkKind::GridWide)
+                                || probeGameHasArtwork(apiKey, id, ArtworkKind::Icon);
+                        }
                         return probeGameHasArtwork(apiKey, id, kind);
                     }));
             }
@@ -538,7 +620,7 @@ SteamGridDbManager::BrowseResult SteamGridDbManager::browse(
         }
 
         auto artwork = browseGame(apiKey, titleId, title, result.query, kind,
-                                  ranked.front().id, ranked.front().name);
+                                  ranked.front().id, ranked.front().name, aspect);
         // Keep the list available for B→games when search was ambiguous-but-clear.
         if (ranked.size() > 1)
             artwork.gameMatches = ranked;
@@ -555,7 +637,7 @@ SteamGridDbManager::BrowseResult SteamGridDbManager::browse(
 SteamGridDbManager::BrowseResult SteamGridDbManager::browseGame(
     const std::string& apiKey, std::uint64_t titleId, const std::string& title,
     const std::string& query, ArtworkKind kind, long long gameId,
-    const std::string& gameName) {
+    const std::string& gameName, ArtworkAspect aspect) {
     BrowseResult result;
     result.titleId = titleId;
     result.title = title;
@@ -563,6 +645,7 @@ SteamGridDbManager::BrowseResult SteamGridDbManager::browseGame(
     result.kind = kind;
     result.gameId = gameId;
     result.gameName = gameName.empty() ? result.query : gameName;
+    result.aspect = aspect;
     if (apiKey.empty() || titleId == 0 || gameId <= 0 || kind == ArtworkKind::None) {
         result.error = "Invalid SteamGridDB game";
         return result;
@@ -573,14 +656,23 @@ SteamGridDbManager::BrowseResult SteamGridDbManager::browseGame(
         "Accept: application/json",
     };
     try {
-        const auto info = kindInfo(kind);
+        // 16:9 / 4:3 artwork only exists in the grids endpoint. A shaped search
+        // for a replacement icon therefore reads grids too: the square /icons set
+        // has no landscape uploads, so filtering it by shape always came back empty.
+        const bool shaped = aspect != ArtworkAspect::Any;
+        const bool shapedIcon = shaped && kind == ArtworkKind::Icon;
+        const auto info = shapedIcon ? kindInfo(ArtworkKind::GridWide) : kindInfo(kind);
+        const ArtworkAspect effectiveAspect =
+            (kind == ArtworkKind::GridWide || shapedIcon) ? aspect : ArtworkAspect::Any;
         std::string url = std::string(kApiBase) + info.endpoint + "/game/"
                         + std::to_string(gameId) + "?nsfw=false&humor=false";
         if (info.useStaticTypes) url += "&types=static";
-        url += info.querySuffix;
+        url += querySuffixFor(info, effectiveAspect);
         const auto images = apiData(url, headers);
+        const float shapeTarget = aspectTargetFor(effectiveAspect);
         const auto ranked = rankedImages(images, info.requireLandscape,
-                                         info.requirePortrait);
+                                         info.requirePortrait, effectiveAspect,
+                                         shapeTarget);
         constexpr std::size_t kMaxCandidates = 18;
         for (std::size_t i = 0; i < ranked.size() && i < kMaxCandidates; ++i) {
             Candidate candidate;
@@ -591,7 +683,59 @@ SteamGridDbManager::BrowseResult SteamGridDbManager::browseGame(
             candidate.height = ranked[i]->value("height", 0);
             if (!candidate.url.empty()) result.candidates.push_back(std::move(candidate));
         }
-        if (result.candidates.empty()) throw std::runtime_error("No artwork available");
+        if (result.candidates.empty() && shaped) {
+            // Nothing sits inside the requested shape window. 4:3 is the usual
+            // case: SteamGridDB stores wide grids (~2.14) and portrait covers,
+            // and genuine 4:3 uploads are rare. Responses are already in hand
+            // and shape-independent, so re-rank them unfiltered instead of
+            // rejecting the game or silently swapping in square icons.
+            const auto relaxed = rankedImages(images, info.requireLandscape,
+                                              info.requirePortrait,
+                                              ArtworkAspect::Any, shapeTarget);
+            for (std::size_t i = 0; i < relaxed.size() && i < kMaxCandidates; ++i) {
+                Candidate candidate;
+                candidate.id = relaxed[i]->value("id", 0LL);
+                candidate.url = relaxed[i]->value("url", std::string());
+                candidate.thumbnailUrl = relaxed[i]->value("thumb", candidate.url);
+                candidate.width = relaxed[i]->value("width", 0);
+                candidate.height = relaxed[i]->value("height", 0);
+                if (!candidate.url.empty())
+                    result.candidates.push_back(std::move(candidate));
+            }
+        }
+        if (result.candidates.empty() && shapedIcon) {
+            // Nothing on SteamGridDB matches that shape for this game, so offer
+            // the square icon set instead of an empty picker.
+            const auto iconInfo = kindInfo(ArtworkKind::Icon);
+            std::string iconUrl = std::string(kApiBase) + iconInfo.endpoint + "/game/"
+                                + std::to_string(gameId) + "?nsfw=false&humor=false";
+            if (iconInfo.useStaticTypes) iconUrl += "&types=static";
+            iconUrl += querySuffixFor(iconInfo, ArtworkAspect::Any);
+            const auto iconImages = apiData(iconUrl, headers);
+            const auto iconRanked = rankedImages(iconImages, iconInfo.requireLandscape,
+                                                 iconInfo.requirePortrait);
+            for (std::size_t i = 0; i < iconRanked.size() && i < kMaxCandidates; ++i) {
+                Candidate candidate;
+                candidate.id = iconRanked[i]->value("id", 0LL);
+                candidate.url = iconRanked[i]->value("url", std::string());
+                candidate.thumbnailUrl = iconRanked[i]->value("thumb", candidate.url);
+                candidate.width = iconRanked[i]->value("width", 0);
+                candidate.height = iconRanked[i]->value("height", 0);
+                if (!candidate.url.empty())
+                    result.candidates.push_back(std::move(candidate));
+            }
+        }
+        if (result.candidates.empty()) {
+            if (effectiveAspect != ArtworkAspect::Any)
+                throw std::runtime_error(
+                    std::string("No ")
+                    + (effectiveAspect == ArtworkAspect::Wide16x9 ? "16:9"
+                       : effectiveAspect == ArtworkAspect::Classic4x3 ? "4:3"
+                       : "16:9 or 4:3")
+                    + " grids for '" + result.gameName
+                    + "'. Press Y in the artwork browser to change the shape filter");
+            throw std::runtime_error("No artwork available");
+        }
         result.success = true;
     } catch (const std::exception& ex) {
         result.error = friendlySteamGridDbTransportError(ex.what() ? ex.what() : "");

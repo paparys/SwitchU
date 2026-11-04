@@ -14,6 +14,9 @@ class SteamGridDbManager {
 public:
     using ProgressCallback = std::function<void(const std::string&, float)>;
     enum class ArtworkKind { None, Hero, Logo, Icon, Poster, GridWide };
+    // Landscape artwork aspect requested from SteamGridDB. Any keeps the
+    // historical dimension filter; the others match 16:9 / 4:3 uploads.
+    enum class ArtworkAspect { Any, Wide16x9, Classic4x3, WideAndClassic };
 
     struct Candidate {
         long long id = 0;
@@ -38,6 +41,7 @@ public:
         long long gameId = 0;
         std::string gameName;
         float matchScore = 0.f;
+        ArtworkAspect aspect = ArtworkAspect::Any;
         std::string error;
         // When non-empty and candidates empty, the picker should let the user
         // choose a SteamGridDB game before loading artwork.
@@ -85,12 +89,14 @@ public:
 
     static BrowseResult browse(const std::string& apiKey, std::uint64_t titleId,
                                const std::string& title, const std::string& query,
-                               ArtworkKind kind);
+                               ArtworkKind kind,
+                               ArtworkAspect aspect = ArtworkAspect::Any);
     /// Load artwork candidates for an already-chosen SteamGridDB game id.
     static BrowseResult browseGame(const std::string& apiKey, std::uint64_t titleId,
                                    const std::string& title, const std::string& query,
                                    ArtworkKind kind, long long gameId,
-                                   const std::string& gameName);
+                                   const std::string& gameName,
+                                   ArtworkAspect aspect = ArtworkAspect::Any);
     /// Optional abort poll (e.g. progress-dialog Cancel) stops the download
     /// between curl progress ticks; prepare/decode also checks between steps.
     using AbortCheck = std::function<bool()>;
