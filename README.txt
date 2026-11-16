@@ -223,8 +223,8 @@ Game library
       - Sort by A-Z, Recently played or Favourites with Y.
       - Add or remove the focused app from Favourites from the same menu.
       - Launch with A, open game options with X, and page with L/R.
-      - Tiles show accumulated playtime; the All Apps metadata strip also
-        shows whether the app has been played.
+      - HOME tiles show accumulated playtime; the All Apps metadata strip
+        shows playtime and whether the app has been played.
       - Grid size is configurable from Icons & Wallpaper: 3-8 columns and
         2-5 rows.
   * Search games from the field in the Carousel shortcut strip. Results are
@@ -232,8 +232,8 @@ Game library
     game on HOME.
   * Game order can be My order, A-Z or Recent. Recent uses the last time each
     game was opened.
-  * Playtime is tracked per title, shown on tiles and in All Apps, and stored
-    in sdmc:/config/SwitchU/playtime.json.
+  * Playtime is tracked per title, shown on HOME tiles and in All Apps, and
+    stored in sdmc:/config/SwitchU/playtime.json.
   * Per-game tiles can be rearranged by moving them on the HOME menu.
   * Tile sizes: 1x1, 2x1, 4x2, 2x2 and 2x3, including tall poster tiles.
 
