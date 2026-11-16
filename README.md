@@ -54,15 +54,15 @@ included manager.
 
 ## Screenshots
 
-![](./screenshots/1.jpg)
+![](./screenshots/01-diddy-kong-racing.jpg)
 
 <details>
   <summary><b>More screenshots</b></summary>
 
-![](./screenshots/2.jpg)
-![](./screenshots/3.jpg)
-![](./screenshots/4.jpg)
-![](./screenshots/5.jpg)
+![](./screenshots/02-donkey-kong-country.jpg)
+![](./screenshots/03-sleep-settings.jpg)
+![](./screenshots/04-kirby-carousel.jpg)
+![](./screenshots/05-kirby-logo.jpg)
 
 </details>
 

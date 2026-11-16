@@ -15,7 +15,8 @@ CUSTOM FIRMWARE REQUIRED
 SwitchU runs as an Atmosphere HOME-menu override. Read the install steps
 before copying anything to your SD card, and back up your SD card first.
 
-Screenshots are in the screenshots/ folder (1.jpg through 5.jpg).
+Screenshots are in the screenshots/ folder (01-diddy-kong-racing.jpg through
+05-kirby-logo.jpg).
 
 CONTENTS
 --------
