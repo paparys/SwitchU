@@ -2,6 +2,8 @@
  SWITCHU
  A Wii U-style custom HOME menu replacement for Nintendo Switch
  Version 1.4.0
+ Fork of SwitchU by PoloNX, based on upstream v1.4.0.
+ Independently maintained by paparys; not an official upstream release.
 ================================================================================
 
 SwitchU replaces the Nintendo Switch HOME menu with a Wii U-inspired
@@ -50,7 +52,7 @@ Fresh install
      about to merge into.
 
   2. Download SwitchU.zip from the latest release:
-     https://github.com/PoloNX/SwitchU/releases/latest
+     https://github.com/paparys/SwitchU/releases/latest
 
   3. Extract the archive. A normal release contains:
 
@@ -475,7 +477,7 @@ Requirements
 
 Clone
 -----
-    git clone --recursive https://github.com/PoloNX/SwitchU
+    git clone --recursive https://github.com/paparys/SwitchU
     cd SwitchU
 
 If you cloned without --recursive:
@@ -585,10 +587,18 @@ reboot. Manager is safer because it verifies the change and can roll it back.
  CREDITS
 ================================================================================
 
-  * PoloNX - SwitchU.
+SwitchU was created by PoloNX. This fork preserves that credit and the
+upstream project's licensing.
+
+  * PoloNX - original SwitchU project, design and implementation.
   * Xortroll - help and inspiration from uLaunch.
   * Atmosphere - custom firmware and the optional haze MTP implementation.
-  * Everyone who contributed themes, translations, artwork and bug reports.
+  * bshurikan, TomasUribe and Jul879n - significant upstream contributions to
+    SwitchU 1.4.0, including Frame Tap support and the Lock Screen prototype.
+  * Everyone who contributed themes, translations, artwork and bug reports to
+    the upstream project.
+  * paparys - maintenance of this fork and fork-specific UI, cleanup and build
+    changes.
 
 
 ================================================================================
@@ -596,7 +606,7 @@ reboot. Manager is safer because it verifies the change and can roll it back.
 ================================================================================
 
 SwitchU is licensed under the GNU General Public License v3.0. See the LICENSE
-file or https://github.com/PoloNX/SwitchU/blob/master/LICENSE for the full text.
+file or https://github.com/paparys/SwitchU/blob/master/LICENSE for the full text.
 
 The optional MTP component vendors Atmosphere haze and is distributed under
 GPLv2; see its own license and headers for details.

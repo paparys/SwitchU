@@ -517,6 +517,11 @@ that credit and the upstream project's licensing.
   [uLaunch](https://github.com/Xortroll/uLaunch).
 - [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere) — custom firmware
   and the optional haze MTP implementation.
+- [bshurikan](https://github.com/bshurikan),
+  [TomasUribe](https://github.com/TomasUribe), and
+  [Jul879n](https://github.com/Jul879n) — significant upstream contributions to
+  SwitchU 1.4.0, including Frame Tap support, the Lock Screen prototype, and
+  related fixes.
 - Everyone who contributed themes, translations, artwork and bug reports to
   the upstream project.
 - [paparys](https://github.com/paparys) — maintenance of this fork and
