@@ -1,7 +1,7 @@
 ================================================================================
  SWITCHU
  A Wii U-style custom HOME menu replacement for Nintendo Switch
- Version 1.4.0
+ Version 1.4.0-fork.1
  Fork of SwitchU by PoloNX, based on upstream v1.4.0.
  Independently maintained by paparys; not an official upstream release.
 ================================================================================
@@ -22,6 +22,7 @@ CONTENTS
   Install
   First boot
   Using SwitchU
+  Fork changes
   Features
   Settings reference
   SwitchU Manager
@@ -127,14 +128,73 @@ packs and music are stored on the SD card.
   * B goes back or closes an overlay.
   * + on a game opens its per-game options.
   * Touch works throughout the UI, including scrolling and sliders.
-  * Change View in the top area switches between the grid and the single-row
-    carousel.
+  * Minus opens All Apps. On an empty HOME page, hold Minus to remove that
+    page.
+  * In All Apps, A launches, X opens game options, Y opens the sort and
+    favourites menu, L/R change pages, and B closes the screen.
+  * Search is a field in the Carousel shortcut strip. Type part of a game
+    name, then pick a result to jump to its HOME tile.
+  * Change View cycles Carousel, Shelf (5x2), Showcase (3x2) and Poster Wall
+    (6x2). Inside a folder it toggles the folder's grid and single-row views.
   * Quick Settings opens from the battery widget and provides brightness,
     volume, network, music and power controls.
   * Theme Shop in the sidebar opens the installed and community theme store.
   * Settings in the sidebar opens the full settings app.
   * Sleep and the power menu are available from the sidebar and Quick
     Settings.
+
+
+================================================================================
+ FORK CHANGES
+================================================================================
+
+This fork is based on upstream SwitchU v1.4.0 and has not been merged with
+upstream v1.4.1. Compared with that base:
+
+Added
+-----
+  * All Apps screen with a configurable grid, A-Z / Recently played /
+    Favourites sorting, favourite toggling, playtime and page controls.
+  * Game search in the Carousel shortcut strip, with a result list that
+    jumps focus to the matching HOME tile.
+  * Playtime tracking (sdmc:/config/SwitchU/playtime.json) and Recent game
+    ordering.
+  * Four HOME layouts: Carousel, Shelf (5x2), Showcase (3x2) and Poster Wall
+    (6x2).
+  * Local wallpapers, including a preview-before-apply picker, an
+    animated-wallpaper toggle and a 5-30 fps cap.
+  * Style settings tab, including chrome, focus, title capsule, top bar,
+    wallpaper and motion controls plus three Look presets.
+  * All Apps grid controls in Icons & Wallpaper: 3-8 columns and 2-5 rows.
+  * Frame Tap-aware memory handling when a connected viewer needs capture
+    headroom.
+  * Windows build recipe (build_windows.sh).
+  * Shared chrome, focus, text-fitting and keycap helpers plus a frame
+    profiler (internal rendering changes).
+
+Changed
+-------
+  * Change View now cycles the four HOME layouts instead of switching only
+    between grid and single-row.
+  * The sidebar exposes seven applet shortcuts, including All Apps.
+  * Game order offers My order, A-Z and Recent.
+  * Layout presets and All Apps grid controls sit at the bottom of Icons &
+    Wallpaper instead of separate rail entries.
+
+Removed or retired
+------------------
+  * On-screen page-arrow controls and their left/right arrow assets; D-pad,
+    triggers, L/R/ZL/ZR and touch swipes still page through the library.
+  * The standalone Opacity tab; panel appearance is now controlled from
+    Style, and the old opacity colour/solid controls are no longer exposed.
+  * The standalone All Apps and Layout presets rail entries. Their controls
+    remain at the bottom of Icons & Wallpaper.
+  * Unused Theme Shop loading GIF/WebP art, the default leaf icon, the
+    page-arrow icons and the liquid-glass shader. Panels now use themed
+    translucent or flat plates.
+
+Everything else from upstream v1.4.0 remains, including Theme Shop, folders,
+SteamGridDB artwork, Manager, MTP, themes, music and accessibility.
 
 
 ================================================================================
@@ -147,8 +207,8 @@ A complete HOME-menu replacement
     than a separate app.
   * Wii U-inspired focus movement, tile depth, page transitions and launch
     animations.
-  * Two HOME views: a grid and a single-row carousel, with an animated switch
-    between them.
+  * Four HOME layouts: Carousel (single row), Shelf (5x2), Showcase (3x2) and
+    Poster Wall (6x2), with an animated switch between them.
   * Page and row navigation designed for both controllers and touch.
   * Multiple user profiles, each with their own saved settings, plus an
     optional default profile.
@@ -158,6 +218,22 @@ A complete HOME-menu replacement
 Game library
 ------------
   * Shows installed games, game cards and folders on HOME.
+  * All Apps lists the installed applications in a paged grid, opened from
+    the sidebar or with Minus:
+      - Sort by A-Z, Recently played or Favourites with Y.
+      - Add or remove the focused app from Favourites from the same menu.
+      - Launch with A, open game options with X, and page with L/R.
+      - Tiles show accumulated playtime; the All Apps metadata strip also
+        shows whether the app has been played.
+      - Grid size is configurable from Icons & Wallpaper: 3-8 columns and
+        2-5 rows.
+  * Search games from the field in the Carousel shortcut strip. Results are
+    matched against installed game names; choosing one jumps focus to that
+    game on HOME.
+  * Game order can be My order, A-Z or Recent. Recent uses the last time each
+    game was opened.
+  * Playtime is tracked per title, shown on tiles and in All Apps, and stored
+    in sdmc:/config/SwitchU/playtime.json.
   * Per-game tiles can be rearranged by moving them on the HOME menu.
   * Tile sizes: 1x1, 2x1, 4x2, 2x2 and 2x3, including tall poster tiles.
 
@@ -188,13 +264,15 @@ Folders
 
 Sidebar and shortcuts
 ---------------------
-  * Dedicated applet shortcuts for Album, Mii Editor, Controllers, Settings,
-    Theme Shop and Sleep.
+  * Dedicated applet shortcuts for Album, Mii Editor, All Apps, Settings,
+    Controllers, Theme Shop and Sleep.
+  * In the Carousel layout, the shortcut strip also includes the game search
+    field.
   * Up to six pinned game shortcuts in the HOME sidebar.
   * Each pinned game can be assigned to the left or right side of the shortcut
     area.
-  * Shortcut size, position, strip background and vertical offset are
-    adjustable.
+  * Shortcut size, position, single-strip background, moving gradient and
+    vertical offset are adjustable.
   * Shortcuts and game tiles use the same visual language but have independent
     sizing controls.
 
@@ -204,8 +282,8 @@ SteamGridDB artwork
   * Per-game Hero, Logo, Poster, Poster wide and Replacement icon artwork.
   * Supports searching for missing artwork across the library.
   * Separate display options for grid, single-row and folder views.
-  * Poster artwork can be enabled specifically for the single-row carousel,
-    with a matching logo overlay.
+  * Poster artwork can be enabled specifically for the Carousel layout, with
+    a matching logo overlay.
   * Landscape artwork aspect preferences for 16:9 and 4:3 sources.
   * API key is configured in Settings > SteamGridDB.
 
@@ -230,12 +308,12 @@ Open Theme Shop from the sidebar to browse and manage visual themes.
     * Theme-music override, playlist inclusion and play-on-apply behavior.
 
   Interface tab:
-    * HOME grid columns and rows.
-    * Sort large tiles.
+    * Sort large tiles when the current HOME layout supports them.
     * Adaptive icon contrast.
     * Theme icon override.
     * Action-hint style.
     * Automatic Theme scheduling.
+    * Cursor movement and page transition (Translate or Teleport).
 
   Lock Screen tab:
     * Theme-provided lock-screen art and clock.
@@ -247,30 +325,35 @@ themes and icon packs are kept on the SD card.
 
 Personalization
 ---------------
-  * Icons & Wallpaper: icon aspect ratio, square or rounded corners, corner
-    roundness, icon size, spacing, vignette, focus highlight, 3D depth and
-    horizontal nudges.
-  * Carousel settings: scroll speed, carousel icon depth, carousel fade-out,
-    vertical position and motion preset.
-  * Backgrounds: per-game background resolution, blur, fade-in, slow drift,
-    drift speed and drifting shapes.
-  * Screen treatment: screen dim, corner vignette, tile shadow depth and
-    strength, action hints, clock position, game-name visibility and title
-    position.
-  * Opacity: colour every panel's opacity layer, make it solid, and choose the
-    global accent color.
-  * Layout presets: save and load three complete HOME layouts, or reset icon
-    size, spacing, depth, corners and nudges to stock values.
-  * Docked mode: independent icon and shortcut sizes for docked play while
-    handheld sizes stay unchanged.
-  * Shortcuts: shortcut size, position, single-strip background, top-edge
-    connection and vertical nudge.
+  * Home layouts: Carousel, Shelf, Showcase and Poster Wall. Change View
+    cycles them; folders keep their own grid/single-row layout.
+  * Icons & Wallpaper: game order, HOME layout, icon corners, corner
+    roundness, icon size, spacing, vignette, highlight and horizontal nudges.
+    The bottom of the tab contains three save/load layout preset slots, a
+    reset action, and All Apps grid columns and rows.
+  * Backgrounds: preview and pick a local wallpaper, toggle animated
+    playback, cap it from 5 to 30 fps, and tune per-game background
+    resolution, blur, fade-in, slow drift, drift speed and drifting shapes.
+  * Style: panel tint mix, border and rim, panel grain and shadow; focus ring
+    thickness, glow, lift and overshoot; title-capsule text scale, corner
+    style and strength; top-bar gap and clock/date/battery/profile
+    visibility; wallpaper soften, saturation, sharpness, vibrance, noise and
+    tint; page slide timing; and three Look presets.
+  * Carousel settings: scroll speed, icon shrink, carousel fade-out, vertical
+    position and motion preset.
+  * Display: brightness, TV output and the docked layout, with its own icon
+    and shortcut sizes and carousel position; both docked and handheld render
+    at 720p.
+  * Screen treatment: menu roundness, screen dim, corner vignette, tile
+    shadow depth and strength, action hints, clock position, game-name
+    visibility and title position.
+  * Shortcuts: shortcut size, position, single-strip background, moving
+    gradient colours, top-edge connection and vertical nudge.
   * Lock Screen: require a per-user D-pad code, choose the user, set the code
     step and configure unlock behavior.
 
 Quick Settings and music
 ------------------------
-  * Battery-saver toggle.
   * Brightness slider.
   * BGM and SFX volume sliders.
   * Airplane-mode and Wi-Fi toggles.
@@ -325,7 +408,9 @@ System
 
 Display
   Brightness, auto-brightness, burn-in reduction, TV resolution, HDMI RGB
-  range, TV screen size, album storage and UI wireframe.
+  range, TV screen size, album storage and UI wireframe. Also includes Docked
+  mode: icon/shortcut sizes and carousel position, with both output modes at
+  720p.
 
 Audio
   Speaker auto-mute, headphone volume warning and TV audio output.
@@ -354,31 +439,31 @@ About
   SwitchU version, author, license, source code and acknowledgements.
 
 Backgrounds
-  Per-game background resolution, blur, fade-in, drift, drift speed and shapes.
+  Preview-before-apply wallpaper picker (PNG, JPEG, WebP, GIF, Motion-JPEG
+  MP4/MOV/M4V), animated-wallpaper toggle and 5-30 fps cap; per-game
+  background resolution, blur, fade-in, drift, drift speed and shapes.
 
 Icons & Wallpaper
-  Game order, icon aspect, corners, roundness, size, spacing, vignette,
-  highlight, 3D depth and nudges.
+  Game order (My order/A-Z/Recent), HOME layout (Carousel/Shelf/Showcase/
+  Poster Wall), icon corners, roundness, size, spacing, vignette, highlight
+  and nudges; three layout preset slots with reset; All Apps columns (3-8)
+  and rows (2-5).
 
 Carousel settings
-  Scroll speed, icon depth, fade-out, vertical position and motion preset.
-
-Layout presets
-  Save/load three layout slots and reset the icon layout.
+  Scroll speed, icon shrink, fade-out, vertical position and motion preset.
 
 Screen treatment
-  Screen dim, vignette, tile shadow, hints, clock position, game name and title
-  position.
+  Menu roundness, screen dim, vignette, tile shadow, action hints, clock
+  position, game-name visibility and title position.
 
-Opacity
-  Opacity color, solid opacity mode and global accent color.
+Style
+  Panel tint, border/rim, grain and shadow; focus ring, glow, lift and
+  overshoot; title capsule; top bar; wallpaper soften/saturation/sharpness/
+  vibrance/noise/tint; page slide; three Look presets.
 
 Shortcuts
-  Shortcut size, position, single-strip background, top-edge connection and
-  vertical nudge.
-
-Docked mode
-  Separate icon and shortcut sizes while docked.
+  Shortcut size, position, single-strip background, moving gradient colours,
+  top-edge connection and vertical nudge.
 
 Hidden Games
   Restore games hidden from HOME.
@@ -444,6 +529,8 @@ SwitchU keeps its files in two places:
   sdmc:/config/SwitchU/
       Settings, per-user profiles, logs, update staging and runtime state.
 
+Local wallpapers live in sdmc:/config/SwitchU/wallpapers/.
+
 Useful files inside config/SwitchU/ include:
 
   settings.json
@@ -452,11 +539,18 @@ Useful files inside config/SwitchU/ include:
   users/<uid>.json
       Per-user settings.
 
+  playtime.json
+      Accumulated per-title playtime used by tiles, All Apps and Recent
+      ordering.
+
   manager.log
       Manager/update log.
 
   update/
       Temporary update download and staging area.
+
+  wallpapers/
+      Local wallpaper files.
 
 To back up your setup, copy sdmc:/config/SwitchU/ and the theme, icon and music
 folders under sdmc:/switch/SwitchU/. Do not copy the update/ staging folder
@@ -498,6 +592,21 @@ To create an SD-card install tree:
 
 The resulting sd_out/atmosphere and sd_out/switch folders can be copied to the
 SD card root in the same way as a release.
+
+
+Build on Windows (Git Bash)
+---------------------------
+The fork includes build_windows.sh for Git Bash with the devkitPro MSYS2
+installation:
+
+    ./build_windows.sh
+    HOMEBREW=y ./build_windows.sh
+    ./build_windows.sh clean
+
+The script expects xmake's dev channel (3.1.2+dev), devkitPro under
+msys64/opt/devkitpro, and uam on PATH. Set XMAKE or DEVKITPRO if they are
+installed elsewhere.
+
 
 Build a standalone homebrew NRO
 -------------------------------
@@ -544,6 +653,17 @@ SteamGridDB artwork does not load
   * Add a valid API key in Settings > SteamGridDB.
   * Make sure the artwork toggles for the current view are enabled.
   * Run the missing-artwork scan from the SteamGridDB settings tab.
+
+Wallpaper does not appear
+-------------------------
+  * Put files in sdmc:/config/SwitchU/wallpapers/; the picker creates the
+    folder when it is missing.
+  * Supported formats are PNG, JPEG, WebP, GIF and Motion-JPEG MP4, MOV or
+    M4V.
+  * PNG and JPEG stills always display. For animated files, enable Animate
+    wallpapers in Backgrounds and raise Animation frame rate if needed.
+  * Reopen the picker and apply the wallpaper again after moving or replacing
+    a file.
 
 MTP does not appear on my PC
 ----------------------------
@@ -606,7 +726,8 @@ upstream project's licensing.
 ================================================================================
 
 SwitchU is licensed under the GNU General Public License v3.0. See the LICENSE
-file or https://github.com/paparys/SwitchU/blob/master/LICENSE for the full text.
+file or https://github.com/paparys/SwitchU/blob/switchu-ui-fork/LICENSE for the
+full text.
 
 The optional MTP component vendors Atmosphere haze and is distributed under
 GPLv2; see its own license and headers for details.
