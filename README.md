@@ -192,7 +192,7 @@ upstream v1.4.1. Compared with that base:
 **Removed or retired**
 
 - On-screen page-arrow controls and their left/right arrow assets; D-pad,
-  triggers, L/R/ZL/ZR and touch swipes still page through the library.
+  ZL/ZR, All Apps L/R and touch swipes still page through the library.
 - The standalone **Opacity** tab; panel appearance is now controlled from
   **Style**, and the old opacity colour/solid controls are no longer exposed.
 - The standalone **All Apps** and **Layout presets** rail entries. Their
