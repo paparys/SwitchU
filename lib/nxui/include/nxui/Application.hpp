@@ -60,6 +60,8 @@ public:
 private:
     void dispatchInput();
     bool applyPendingActivity();
+    void pumpAppletMessages();
+    void paceFrame();
 
     GpuDevice  m_gpu;
     std::unique_ptr<Renderer> m_renderer;
@@ -70,6 +72,9 @@ private:
     bool m_running = true;
     bool m_renderEnabled = true;
     bool m_sleeping = false;
+    // Loop pacing against the panel's 60 Hz cadence.
+    uint64_t m_nextFrameTick = 0;
+    uint64_t m_frameTicks = 0;
     uint64_t m_navHeldMask = 0;
     int m_navHeldFrames = 0;
     int m_navRepeatCountdown = 0;

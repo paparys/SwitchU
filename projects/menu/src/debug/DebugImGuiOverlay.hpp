@@ -38,7 +38,6 @@ private:
     void renderDrawData(nxui::Renderer& ren, ImDrawData* drawData);
 
     bool m_initialized = false;
-    bool m_autoAnimateTime = true;
     bool m_wantsTouchCapture = false;
     bool m_wasOpen = false;
     float m_deltaTime = 1.0f / 60.0f;

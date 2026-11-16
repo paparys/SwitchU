@@ -3,6 +3,8 @@
 #include <switchu/control_cache.hpp>
 #include <switchu/file_log.hpp>
 
+#include <cstring>
+
 namespace switchu::daemon::app {
 namespace {
 
@@ -61,6 +63,49 @@ struct LaunchMetadata {
     std::uint8_t startupUserAccountOption = 0;
 };
 
+// qlaunch-ext keeps launch state warm between menu opens. The daemon can do the
+// same without changing the frontend: the menu announces its target before it
+// has finished closing, so provisioning can overlap that teardown.
+struct LaunchDataKey {
+    std::uint64_t titleId = 0;
+    AccountUid uid{};
+};
+
+bool sameLaunchDataKey(const LaunchDataKey& a, const LaunchDataKey& b) {
+    return a.titleId == b.titleId &&
+           std::memcmp(&a.uid, &b.uid, sizeof(AccountUid)) == 0;
+}
+
+constexpr std::size_t kPreparedSaveDataCapacity = 24;
+LaunchDataKey g_preparedSaveData[kPreparedSaveDataCapacity]{};
+std::size_t g_preparedSaveDataNext = 0;
+std::size_t g_preparedSaveDataUsed = 0;
+
+bool saveDataPrepared(const LaunchDataKey& key) {
+    for (std::size_t i = 0; i < g_preparedSaveDataUsed; ++i) {
+        if (sameLaunchDataKey(g_preparedSaveData[i], key))
+            return true;
+    }
+    return false;
+}
+
+void markSaveDataPrepared(const LaunchDataKey& key) {
+    if (saveDataPrepared(key))
+        return;
+    g_preparedSaveData[g_preparedSaveDataNext] = key;
+    g_preparedSaveDataNext = (g_preparedSaveDataNext + 1) % kPreparedSaveDataCapacity;
+    if (g_preparedSaveDataUsed < kPreparedSaveDataCapacity)
+        ++g_preparedSaveDataUsed;
+}
+
+struct PrefetchedLaunch {
+    bool valid = false;
+    LaunchDataKey key{};
+    LaunchMetadata metadata{};
+};
+
+PrefetchedLaunch g_prefetchedLaunch;
+
 LaunchMetadata ensureApplicationSaveData(std::uint64_t titleId, AccountUid uid) {
     LaunchMetadata launch{};
     switchu::control_cache::Meta meta{};
@@ -76,6 +121,10 @@ LaunchMetadata ensureApplicationSaveData(std::uint64_t titleId, AccountUid uid) 
     launch.acceptsUser = launch.startupUserAccount != 0;
     launch.needsUser = startupUserRequiresInteractiveSelection(
         launch.startupUserAccount, launch.startupUserAccountOption);
+
+    const LaunchDataKey key{titleId, uid};
+    if (saveDataPrepared(key))
+        return launch;
 
     ensureSaveData(titleId, meta.save_data_owner_id, uid,
                    FsSaveDataType_Account, FsSaveDataSpaceId_User,
@@ -97,12 +146,30 @@ LaunchMetadata ensureApplicationSaveData(std::uint64_t titleId, AccountUid uid) 
     ensureSaveData(titleId, 0x010000000000000C, emptyUid,
                    FsSaveDataType_Bcat, FsSaveDataSpaceId_User,
                    meta.bcat_delivery_cache_storage_size, 0x200000);
+    // Marking is deliberately left to launch(): a title is only cached as
+    // provisioned once the launch that consumed it actually succeeded.
     return launch;
 }
 
 ApplicationSession g_session;
 
 } // namespace
+
+Result prefetchLaunchData(std::uint64_t titleId, AccountUid uid) {
+    if (titleId == 0)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    const LaunchDataKey key{titleId, uid};
+    if (g_prefetchedLaunch.valid && sameLaunchDataKey(g_prefetchedLaunch.key, key))
+        return 0;
+
+    g_prefetchedLaunch.valid = false;
+    g_prefetchedLaunch.key = key;
+    g_prefetchedLaunch.metadata = ensureApplicationSaveData(titleId, uid);
+    g_prefetchedLaunch.valid = true;
+    switchu::FileLog::log("[app] prefetched launch data for 0x%016lX", titleId);
+    return 0;
+}
 
 ApplicationSession::~ApplicationSession() {
     cleanup();
@@ -237,7 +304,15 @@ Result ApplicationSession::launch(std::uint64_t titleId, AccountUid uid) {
     if (R_FAILED(touchRc))
         switchu::FileLog::log("[app] nsTouchApplication non-fatal rc=0x%X", touchRc);
 
-    const LaunchMetadata metadata = ensureApplicationSaveData(titleId, uid);
+    const LaunchDataKey key{titleId, uid};
+    LaunchMetadata metadata;
+    if (g_prefetchedLaunch.valid && sameLaunchDataKey(g_prefetchedLaunch.key, key)) {
+        metadata = g_prefetchedLaunch.metadata;
+        switchu::FileLog::log("[app] using prefetched launch data for 0x%016lX", titleId);
+    } else {
+        metadata = ensureApplicationSaveData(titleId, uid);
+    }
+    g_prefetchedLaunch.valid = false;
     switchu::FileLog::log(
         "[app] launch metadata startup_user=%u option=%u accepts_user=%d needs_user=%d",
         static_cast<unsigned>(metadata.startupUserAccount),
@@ -293,6 +368,7 @@ Result ApplicationSession::launch(std::uint64_t titleId, AccountUid uid) {
 
     m_state = SessionState::Foreground;
     m_lastResult = 0;
+    markSaveDataPrepared(key);
     switchu::FileLog::log("[app] session=%lu foreground title=0x%016lX",
                           static_cast<unsigned long>(m_sessionId), titleId);
     return 0;

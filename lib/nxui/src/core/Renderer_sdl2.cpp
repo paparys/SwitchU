@@ -96,6 +96,13 @@ void Renderer::pushFsUniforms(const FsUniforms& fs) {
     (void)fs;
 }
 
+bool Renderer::fullyClipped(const Rect& r) const {
+    if (m_clipStack.empty()) return false;
+    const Rect& clip = m_clipStack.back();
+    return r.right() <= clip.x || r.x >= clip.right()
+        || r.bottom() <= clip.y || r.y >= clip.bottom();
+}
+
 void Renderer::pushClipRect(const Rect& r) {
     flush();
     Rect clip = r;
@@ -334,6 +341,14 @@ void Renderer::drawTriangle(const Vec2& p1, const Vec2& p2, const Vec2& p3, cons
     addVertex(p3.x, p3.y, 0, 0, c);
 }
 
+void Renderer::drawGradientTriangle(const Vec2& p1, const Vec2& p2, const Vec2& p3,
+                                    const Color& c1, const Color& c2, const Color& c3) {
+    bindTexture(-1);
+    addVertex(p1.x, p1.y, 0, 0, c1);
+    addVertex(p2.x, p2.y, 0, 0, c2);
+    addVertex(p3.x, p3.y, 0, 0, c3);
+}
+
 void Renderer::drawLine(const Vec2& from, const Vec2& to, const Color& c, float thickness) {
     Vec2 d = (to - from).normalized();
     Vec2 n = {-d.y, d.x};
@@ -485,6 +500,11 @@ void Renderer::captureToOffscreen(bool reuseIfValid) {
     // No-op: SDL2 backend has no offscreen render targets.
 }
 
+void Renderer::captureSharedBackdrop(const Rect& region, float radius, int passes) {
+    (void)region; (void)radius; (void)passes;
+    // No-op: SDL2 backend has no offscreen render targets.
+}
+
 bool Renderer::downloadFramebufferRgba(std::vector<uint8_t>& outRgba,
                                        int& outW, int& outH,
                                        bool halfRes) {
@@ -509,17 +529,6 @@ void Renderer::drawOffscreen(int target, const Rect& dest, const Color& tint) {
 void Renderer::drawOffscreenRounded(int target, const Rect& dest, float radius, const Color& tint) {
     (void)target;
     drawRoundedRect(dest, tint, radius);
-}
-
-void Renderer::drawLiquidGlass(int target, const Rect& panelRect, float radius,
-                               const Color& tint, float opacity, float shade) {
-    (void)target;
-    (void)shade;
-    drawFrostedInset(panelRect,
-                     tint.withAlpha(std::max(0.18f, tint.a)),
-                     Color::white().withAlpha(0.20f),
-                     Color::white().withAlpha(0.10f),
-                     radius, opacity);
 }
 
 void Renderer::applyBlur(float radius, int passes) {

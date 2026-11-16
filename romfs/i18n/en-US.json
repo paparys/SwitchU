@@ -171,6 +171,7 @@
     "sort_recent": "Recent",
     "cancel_b": "B Cancel",
     "cancel": "Cancel",
+    "launch": "Launch",
     "fullscreen": "Fullscreen",
     "artwork": "Art",
     "place": "Place",
@@ -330,6 +331,8 @@
       "section": "Game artwork",
       "enabled": "Display SteamGridDB artwork",
       "enabled_desc": "Choose where artwork appears below.",
+      "show_heroes": "Show hero backdrops",
+      "show_heroes_desc": "Full-screen per-game hero art. Turn off to keep covers, icons, and logos; the wallpaper shows through instead.",
       "show_line": "Show on single-row menu",
       "show_line_desc": "Hero and logo behind the single-row carousel.",
       "show_folders": "Show inside folders",
@@ -744,8 +747,6 @@
       "theme_music_add_desc": "When replace is off, append theme tracks instead.",
       "theme_music_play": "Play theme music on apply",
       "theme_music_play_desc": "Start added theme tracks after Apply.",
-      "battery_saver": "Battery Saver",
-      "battery_saver_desc": "Lighten HOME memory and GPU use.",
       "lock_screen": "Lock Screen",
       "lock_screen_desc": "Lock on boot, sleep, and wake.",
       "lock_clock_font": "Clock Font",
@@ -771,9 +772,7 @@
       "theme_lock_font_override": "Allow themes to override clock font",
       "theme_lock_font_override_desc": "Themes may update your clock font.",
       "theme_icon_override": "Allow themes to replace my icons",
-      "theme_icon_override_desc": "Themes may switch your Icons pack.",
-      "frame_tap_engaged": "Frame Tap Engaged",
-      "frame_tap_engaged_desc": "Held while Frame Tap streams. Disconnect to change."
+      "theme_icon_override_desc": "Themes may switch your Icons pack."
     },
     "badge": {
       "icons": "Icons",
@@ -959,8 +958,7 @@
     "play_pause": "Play/Pause",
     "repeat": "Repeat",
     "shuffle": "Shuffle",
-    "playlist": "Playlist",
-    "battery_saver": "Battery Saver"
+    "playlist": "Playlist"
   },
   "lock": {
     "enter": "Press A to enter",

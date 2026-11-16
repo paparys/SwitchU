@@ -10,6 +10,9 @@ struct SettingWidgetContext {
     nxui::Font** font = nullptr;
     nxui::Font** smallFont = nullptr;
     const nxui::Theme** theme = nullptr;
+    // Rows can drop their second line when the screen shows the focused row's
+    // description in its header instead.
+    bool showDescriptions = true;
 };
 
 std::shared_ptr<nxui::Box> createSettingItemWidget(SettingsScreen::SettingItem& item,

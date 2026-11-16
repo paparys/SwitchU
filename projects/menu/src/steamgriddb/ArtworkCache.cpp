@@ -5,6 +5,7 @@
 #include <nxui/third_party/stb/stb_image.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -405,35 +406,78 @@ DecodedImage decode(const std::string& source, int outputWidth, int outputHeight
     struct AxisSample {
         int i0 = 0;
         int i1 = 0;
-        float f = 0.f;
+        // 15-bit fixed-point weights instead of a float fraction. The hero
+        // scale pass runs over ~1M pixels per decode; sharing four integer
+        // weights across the four channels is markedly cheaper on the ARM
+        // cores than eight float multiplies per channel.
+        int w0 = 0;
+        int w1 = 0;
         bool valid = true;
     };
-    std::vector<AxisSample> xAxis(static_cast<std::size_t>(out.width));
-    std::vector<AxisSample> yAxis(static_cast<std::size_t>(out.height));
-    for (int x = 0; x < out.width; ++x) {
-        const float srcX = (static_cast<float>(x) - offsetX) * inverseScale;
-        AxisSample& a = xAxis[static_cast<std::size_t>(x)];
-        if (!fill && (srcX < 0.f || srcX >= static_cast<float>(width))) {
-            a.valid = false;
-            continue;
+    // The source maps depend only on the source/output dimensions and fill
+    // mode, never on the pixels. Hero and logo decodes alternate between the
+    // same few size pairs, so reuse the exact fixed-point maps per worker.
+    struct AxisMapCache {
+        int sourceW = 0;
+        int sourceH = 0;
+        int outputW = 0;
+        int outputH = 0;
+        bool fill = false;
+        std::vector<AxisSample> x;
+        std::vector<AxisSample> y;
+    };
+    static thread_local std::array<AxisMapCache, 4> axisCache;
+    static thread_local std::size_t axisNext = 0;
+    AxisMapCache* maps = nullptr;
+    for (auto& entry : axisCache) {
+        if (entry.sourceW == width && entry.sourceH == height
+            && entry.outputW == out.width && entry.outputH == out.height
+            && entry.fill == fill) {
+            maps = &entry;
+            break;
         }
-        const int base = static_cast<int>(std::floor(srcX));
-        a.i0 = std::clamp(base, 0, width - 1);
-        a.i1 = std::clamp(base + 1, 0, width - 1);
-        a.f = srcX - static_cast<float>(base);
     }
-    for (int y = 0; y < out.height; ++y) {
-        const float srcY = (static_cast<float>(y) - offsetY) * inverseScale;
-        AxisSample& a = yAxis[static_cast<std::size_t>(y)];
-        if (!fill && (srcY < 0.f || srcY >= static_cast<float>(height))) {
-            a.valid = false;
-            continue;
+    if (!maps) {
+        AxisMapCache& entry = axisCache[axisNext++ % axisCache.size()];
+        entry.sourceW = width;
+        entry.sourceH = height;
+        entry.outputW = out.width;
+        entry.outputH = out.height;
+        entry.fill = fill;
+        entry.x.resize(static_cast<std::size_t>(out.width));
+        entry.y.resize(static_cast<std::size_t>(out.height));
+        for (int x = 0; x < out.width; ++x) {
+            const float srcX = (static_cast<float>(x) - offsetX) * inverseScale;
+            AxisSample& a = entry.x[static_cast<std::size_t>(x)];
+            a.valid = true;
+            if (!fill && (srcX < 0.f || srcX >= static_cast<float>(width))) {
+                a.valid = false;
+                continue;
+            }
+            const int base = static_cast<int>(std::floor(srcX));
+            a.i0 = std::clamp(base, 0, width - 1);
+            a.i1 = std::clamp(base + 1, 0, width - 1);
+            a.w1 = static_cast<int>((srcX - static_cast<float>(base)) * 32768.f + 0.5f);
+            a.w0 = 32768 - a.w1;
         }
-        const int base = static_cast<int>(std::floor(srcY));
-        a.i0 = std::clamp(base, 0, height - 1);
-        a.i1 = std::clamp(base + 1, 0, height - 1);
-        a.f = srcY - static_cast<float>(base);
+        for (int y = 0; y < out.height; ++y) {
+            const float srcY = (static_cast<float>(y) - offsetY) * inverseScale;
+            AxisSample& a = entry.y[static_cast<std::size_t>(y)];
+            a.valid = true;
+            if (!fill && (srcY < 0.f || srcY >= static_cast<float>(height))) {
+                a.valid = false;
+                continue;
+            }
+            const int base = static_cast<int>(std::floor(srcY));
+            a.i0 = std::clamp(base, 0, height - 1);
+            a.i1 = std::clamp(base + 1, 0, height - 1);
+            a.w1 = static_cast<int>((srcY - static_cast<float>(base)) * 32768.f + 0.5f);
+            a.w0 = 32768 - a.w1;
+        }
+        maps = &entry;
     }
+    const auto& xAxis = maps->x;
+    const auto& yAxis = maps->y;
 
     for (int y = 0; y < out.height; ++y) {
         if (cancel && (y & 31) == 0 && cancel->load()) {
@@ -449,8 +493,6 @@ DecodedImage decode(const std::string& source, int outputWidth, int outputHeight
             raw + static_cast<std::size_t>(ya.i0) * static_cast<std::size_t>(width) * 4;
         const std::uint8_t* row1 =
             raw + static_cast<std::size_t>(ya.i1) * static_cast<std::size_t>(width) * 4;
-        const float fy = ya.f;
-        const float ny = 1.f - fy;
         std::uint8_t* destinationRow =
             out.rgba.data() + static_cast<std::size_t>(y) * out.width * 4;
         for (int x = 0; x < out.width; ++x) {
@@ -460,13 +502,18 @@ DecodedImage decode(const std::string& source, int outputWidth, int outputHeight
             const std::uint8_t* p10 = row0 + static_cast<std::size_t>(xa.i1) * 4;
             const std::uint8_t* p01 = row1 + static_cast<std::size_t>(xa.i0) * 4;
             const std::uint8_t* p11 = row1 + static_cast<std::size_t>(xa.i1) * 4;
-            const float fx = xa.f;
-            const float nx = 1.f - fx;
+            // 15-bit bilinear weights, computed once per pixel and reused by
+            // every channel. Same sampling as the float version, which rounded
+            // the same way (add half, truncate).
+            const int w00 = (xa.w0 * ya.w0) >> 15;
+            const int w10 = (xa.w1 * ya.w0) >> 15;
+            const int w01 = (xa.w0 * ya.w1) >> 15;
+            const int w11 = (xa.w1 * ya.w1) >> 15;
             std::uint8_t* dst = destinationRow + static_cast<std::size_t>(x) * 4;
             for (int c = 0; c < 4; ++c) {
                 dst[c] = static_cast<std::uint8_t>(
-                    p00[c] * nx * ny + p10[c] * fx * ny
-                    + p01[c] * nx * fy + p11[c] * fx * fy + 0.5f);
+                    (p00[c] * w00 + p10[c] * w10
+                     + p01[c] * w01 + p11[c] * w11 + 16384) >> 15);
             }
         }
     }

@@ -1,9 +1,13 @@
 #include "WaraWaraBackground.hpp"
 #include "AnimatedWallpaper.hpp"
 #include "core/DebugLog.hpp"
+#include <array>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <nxui/third_party/stb/stb_image.h>
 
 namespace {
 
@@ -16,6 +20,7 @@ constexpr int kGlassShapeLayers = 3;
 constexpr int kGridRenderedShapeBudget = 160;
 constexpr int kFloatingRenderedShapeBudget = 80;
 constexpr int kDenseRenderCopyThreshold = 64;
+constexpr int kRoundedPointCapacity = 16;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kHalfPi = kPi * 0.5f;
 constexpr float kShapeBodyAlphaMin = 0.84f;
@@ -28,7 +33,8 @@ float degreesToRadians(float degrees) {
     return degrees * kPi / 180.f;
 }
 
-void appendArcPoints(std::vector<nxui::Vec2>& points,
+void appendArcPoints(std::array<nxui::Vec2, kRoundedPointCapacity>& points,
+                     int& count,
                      float centerX,
                      float centerY,
                      float radius,
@@ -38,11 +44,11 @@ void appendArcPoints(std::vector<nxui::Vec2>& points,
                      bool includeStart)
 {
     int startIndex = includeStart ? 0 : 1;
-    for (int i = startIndex; i <= segments; ++i) {
+    for (int i = startIndex; i <= segments && count < kRoundedPointCapacity; ++i) {
         float t = segments > 0 ? (float)i / (float)segments : 0.f;
         float angle = startAngle + (endAngle - startAngle) * t;
-        points.push_back({centerX + std::cos(angle) * radius,
-                          centerY + std::sin(angle) * radius});
+        points[count++] = {centerX + std::cos(angle) * radius,
+                           centerY + std::sin(angle) * radius};
     }
 }
 
@@ -113,15 +119,16 @@ std::uint64_t estimateVertexCount(const WaraWaraBackground::Config& config, int 
 
 WaraWaraBackground::WaraWaraBackground() { regenerate(30); }
 
-void WaraWaraBackground::setLiteSuppressed(bool suppressed) {
-    const bool changed = m_liteSuppressed != suppressed;
-    m_liteSuppressed = suppressed;
-    if (suppressed) {
-        // Always clear — theme setConfig can race and leave shapes briefly.
+void WaraWaraBackground::setShapesEnabled(bool enabled) {
+    if (m_shapesEnabled == enabled)
+        return;
+    m_shapesEnabled = enabled;
+    if (!enabled) {
         m_shapes.clear();
-    } else if (changed) {
+    } else {
         regenerate(0);
     }
+    DebugLog::log("[background] shapes enabled=%d", enabled ? 1 : 0);
 }
 
 void WaraWaraBackground::setConfig(const Config& config) {
@@ -142,12 +149,162 @@ void WaraWaraBackground::setConfig(const Config& config) {
     regenerate(0);
 }
 
+bool WaraWaraBackground::loadSourcePixels(const std::string& path) {
+    int w = 0, h = 0, ch = 0;
+    uint8_t* raw = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!raw || w <= 0 || h <= 0) {
+        if (raw)
+            stbi_image_free(raw);
+        m_sourceRgba.clear();
+        m_sourceW = m_sourceH = 0;
+        return false;
+    }
+    // Match Texture::loadFromFile's max-side 1280 nearest downscale so the
+    // untreated bake is pixel-identical to the previous upload path.
+    constexpr int kMaxSide = 1280;
+    if (w > kMaxSide || h > kMaxSide) {
+        const float scale = std::min(static_cast<float>(kMaxSide) / w,
+                                     static_cast<float>(kMaxSide) / h);
+        const int dw = std::max(1, static_cast<int>(w * scale));
+        const int dh = std::max(1, static_cast<int>(h * scale));
+        m_sourceRgba.resize(static_cast<std::size_t>(dw) * dh * 4u);
+        for (int y = 0; y < dh; ++y) {
+            const int sy = y * h / dh;
+            for (int x = 0; x < dw; ++x) {
+                const int sx = x * w / dw;
+                std::memcpy(&m_sourceRgba[(static_cast<std::size_t>(y) * dw + x) * 4u],
+                            raw + (static_cast<std::size_t>(sy) * w + sx) * 4u, 4u);
+            }
+        }
+        m_sourceW = dw;
+        m_sourceH = dh;
+    } else {
+        m_sourceRgba.assign(raw, raw + static_cast<std::size_t>(w) * h * 4u);
+        m_sourceW = w;
+        m_sourceH = h;
+    }
+    stbi_image_free(raw);
+    return !m_sourceRgba.empty();
+}
+
+bool WaraWaraBackground::bakeTreatment() {
+    if (m_sourceRgba.empty() || m_sourceW <= 0 || m_sourceH <= 0 ||
+        !m_gpu || !m_ren || hasAnimatedWallpaper())
+        return false;
+
+    m_treatedRgba = m_sourceRgba;
+    const int w = m_sourceW;
+    const int h = m_sourceH;
+
+    const int vibrance = std::clamp(m_treatmentVibrance, 0, 100);
+    if (vibrance > 0) {
+        const float amount = vibrance / 100.f * 0.65f;
+        auto toByte = [](float v) {
+            return static_cast<std::uint8_t>(std::clamp(v * 255.f + 0.5f, 0.f, 255.f));
+        };
+        for (std::size_t i = 0; i + 3 < m_treatedRgba.size(); i += 4) {
+            std::uint8_t* p = &m_treatedRgba[i];
+            const float r = p[0] / 255.f, g = p[1] / 255.f, b = p[2] / 255.f;
+            const float maxc = std::max({r, g, b});
+            const float minc = std::min({r, g, b});
+            const float sat = maxc > 0.0001f ? (maxc - minc) / maxc : 0.f;
+            // Muted colours gain the most, already-saturated ones barely move.
+            const float boost = 1.f + amount * (1.f - sat);
+            const float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+            p[0] = toByte(lum + (r - lum) * boost);
+            p[1] = toByte(lum + (g - lum) * boost);
+            p[2] = toByte(lum + (b - lum) * boost);
+        }
+    }
+
+    const int sharpness = std::clamp(m_treatmentSharpness, 0, 100);
+    if (sharpness > 0) {
+        m_treatScratch = m_treatedRgba;
+        const float amount = sharpness / 100.f;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                int sumR = 0, sumG = 0, sumB = 0, taps = 0;
+                for (int oy = -1; oy <= 1; ++oy) {
+                    const int sy = std::clamp(y + oy, 0, h - 1);
+                    for (int ox = -1; ox <= 1; ++ox) {
+                        const int sx = std::clamp(x + ox, 0, w - 1);
+                        const std::uint8_t* q =
+                            &m_treatScratch[(static_cast<std::size_t>(sy) * w + sx) * 4u];
+                        sumR += q[0]; sumG += q[1]; sumB += q[2];
+                        ++taps;
+                    }
+                }
+                std::uint8_t* p =
+                    &m_treatedRgba[(static_cast<std::size_t>(y) * w + x) * 4u];
+                auto sharpen = [amount](int src, int avg) {
+                    return static_cast<std::uint8_t>(std::clamp(
+                        static_cast<float>(src) +
+                        (static_cast<float>(src) - static_cast<float>(avg)) * amount,
+                        0.f, 255.f));
+                };
+                p[0] = sharpen(p[0], sumR / taps);
+                p[1] = sharpen(p[1], sumG / taps);
+                p[2] = sharpen(p[2], sumB / taps);
+            }
+        }
+    }
+
+    const int noise = std::clamp(m_treatmentNoise, 0, 100);
+    if (noise > 0) {
+        const float amplitude = noise / 100.f * 20.f;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                std::uint32_t n = static_cast<std::uint32_t>(x) * 374761393u +
+                                  static_cast<std::uint32_t>(y) * 668265263u +
+                                  0x9E3779B9u;
+                n = (n ^ (n >> 13)) * 1274126177u;
+                const float delta =
+                    ((n & 0xFFFFu) / 65535.f - 0.5f) * 2.f * amplitude;
+                std::uint8_t* p =
+                    &m_treatedRgba[(static_cast<std::size_t>(y) * w + x) * 4u];
+                for (int c = 0; c < 3; ++c)
+                    p[c] = static_cast<std::uint8_t>(std::clamp(
+                        static_cast<float>(p[c]) + delta, 0.f, 255.f));
+            }
+        }
+    }
+
+    // Fresh texture: no in-place reload, so the old image retires on the normal
+    // deferred queue instead of draining the GPU on every slider change.
+    nxui::Texture baked;
+    if (!baked.loadFromPixels(*m_gpu, *m_ren, m_treatedRgba.data(), w, h))
+        return false;
+    m_backgroundImage = std::move(baked);
+    m_treatedRgba.clear();
+    m_treatedRgba.shrink_to_fit();
+    m_treatScratch.clear();
+    m_treatScratch.shrink_to_fit();
+    return true;
+}
+
 bool WaraWaraBackground::loadImage(nxui::GpuDevice& gpu, nxui::Renderer& ren, const std::string& path) {
     if (path.empty()) {
         clearImage();
         return false;
     }
 
+    // Remember the path even while a wallpaper owns the background slot: the
+    // image can then be re-read when the wallpaper is turned off without
+    // holding a texture nobody samples (1280x720 RGBA is ~3.7 MB).
+    m_imagePath = path;
+    if (hasAnimatedWallpaper()) {
+        m_backgroundImage = nxui::Texture{};
+        return true;
+    }
+
+    m_gpu = &gpu;
+    m_ren = &ren;
+    if (treatmentActive()) {
+        if (!loadSourcePixels(path))
+            return false;
+        return bakeTreatment();
+    }
+    // Untreated wallpapers take the existing path and keep no source pixels.
     nxui::Texture texture;
     // Theme packages are untrusted input and may contain multi-megapixel
     // backgrounds. The display is 1280x720, so larger images only increase
@@ -156,14 +313,36 @@ bool WaraWaraBackground::loadImage(nxui::GpuDevice& gpu, nxui::Renderer& ren, co
         return false;
 
     m_backgroundImage = std::move(texture);
+    m_sourceRgba.clear();
+    m_sourceW = m_sourceH = 0;
+    m_treatDirty = false;
     return true;
 }
 
 void WaraWaraBackground::clearImage() {
     m_backgroundImage = nxui::Texture{};
+    m_imagePath.clear();
+    m_sourceRgba.clear();
+    m_sourceW = m_sourceH = 0;
+    m_treatDirty = false;
+}
+
+bool WaraWaraBackground::restoreImage(nxui::GpuDevice& gpu, nxui::Renderer& ren) {
+    if (m_backgroundImage.valid())
+        return true;
+    if (m_imagePath.empty() || hasAnimatedWallpaper())
+        return false;
+    return loadImage(gpu, ren, m_imagePath);
 }
 
 WaraWaraBackground::~WaraWaraBackground() = default;
+
+std::size_t WaraWaraBackground::gpuBytes() const {
+    std::size_t bytes = m_backgroundImage.valid() ? m_backgroundImage.allocationSize() : 0;
+    if (m_animWallpaper)
+        bytes += m_animWallpaper->gpuBytes();
+    return bytes;
+}
 
 bool WaraWaraBackground::hasAnimatedWallpaper() const {
     return m_animWallpaper && m_animWallpaper->valid();
@@ -172,13 +351,17 @@ bool WaraWaraBackground::hasAnimatedWallpaper() const {
 bool WaraWaraBackground::loadAnimatedWallpaper(nxui::GpuDevice& gpu,
                                                nxui::Renderer& ren,
                                                const std::string& path, int fps) {
-    clearAnimatedWallpaper();
+    // Keep the current wallpaper alive until the replacement decodes. A failed
+    // reload should leave the last used wallpaper on screen, not the theme.
     if (path.empty())
         return false;
     auto wallpaper = std::make_unique<AnimatedWallpaper>();
     if (!wallpaper->load(gpu, ren, path, fps))
         return false;
     m_animWallpaper = std::move(wallpaper);
+    // The wallpaper owns the background slot now: release the still image's
+    // texture but keep its path so clearing the wallpaper can restore it.
+    m_backgroundImage = nxui::Texture{};
     return true;
 }
 
@@ -207,10 +390,72 @@ void WaraWaraBackground::drawWallpaper(nxui::Renderer& ren, float opacityScale) 
     float alpha = m_opacity * std::clamp(opacityScale, 0.f, 1.f);
     if (!animated)
         alpha *= m_config.imageOpacity;
-    if (alpha <= 0.f)
+    if (alpha <= 0.002f)
         return;
-    ren.drawTexture(const_cast<nxui::Texture*>(wallpaper), backgroundImageRect(),
-                    nxui::Color::white().withAlpha(alpha));
+
+    const nxui::Rect dest = backgroundImageRect();
+    auto* texture = const_cast<nxui::Texture*>(wallpaper);
+    ren.drawTexture(texture, dest, nxui::Color::white().withAlpha(alpha));
+
+    // Multi-tap soften: a handful of offset copies read as a real blur on a
+    // still and stay far cheaper than a full-screen shader pass every frame.
+    const int blur = std::clamp(m_treatmentBlur, 0, 16);
+    if (blur > 0) {
+        const float spread = static_cast<float>(blur) * 0.9f;
+        const float tapAlpha = alpha * 0.22f;
+        const float offsets[4][2] = {
+            {-spread, 0.f}, {spread, 0.f}, {0.f, -spread}, {0.f, spread}
+        };
+        for (const auto& offset : offsets) {
+            ren.drawTexture(texture,
+                {dest.x + offset[0], dest.y + offset[1],
+                 dest.width, dest.height},
+                nxui::Color::white().withAlpha(tapAlpha));
+        }
+    }
+
+    const int saturation = std::clamp(m_treatmentSaturation, 0, 150);
+    if (saturation < 100) {
+        const float amount = (100 - saturation) / 100.f * 0.30f * alpha;
+        ren.drawRect(dest, nxui::Color(0.52f, 0.54f, 0.58f, amount));
+    } else if (saturation > 100) {
+        // Above neutral there is no colour matrix in the flat renderer, so a
+        // light accent wash provides the visible boost without a new shader.
+        const float amount = (saturation - 100) / 50.f * 0.12f * alpha;
+        ren.drawRect(dest, nxui::Color(m_treatmentTintColor.r,
+                                       m_treatmentTintColor.g,
+                                       m_treatmentTintColor.b, amount));
+    }
+
+    const int tintPct = std::clamp(m_treatmentTint, 0, 100);
+    if (tintPct > 0) {
+        ren.drawRect(dest, m_treatmentTintColor.withAlpha(
+            m_treatmentTintColor.a * tintPct / 100.f * 0.35f * alpha));
+    }
+}
+
+void WaraWaraBackground::setTreatment(int blurPx, int saturationPct, int tintPct,
+                                      int sharpnessPct, int vibrancePct,
+                                      int noisePct, const nxui::Color& tint) {
+    m_treatmentBlur = std::clamp(blurPx, 0, 16);
+    m_treatmentSaturation = std::clamp(saturationPct, 0, 150);
+    m_treatmentTint = std::clamp(tintPct, 0, 100);
+    m_treatmentTintColor = tint;
+
+    const int sharpness = std::clamp(sharpnessPct, 0, 100);
+    const int vibrance = std::clamp(vibrancePct, 0, 100);
+    const int noise = std::clamp(noisePct, 0, 100);
+    if (sharpness == m_treatmentSharpness &&
+        vibrance == m_treatmentVibrance &&
+        noise == m_treatmentNoise)
+        return;
+    m_treatmentSharpness = sharpness;
+    m_treatmentVibrance = vibrance;
+    m_treatmentNoise = noise;
+    m_treatDirty = true;
+    // The first change bakes immediately; later ticks coalesce in onUpdate so
+    // dragging a slider cannot re-upload the wallpaper on every frame.
+    m_lastTreat = std::chrono::steady_clock::time_point{};
 }
 
 WaraWaraBackground::ShapeType WaraWaraBackground::pickShapeType() const {
@@ -232,7 +477,7 @@ WaraWaraBackground::ShapeType WaraWaraBackground::pickShapeType() const {
 }
 
 void WaraWaraBackground::regenerate(int count) {
-    if (m_liteSuppressed) {
+    if (!m_shapesEnabled) {
         m_shapes.clear();
         return;
     }
@@ -311,16 +556,30 @@ void WaraWaraBackground::setDrift(bool enabled, int speedPercent) {
 }
 
 void WaraWaraBackground::onUpdate(float dt) {
-    if (m_animWallpaper)
+    if (m_treatDirty && m_gpu && m_ren) {
+        const auto now = std::chrono::steady_clock::now();
+        if (m_lastTreat.time_since_epoch().count() == 0 ||
+            now - m_lastTreat >= std::chrono::milliseconds(200)) {
+            m_lastTreat = now;
+            m_treatDirty = false;
+            if (m_sourceRgba.empty() && !m_imagePath.empty() &&
+                treatmentActive())
+                loadSourcePixels(m_imagePath);
+            bakeTreatment();
+        }
+    }
+    // A covering hero masks these layers, so their animation (and an animated
+    // wallpaper's frame decode/upload) only burns frame budget behind it.
+    if (!m_heroCover && m_animWallpaper && !m_motionPaused)
         m_animWallpaper->update(dt);
-    if (m_driftEnabled && !m_motionPaused) {
+    if (!m_heroCover && m_driftEnabled && !m_motionPaused) {
         // Percent to seconds: 1% crawls a pass in 75 s, 100% in about 12 s.
         const float period = 75.f - 0.63f * static_cast<float>(m_driftSpeed);
         m_driftPhase += dt * (6.2831853f / std::max(6.f, period));
         if (m_driftPhase > 6.2831853f)
             m_driftPhase -= 6.2831853f;
     }
-    if (m_motionPaused || m_liteSuppressed)
+    if (m_heroCover || m_motionPaused || !m_shapesEnabled)
         return;
     m_time += dt;
     for (auto& s : m_shapes) {
@@ -376,18 +635,31 @@ nxui::Rect WaraWaraBackground::backgroundImageRect() const {
     return {areaX + (areaW - drawW) * 0.5f, areaY + (areaH - drawH) * 0.5f, drawW, drawH};
 }
 
+bool WaraWaraBackground::backgroundCoversGradient() const {
+    // Only a fully opaque, full-bleed animated wallpaper hides the gradient.
+    // Theme still images are not included: a PNG may carry transparency and
+    // the load path does not report it, so their gradient always stays.
+    return hasAnimatedWallpaper()
+        && m_opacity >= 0.999f
+        && m_animWallpaper->opaque();
+}
+
 void WaraWaraBackground::onRender(nxui::Renderer& ren) {
     // Keep the first fullscreen draw on the basic renderer path. The animated
     // gradient shader was attractive but fragile as the very first draw after a
     // menu applet launch: if shader constants or descriptor state are rejected
     // on-device, the whole tree can fail before the activity debug pass runs.
     // A batched gradient is cheaper, deterministic and visually close enough.
-    ren.drawGradientRect(m_rect, m_secondary, m_accent);
+    // Skip it entirely when the layer above it covers the whole screen: that is
+    // a full framebuffer fill saved every frame a wallpaper or opaque image is
+    // playing.
+    if (!backgroundCoversGradient())
+        ren.drawGradientRect(m_rect, m_secondary, m_accent);
 
     drawWallpaper(ren, 1.f);
 
-    // Lite keeps wallpaper; only the floating/grid glass shapes are skipped.
-    if (!m_liteSuppressed) {
+    // A full-screen hero covers the shapes entirely, so skip their draw too.
+    if (!m_heroCover && m_shapesEnabled) {
         for (const auto& s : m_shapes)
             drawShapeWithSymmetry(ren, s);
     }
@@ -400,7 +672,7 @@ void WaraWaraBackground::renderLetterboxOverlay(nxui::Renderer& ren, float opaci
     m_opacity = prev * std::clamp(opacityMul, 0.f, 1.f);
     // Skip the opaque gradient so the blurred cover stays visible in the bars.
     drawWallpaper(ren, 0.55f);
-    if (!m_liteSuppressed) {
+    if (m_shapesEnabled) {
         for (const auto& s : m_shapes)
             drawShapeWithSymmetry(ren, s);
     }
@@ -423,32 +695,35 @@ void WaraWaraBackground::renderShifted(nxui::Renderer& ren, float dy, float opac
     m_rect.width = savedRect.width * s;
     m_rect.height = savedRect.height * s;
 
-    std::vector<nxui::Vec2> savedPos;
-    std::vector<float> savedSize;
-    savedPos.reserve(m_shapes.size());
-    savedSize.reserve(m_shapes.size());
+    m_savedShapePos.clear();
+    m_savedShapeSize.clear();
+    m_savedShapePos.reserve(m_shapes.size());
+    m_savedShapeSize.reserve(m_shapes.size());
     for (auto& sh : m_shapes) {
-        savedPos.push_back(sh.pos);
-        savedSize.push_back(sh.size);
+        m_savedShapePos.push_back(sh.pos);
+        m_savedShapeSize.push_back(sh.size);
         sh.pos.x = cx + (sh.pos.x - cx) * s;
         sh.pos.y = cy + (sh.pos.y - cy) * s + dy;
         sh.size *= s;
     }
 
     // Gradient must honor opacity — an opaque wash over HOME looked muddy green-grey.
-    ren.drawGradientRect(m_rect,
-                         m_secondary.withAlpha(m_secondary.a * m_opacity),
-                         m_accent.withAlpha(m_accent.a * m_opacity));
+    // Same skip as onRender: a covering wallpaper makes the fill invisible.
+    if (!backgroundCoversGradient()) {
+        ren.drawGradientRect(m_rect,
+                             m_secondary.withAlpha(m_secondary.a * m_opacity),
+                             m_accent.withAlpha(m_accent.a * m_opacity));
+    }
     drawWallpaper(ren, 1.f);
-    if (!m_liteSuppressed) {
+    if (m_shapesEnabled) {
         for (const auto& sh : m_shapes)
             drawShapeWithSymmetry(ren, sh);
     }
     ren.flush();
 
     for (size_t i = 0; i < m_shapes.size(); ++i) {
-        m_shapes[i].pos = savedPos[i];
-        m_shapes[i].size = savedSize[i];
+        m_shapes[i].pos = m_savedShapePos[i];
+        m_shapes[i].size = m_savedShapeSize[i];
     }
     m_opacity = prev;
     m_rect = savedRect;
@@ -488,10 +763,26 @@ void WaraWaraBackground::drawGlassShape(nxui::Renderer& ren, const Shape& s) con
     float a = s.color.a * m_opacity;
     if (a < 0.003f) return;
 
-    nxui::Color body = m_shapeColor.withAlpha(a);
-    drawRoundedShape(ren, s, body);
+    // Floating shapes wrap outside the screen and mirrored copies are drawn
+    // independently, so cull each copy by its own bounds. The reach covers the
+    // rotated silhouette (sqrt(2) * size) with a little slack.
+    const float reach = s.size * 1.6f;
+    if (s.pos.x + reach < m_rect.x || s.pos.x - reach > m_rect.right()
+        || s.pos.y + reach < m_rect.y || s.pos.y - reach > m_rect.bottom())
+        return;
 
-    if (useDenseRenderMode(m_config, (int)m_shapes.size()))
+    // Every glass layer shares the shape rotation. Compute it once here rather
+    // than once per layer inside drawRoundedShape.
+    float cs = 1.f, sn = 0.f;
+    if (s.type != Circle) {
+        cs = std::cos(s.rotation);
+        sn = std::sin(s.rotation);
+    }
+
+    nxui::Color body = m_shapeColor.withAlpha(a);
+    drawRoundedShape(ren, s, body, cs, sn);
+
+    if (m_scrollActive || useDenseRenderMode(m_config, (int)m_shapes.size()))
         return;
 
     Shape highlight = s;
@@ -499,21 +790,21 @@ void WaraWaraBackground::drawGlassShape(nxui::Renderer& ren, const Shape& s) con
     highlight.size   = s.size * 0.85f;
     const float effectAlpha = m_config.opacity * m_opacity;
     nxui::Color hi = nxui::Color(1.f, 1.f, 1.f, kShapeHighlightAlpha * effectAlpha);
-    drawRoundedShape(ren, highlight, hi);
+    drawRoundedShape(ren, highlight, hi, cs, sn);
 
     Shape edge = s;
     edge.size = s.size * 1.06f;
     const float edgeAlpha = (m_config.layout == Layout::Grid) ? kGridShapeEdgeAlpha : kFloatingShapeEdgeAlpha;
     nxui::Color edgeC = nxui::Color(1.f, 1.f, 1.f, edgeAlpha * effectAlpha);
-    drawRoundedShape(ren, edge, edgeC);
+    drawRoundedShape(ren, edge, edgeC, cs, sn);
 }
 
-void WaraWaraBackground::drawRoundedShape(nxui::Renderer& ren, const Shape& s, const nxui::Color& c) const {
-    float r  = s.rotation;
-    float sz = s.size;
+void WaraWaraBackground::drawRoundedShape(nxui::Renderer& ren, const Shape& s,
+                                          const nxui::Color& c,
+                                          float cs, float sn) const {
+    const float sz = s.size;
 
     auto rot = [&](float lx, float ly) -> nxui::Vec2 {
-        float cs = std::cos(r), sn = std::sin(r);
         return {s.pos.x + lx * cs - ly * sn,
                 s.pos.y + lx * sn + ly * cs};
     };
@@ -533,19 +824,27 @@ void WaraWaraBackground::drawRoundedShape(nxui::Renderer& ren, const Shape& s, c
         float h = sz * 0.707f;
         float roundness = std::clamp(m_config.cornerRoundness, 0.f, 1.f);
         if (roundness > 0.001f) {
-            float radius = h * roundness;
-            std::vector<nxui::Vec2> points;
-            points.reserve(16);
-            appendArcPoints(points,  h - radius, -h + radius, radius, -kHalfPi, 0.f,      3, true);
-            appendArcPoints(points,  h - radius,  h - radius, radius,  0.f,      kHalfPi,  3, false);
-            appendArcPoints(points, -h + radius,  h - radius, radius,  kHalfPi,  kPi,      3, false);
-            appendArcPoints(points, -h + radius, -h + radius, radius,  kPi,      kPi * 1.5f, 3, false);
+            if (roundness != m_roundedUnitRoundness) {
+                std::array<nxui::Vec2, kRoundedUnitCapacity> unit{};
+                int unitCount = 0;
+                const float radius = roundness;
+                appendArcPoints(unit, unitCount,  1.f - radius, -1.f + radius, radius, -kHalfPi, 0.f,      3, true);
+                appendArcPoints(unit, unitCount,  1.f - radius,  1.f - radius, radius,  0.f,      kHalfPi,  3, false);
+                appendArcPoints(unit, unitCount, -1.f + radius,  1.f - radius, radius,  kHalfPi,  kPi,      3, false);
+                appendArcPoints(unit, unitCount, -1.f + radius, -1.f + radius, radius,  kPi,      kPi * 1.5f, 3, false);
+                m_roundedUnitPoints = unit;
+                m_roundedUnitCount = unitCount;
+                m_roundedUnitRoundness = roundness;
+            }
 
-            for (size_t i = 0; i < points.size(); ++i)
-                points[i] = rot(points[i].x, points[i].y);
+            std::array<nxui::Vec2, kRoundedPointCapacity> points{};
+            const int pointCount = m_roundedUnitCount;
+            for (int i = 0; i < pointCount; ++i)
+                points[i] = rot(m_roundedUnitPoints[(std::size_t)i].x * h,
+                                m_roundedUnitPoints[(std::size_t)i].y * h);
 
-            for (size_t i = 0; i < points.size(); ++i)
-                ren.drawTriangle(s.pos, points[i], points[(i + 1) % points.size()], c);
+            for (int i = 0; i < pointCount; ++i)
+                ren.drawTriangle(s.pos, points[i], points[(i + 1) % pointCount], c);
             break;
         }
 
@@ -568,12 +867,17 @@ void WaraWaraBackground::drawRoundedShape(nxui::Renderer& ren, const Shape& s, c
     }
     case Hexagon: {
         constexpr int N = 6;
-        const float step = 6.28318f / N;
+        // Unit hexagon vertices never change; only rotation and size do.
+        static const std::array<nxui::Vec2, N> kUnit = [] {
+            std::array<nxui::Vec2, N> out{};
+            constexpr float step = 6.2831853f / N;
+            for (int i = 0; i < N; ++i)
+                out[(std::size_t)i] = {std::cos(step * i), std::sin(step * i)};
+            return out;
+        }();
         nxui::Vec2 pts[N];
-        for (int i = 0; i < N; ++i) {
-            float a2 = step * i;
-            pts[i] = rot(std::cos(a2) * sz, std::sin(a2) * sz);
-        }
+        for (int i = 0; i < N; ++i)
+            pts[i] = rot(kUnit[(std::size_t)i].x * sz, kUnit[(std::size_t)i].y * sz);
         for (int i = 1; i < N - 1; ++i)
             ren.drawTriangle(pts[0], pts[i], pts[i + 1], c);
         break;

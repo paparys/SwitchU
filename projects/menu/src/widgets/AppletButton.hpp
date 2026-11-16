@@ -36,12 +36,16 @@ public:
     // When true (Theme > Options adapt + single-row hero), colour icons follow
     // chrome textPrimary — same hero-aware light/dark flip as mono HOME glyphs.
     void setColourContrastAdapt(bool enabled) {
+        if (m_colourContrastAdapt == enabled)
+            return;
         m_colourContrastAdapt = enabled;
         syncIconTint();
     }
     // Custom tint is baked into the glyph texture on reload; this flag is only
     // used so chrome-follow can still win while a hero is up.
     void setIconCustomTintEnabled(bool enabled) {
+        if (m_iconCustomTint == enabled)
+            return;
         m_iconCustomTint = enabled;
         syncIconTint();
     }

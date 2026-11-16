@@ -28,4 +28,9 @@ private:
     float m_chargeAnim = 0.f;
     float m_scale    = 1.f;
     nxui::Color m_textColor {1.f, 1.f, 1.f, 1.f};
+    mutable nxui::Font* m_cachedHeightFont = nullptr;
+    mutable float m_cachedTextHeight = 0.f;
+    nxui::Font* m_cachedPctFont = nullptr;
+    std::string m_cachedPctText;
+    nxui::Vec2 m_cachedPctSize{0.f, 0.f};
 };

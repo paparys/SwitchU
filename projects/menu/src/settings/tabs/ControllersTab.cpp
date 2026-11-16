@@ -14,6 +14,13 @@ SettingsScreen::Tab settings::tabs::ControllersTab::build(SettingsScreen& screen
 
     {
         SettingItem it;
+        it.label = i18n.tr("settings.controllers.section_devices", "Controllers");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("settings.controllers.test", "Test Input Devices");
         it.buttonLabel = i18n.tr("button.test", "Test");
         it.description = i18n.tr(
@@ -54,6 +61,13 @@ SettingsScreen::Tab settings::tabs::ControllersTab::build(SettingsScreen& screen
             if (screen.m_controllerRemappingCb)
                 screen.m_controllerRemappingCb();
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.controllers.section_hardware", "Hardware");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 

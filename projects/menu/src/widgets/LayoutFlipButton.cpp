@@ -16,8 +16,8 @@ LayoutFlipButton::LayoutFlipButton() {
     setShrink(0.f);
     setCornerRadius(26.f);
     setPadding(10.f);
-    setLiquidGlassEnabled(true);
-    setForceLiquidGlass(true);
+    // Flat capsule: the theme colour, alpha and the panel's own rim stay, but
+    // the plate no longer samples or blurs the scene behind it.
     setBlurEnabled(false);
     setPanelOpacity(0.90f);
     setBorderWidth(1.6f);
@@ -94,9 +94,10 @@ void LayoutFlipButton::refreshAccessibility() {
     auto& i18n = nxui::I18n::instance();
     setAccessibilityLabel(i18n.tr("hint.switch_layout", "Switch view"));
     setAccessibilityRole(i18n.tr("accessibility.roles.button", "button"));
-    setAccessibilityHint(m_singleRow
-        ? i18n.tr("layout.flip_to_grid", "Switch to grid view.")
-        : i18n.tr("layout.flip_to_line", "Switch to single-row view."));
+    // At HOME this button cycles all four presets; inside a folder it cycles
+    // the renderer modes. Keep the hint accurate for both.
+    setAccessibilityHint(
+        i18n.tr("layout.flip_hint", "Switch the layout view."));
 }
 
 void LayoutFlipButton::drawFallbackIcon(nxui::Renderer& ren, const nxui::Color& ink,

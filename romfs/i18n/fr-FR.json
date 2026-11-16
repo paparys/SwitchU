@@ -323,6 +323,8 @@
       "section": "Illustrations des jeux",
       "enabled": "Afficher les visuels SteamGridDB",
       "enabled_desc": "Affiche les heroes et les logos derrière le menu des applications.",
+      "show_heroes": "Afficher les fonds de héros",
+      "show_heroes_desc": "Illustrations de héros en plein écran. Désactivez pour conserver les pochettes, icônes et logos ; le fond d’écran reste visible.",
       "api_key": "Clé API",
       "api_key_set": "Configurée (masquée)",
       "api_key_missing": "Non configurée",

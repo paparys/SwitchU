@@ -22,7 +22,7 @@
 #include "widgets/ProgressDialog.hpp"
 #include "widgets/LockScreen.hpp"
 #include "widgets/AppletButton.hpp"
-#include "widgets/PageIndicator.hpp"
+#include "widgets/AllAppsScreen.hpp"
 #include "widgets/ProfileCarouselScreen.hpp"
 #include "widgets/ProfileLockButton.hpp"
 #include "widgets/FolderBackdrop.hpp"
@@ -33,6 +33,7 @@
 #include "settings/SettingsScreen.hpp"
 #include "settings/GameOptionsScreen.hpp"
 #include "settings/SteamGridDbPickerScreen.hpp"
+#include "settings/WallpaperPickerScreen.hpp"
 #include "settings/FolderOptionsScreen.hpp"
 #include "settings/AutoThemeScreen.hpp"
 #include "settings/ControllerTestScreen.hpp"
@@ -92,9 +93,16 @@ public:
 
     void setTutorialStartupFade(bool enabled);
 
+    // Boot-picker choice for a replacement activity: load the chosen account's
+    // per-user config in onCreate, then open Lock without another picker.
+    void setBootProfileChosen(const AccountUid& uid, bool enterLock = true);
+
 #ifdef SWITCHU_MENU
     void setStartupStatus(const switchu::smi::SystemStatus& status, bool fastReturn = false,
                           bool startLocked = false);
+    void setRestartState(const switchu::smi::OperationOutcome& failure,
+                         bool fastReturn, bool startLocked,
+                         std::uint64_t suspendedTitleId, bool appRunning);
 #endif
 
     bool onCreate() override;
@@ -126,13 +134,15 @@ private:
     void loadNextProfile();
     void finishProfileLoading();
     void refreshProfileLockButton();
+    void refreshProfileLockProtection();
     void wireProfileLockNavigation();
     void focusHomeGridFallback();
     void ensureHomeTitleFocus(std::uint64_t preferredTitleId = 0);
     std::uint64_t mostRecentlyOpenedTitleId() const;
     void createProfileCarousel();
     void openProfileCarousel();
-    void setLockedProfile(std::optional<AccountUid> uid);
+    void setLockedProfile(std::optional<AccountUid> uid, bool switchOwner = true);
+    void restartForBootProfile(AccountUid uid, bool enterLock = true);
     void composeRootPending(std::vector<PendingApp>& apps);
     GridModel buildRootFolderModel();
     GridModel buildOpenFolderModel(std::uint32_t folderId) const;
@@ -152,7 +162,6 @@ private:
     nxui::Rect folderTileRect(std::uint32_t folderId) const;
     void snapCursorToFocus();
     void syncEditJiggle();
-    void syncPageIndicator();
     void flipPageFromEdge(int dir);
     void requestOpenFolder(std::uint32_t folderId, std::uint64_t focusTitleId = 0);
     void openCapturedFolder();
@@ -171,6 +180,13 @@ private:
     void syncSteamGridDbLogoArea();
     void syncFolderHeader();
     void createFolder(int targetSlot = -1);
+    /// Per-game Folders section: put this title in a folder, or take it out.
+    void toggleGameFolder(std::uint64_t titleId, std::uint32_t folderId);
+    /// Create a folder from the per-game sheet and add this title to it. The
+    /// new folder is appended to the HOME layout so it shows in the carousel.
+    void createFolderForGame(std::uint64_t titleId);
+    std::vector<GameOptionsScreen::FolderEntry> gameFolderEntries(
+        std::uint64_t titleId) const;
     void showAddContextMenu(int targetSlot, const nxui::Rect& anchor);
     void showWidgetTypeMenu(int targetSlot, const nxui::Rect& anchor);
     void showWidgetSizeMenu(int targetSlot, const nxui::Rect& anchor,
@@ -190,6 +206,7 @@ private:
     std::vector<std::pair<std::string, std::string>> listWidgetAssets(bool screenshotsOnly) const;
     std::string resolveWidgetAssetRef(const std::string& assetRef) const;
     void syncWidgetPageAssets();
+    bool scrollMotionActive() const;
     std::string randomScreenshotPath(std::uint32_t widgetId) const;
     std::string widgetTypeLabel(switchu::widgets::WidgetType type) const;
     std::string widgetDurationLabel(std::uint64_t seconds) const;
@@ -203,6 +220,14 @@ private:
     void syncGameArtworkTextures(std::uint64_t titleId);
     switchu::widgets::WidgetSize gameGridSize(std::uint64_t titleId,
                                                AppLayoutMode mode) const;
+    // Canonical size indices (0=1x1, 1=2x1, 2=4x2, 3=2x2, 4=2x3) that the
+    // active HOME preset can actually pack.
+    std::vector<int> homeTileSizeIndices() const;
+    bool homeLayoutSupportsLargeTiles() const;
+    // Per-game icon shape: 0 = 3:4, 1 = 16:9, 2 = 1:1, 3 = 4:3.
+    int gameAspectOptionFor(std::uint64_t titleId) const;
+    float gameAspectRatioFor(std::uint64_t titleId) const;
+    void applyGameAspect(std::uint64_t titleId);
     // Footprint a title occupies in the grid layout. Widgets carry their own
     // size; games may be configured as 2x1, 4x2, 2x2, or 2x3 tiles.
     switchu::widgets::WidgetSize layoutSlotSpan(std::uint64_t titleId) const;
@@ -223,7 +248,23 @@ private:
 #ifdef SWITCHU_MENU
     void activateApplication(GlossyIcon* source, AppEntry* entry,
                              std::uint64_t titleId,
-                             const std::string& launchTitle);
+                             const std::string& launchTitle,
+                             bool fromShortcut = false);
+    void activateApplicationFromShortcut(nxui::Widget* anchor,
+                                         const nxui::Texture* icon,
+                                         float cornerRadius,
+                                         AppEntry* entry,
+                                         std::uint64_t titleId,
+                                         const std::string& launchTitle,
+                                         bool fromShortcut = true);
+    void beginApplicationLaunch(const nxui::Rect& frame,
+                                const nxui::Texture* texture,
+                                float cornerRadius, bool posterFrame,
+                                AppEntry* entry, std::uint64_t titleId,
+                                const std::string& launchTitle,
+                                bool fromShortcut = false);
+    bool showBlockedLaunchDialog(const AppEntry& entry,
+                                 nxui::Widget* returnFocus);
     void resumeSuspendedApplication(std::uint64_t titleId,
                                     const std::string& launchTitle);
 #endif
@@ -277,6 +318,7 @@ private:
     // Folds the chosen accent into m_theme/m_homeChrome so every consumer of
     // cursorNormal (rings, carets, spinners, progress, focused borders) agrees.
     void applyAccentColor();
+    void applyCursorHighlight();
     // When full-opacity heroes fight the active theme, temporarily flip chrome
     // contrast (light theme + dark hero → dark chrome, and vice versa).
     void updateHeroAwareChrome(bool force = false);
@@ -297,38 +339,71 @@ private:
         std::string icon;
         std::string label;
     };
-    std::vector<ActionHint> buildActionHints();
+    // Reused across frames so the hint strip does not allocate a vector on
+    // every update. Valid until the next call.
+    const std::vector<ActionHint>& buildActionHints();
+    std::vector<ActionHint> m_actionHintScratch;
 
     struct HintCapsule {
         std::string icon;
         std::string label;
         std::string outgoing;              // label fading out during a swap
+        // Measured once when the capsule is built or its label changes. The
+        // strip renders every frame, so re-querying the font here was steady
+        // per-frame work for text that almost never moves.
+        nxui::Vec2 iconSize{};
+        nxui::Vec2 labelSize{};
+        nxui::Vec2 outgoingSize{};
+        // Custom fonts reload on theme changes; revisions invalidate the
+        // metrics above without re-measuring every frame.
+        std::uint64_t iconRev = 0;
+        std::uint64_t labelRev = 0;
         float width = 0.f;
         float widthFrom = 0.f, widthTo = 0.f;
         float widthT = 1.f;                // 0..1
         float swapT  = 1.f;                // 0..1
     };
     std::vector<HintCapsule> m_hintCapsules;
+    // Panel-style hints need their own row sizes because the panel uses a
+    // different type scale. Re-measured only when the visible labels change.
+    struct HintPanelRow {
+        std::string icon;
+        std::string label;
+        nxui::Vec2  iconSize;
+        nxui::Vec2  labelSize;
+        float       width = 0.f;
+    };
+    std::vector<HintPanelRow> m_hintPanelRows;
+    bool m_hintPanelRowsValid = false;
+    std::uint64_t m_hintPanelIconRev = 0;
+    std::uint64_t m_hintPanelLabelRev = 0;
+    // Row packing only changes while a label width animates or the strip
+    // switches between one-row/two-row layouts. Keep it across static frames
+    // instead of running the split search (and allocating its candidates) every
+    // frame.
+    std::vector<std::pair<int, int>> m_hintRows;
+    std::vector<float> m_hintRowWidths;
+    bool m_hintRowsValid = false;
+    bool m_hintRowsOneRow = false;
+    float m_hintRowsMaxW = 0.f;
+    // HOME game search. The query lives across keyboard edits; selecting a
+    // result jumps to the matching tile instead of launching it.
+    void beginGameSearch();
+    void applyGameSearch(const std::string& query);
+    void clearGameSearch();
+    void focusGameFromSearch(std::uint64_t titleId);
+    void syncGameSearchBar();
+    std::string m_gameSearchQuery;
+    int  m_gameSearchCount = -1;
     void  syncHintCapsules(float dt);
-    float hintCapsuleWidth(const std::string& icon, const std::string& label);
+    float hintCapsuleWidth(const nxui::Vec2& iconSize, const nxui::Vec2& labelSize) const;
     void renderActionHintBar(nxui::Renderer& ren);
     void renderActionHintPanel(nxui::Renderer& ren);
-    void renderPageArrows(nxui::Renderer& ren);
     void renderDeletePageButton(nxui::Renderer& ren);
-    bool pagingAvailable();
-
-    struct PageArrowAnim {
-        float show  = 0.f;   // 0..1
-        float press = 0.f;   // 1 -> 0
-    };
-    PageArrowAnim m_arrowAnimLeft, m_arrowAnimRight;
-    bool m_touchArrowLeft = false, m_touchArrowRight = false;
     bool m_touchBattery = false;
     bool m_touchLayoutFlip = false;
 
-    nxui::Rect pageArrowRect(bool left);
     nxui::Rect deletePageButtonRect() const;
-    void kickPageArrow(int dir);
     bool flipPage(int dir);
     // Single-row: jump by grid page size (same local cell when possible).
     bool flipDynamicLinePage(int dir);
@@ -341,7 +416,6 @@ private:
     void deleteAllUnusedPages();
     float m_addPageHold = 0.f;
     bool  m_addPageMode = false;
-    bool  m_addPageTouchHold = false;
     float m_deletePageShow = 0.f;
     float m_deletePageHold = 0.f;
     bool  m_touchDeletePage = false;
@@ -350,7 +424,7 @@ private:
     bool focusTitle(uint64_t titleId, bool instantFocus = false);
     void markSuspendedIcon(uint64_t titleId);
     void closeActiveOverlays(bool closeFolders = true);
-    void handleTouch();
+    void handleTouch(float dt);
     std::shared_ptr<GlossyIcon> makeIcon(const AppEntry& entry);
     nxui::Texture* folderCoverTexture(std::uint64_t titleId, bool preferPoster = false,
                                       bool allowColdLoad = true);
@@ -375,8 +449,8 @@ private:
     // one-folder-per-frame fill instead of stalling the view toggle.
     void applyFolderCoversToIcons(int centerIndex = -1, int radius = -1,
                                   bool allowColdLoad = true);
-    // FT light / Battery Saver: drop peeks/composites/covers on folder tiles.
-    void clearFolderCoversForFrameTapLight();
+    // Drop folder art for a one-shot Frame Tap reclaim; browse refills it.
+    void clearFolderCoversForFrameTap();
     bool folderTileNeedsArt(int index) const;
     void markFolderCoverFilled(int index);
     void ensureFolderCoverFillDoneSize();
@@ -413,7 +487,7 @@ private:
         PagePrev,          // ZL
         PageNext,          // ZR
         Properties,        // Plus
-        ChangeView,        // Minus
+        AllApps,           // Minus
         NavLeft,           // D-pad Left
         NavRight,          // D-pad Right
         NavUp,             // D-pad Up
@@ -438,6 +512,13 @@ private:
     // music and doing its frame work for the whole sleep.
     void enterSystemSleep();
     void leaveSystemSleep();
+    /// Opens Lock directly. Cold start passes chooseProfile=true so the user
+    /// picker runs before the selected user's Lock view.
+    void requestLockEntry(bool instant = false, bool chooseProfile = false);
+    void showLockProfileChooser();
+    void refreshLockProfilesState();
+    void lockCodeForUidHex(const std::string& uidHex, bool& enabled,
+                           std::string& code) const;
     /// Sleep-only Lock view (not AppLayoutMode). Curtain unlock restores HOME.
     void enterLockView(bool instant = false);
     void finishExitLockView(bool resumeSuspended);
@@ -447,23 +528,19 @@ private:
     void restoreFocusAfterLock();
     void pollSleepNotifications();
     void onUpdateAwake(float dt);
-    void tickFrameTapLightPath(float dt);
-    // Soft-land back to lite browse radius after NeedHeadroom focus-only.
-    void restoreFrameTapLightBrowse(const char* reason);
-    void enterFrameTapLightPath(const char* reason);
-    void leaveFrameTapLightPath(const char* reason);
-    // WaraWara shapes off while lite; theme wallpaper stays.
-    void applyFrameTapLiteBackground(bool lite);
-    // Persist + sync QS/Theme Shop; enter/leave lite when FT viewer is not holding it.
-    void applyBatterySaver(bool enabled);
-    void logFrameTapLightSoak(const char* tag);
+    void tickFrameTap(float dt);
+    // Soft-land back to normal browse radius after a Frame Tap headroom reclaim.
+    void restoreFrameTapBrowse(const char* reason);
     // Free GPU icon/poster memory before resume/launch so FT can remount.
     void reclaimForFrameTapLaunch(const char* reason);
     // Clamp GpuDevice refuse headroom to free − UI reserve (never brick chrome).
-    void applyFrameTapLightHeadroom(bool preferHigherTarget);
+    void applyFrameTapHeadroom(bool preferHigherTarget);
     // Temporary soak inventory — gated by sdmc:/config/SwitchU/mem_inventory.
     void tickMemInventory(float dt);
     void logMemInventory(const char* tag);
+    // One line that splits the image budget by consumer: icons vs posters in the
+    // streamer pool, hero/logo sets, wallpaper, fonts, and the remainder.
+    void logGpuBreakdown(const char* tag);
     void releaseLeaveSplashGpu(const char* reason);
     void closeQuickSettings();
     void createThemeShop();
@@ -479,7 +556,13 @@ private:
     void refreshThemeShopState(bool rebuildTab = true);
     std::vector<ThemeShopScreen::ThemeShopEntry> buildThemeShopEntries();
     std::vector<ThemeShopScreen::ThemeShopEntry> buildIconPackEntries();
-    std::string resolvedIconPackId() const;
+    const std::string& resolvedIconPackId() const;
+    // resolvedIconPackId() stats the active pack directory. HOME asks for it
+    // every frame for the hero-contrast tint, so cache the answer until the
+    // configured pack id changes.
+    mutable std::string m_resolvedIconPackInput;
+    mutable std::string m_resolvedIconPackCache;
+    mutable bool m_resolvedIconPackValid = false;
     std::string iconsDirectoryForPack(const std::string& packId) const;
     void applyIconPack(const std::string& packId);
     void syncColourIconContrast();
@@ -510,6 +593,11 @@ private:
     std::vector<std::string> scanAvailablePresets();
     void loadMenuLayout();
     void saveMenuLayout();
+    // Settings must never rearrange the personal HOME layout. The slots shown
+    // when the panel opens are saved up front and held so a rebuild behind the
+    // panel cannot move icons; on close the held arrangement is restored.
+    void beginHomeLayoutHold();
+    void endHomeLayoutHold();
     bool quiesceWritersForPowerAction();
     void applyMenuLayoutToPending(std::vector<PendingApp>& apps);
     void startEditGhost(GlossyIcon* sourceIcon);
@@ -536,9 +624,14 @@ private:
 
     void toggleAppLayoutMode();
     void setAppLayoutMode(AppLayoutMode mode);
-    // Keeps the Change View button's three-way hint in sync with the view.
+    // User-facing HOME presets: Carousel, Shelf, Showcase and Poster Wall.
+    void setHomeLayoutPreset(HomeLayoutPreset preset);
+    HomeLayoutPreset homeLayoutPreset() const { return m_homeLayout; }
+    void applyHomeLayoutTilePresentation();
+    float homeTileAspectFor(std::uint64_t titleId) const;
+    // Keeps the Change View button's single-row state in sync with the view.
     void syncLayoutFlipState();
-    // Tall Poster tiles + icon loader preference for single-row only.
+    // Poster tiles + icon-loader preference for single-row and Poster Wall.
     void syncSingleRowPosterPresentation(bool forceReloadIcons = false);
     bool preferPosterForMode(AppLayoutMode mode) const;
     void beginLayoutArtPrefetch();
@@ -575,18 +668,14 @@ private:
     switchu::services::ClockService m_clockService;
     switchu::services::AutoThemeService m_autoTheme;
     switchu::services::FrameTapStatus m_frameTapStatus;
-    bool                     m_frameTapLightActive = false;
-    // Heroes suppressed in lite (~8 MiB) — spend a slice on ±3 posters
-    // (was ±2); still well under remount cushion.
-    // Focus ±3 icons (posters suppressed while lite).
-    static constexpr int     kFrameTapLightBrowseRadius = 3;
-    // Delay leave-light on brief viewer drops so soft-land cannot refill
-    // past FT remount needs (soak: LEAVE→img 34MB→free 8KB).
-    float                    m_frameTapViewerGoneSec = 0.f;
-    static constexpr float   kFrameTapViewerGoneLeaveSec = 4.f;
-    // After NeedHeadroom reclaim+ACK, hold focus-only and skip re-reclaim so
-    // restore→reload→hard-release does not flash icons (soak: 659 ACKs).
-    // Matches FT anti-thrash re-ask interval (~30 s).
+    // True while a Frame Tap headroom request has raised the GPU refuse floor.
+    bool                     m_ftHeadroomRaised = false;
+    // Time since the viewer disconnected, used to return headroom to default.
+    float                    m_ftViewerGoneSec = 0.f;
+    static constexpr float   kFtViewerGoneResetSec = 4.f;
+    // After NeedHeadroom reclaim+ACK, skip another hard reclaim for the FT
+    // anti-thrash interval (~30 s). Visuals refill after the donor grace; this
+    // hold must not suppress heroes or folder covers.
     bool                     m_ftHeadroomHoldActive = false;
     float                    m_ftHeadroomHoldSec = 0.f;
     static constexpr float   kFtHeadroomHoldSec = 30.f;
@@ -608,11 +697,17 @@ private:
     int                      m_streamerIdleLastPage = -1;
     int                      m_streamerIdleLastFocus = -1;
     static constexpr float   kStreamerIdleReleaseSec = 8.f;
+    // Settle time after the last page/focus change before freed icon art is
+    // given back; keeps a couple of slots for one back-step, then drops them.
+    static constexpr float   kStreamerSettleSec = 2.5f;
+    static constexpr int     kStreamerIdleHoldSlots = 2;
     // Presence of this file enables periodic [mem] inventory lines (delete to stop).
     static constexpr const char* kMemInventoryFlag =
         "sdmc:/config/SwitchU/mem_inventory";
     float                    m_memInventoryAccumSec = 0.f;
     bool                     m_memInventoryEnabled = false;
+    bool                     m_gpuBreakdownLogged = false;
+    float                    m_gpuBreakdownWaitSec = 0.f;
     float                    m_memInventoryRecheckSec = 0.f;
     static constexpr float   kMemInventoryIntervalSec = 15.f;
     static constexpr float   kMemInventoryFlagRecheckSec = 5.f;
@@ -641,7 +736,6 @@ private:
     std::shared_ptr<LayoutFlipButton>  m_layoutFlip;
     std::shared_ptr<BatteryWidget>     m_battery;
     std::shared_ptr<TitlePillWidget>   m_titlePill;
-    std::shared_ptr<PageIndicator>     m_pageIndicator;
     std::shared_ptr<LaunchAnimation>   m_launchAnim;
     std::shared_ptr<OverlayDialog>     m_userSelect;
     std::shared_ptr<OverlayDialog>     m_dialog;
@@ -651,7 +745,17 @@ private:
     std::shared_ptr<SettingsScreen>    m_settings;
     std::shared_ptr<ThemeShopScreen>   m_themeShop;
     std::shared_ptr<GameOptionsScreen> m_gameOptions;
+    std::shared_ptr<AllAppsScreen> m_allAppsScreen;
+    void createAllAppsScreen();
+    void openAllApps();
+    std::vector<std::uint8_t> loadAllAppsIconData(std::uint64_t titleId);
+    std::vector<std::uint64_t> allAppsFavouriteIds() const;
+    void setAllAppsFavourite(std::uint64_t titleId, bool favourite);
+    std::vector<std::uint64_t> allAppsRecentIds() const;
+    void rememberAllAppsFocus();
+    void refreshAllAppsMovement();
     std::shared_ptr<SteamGridDbPickerScreen> m_steamGridDbPicker;
+    std::shared_ptr<WallpaperPickerScreen> m_wallpaperPicker;
     std::shared_ptr<FolderOptionsScreen> m_folderOptions;
     std::shared_ptr<AutoThemeScreen>   m_autoThemeScreen;
     std::shared_ptr<ControllerTestScreen> m_controllerTest;
@@ -662,9 +766,18 @@ private:
     std::uint64_t m_lockReturnTitleId = 0;
     int m_lockExitCursorHoldFrames = 0;
     bool m_lockViewActive = false;
+    bool m_lockEntryPending = false;
+    bool m_lockProfileSelectActive = false;
+    bool m_lockAfterProfilePick = false;
+    bool m_lockEntryInstant = false;
+    std::optional<AccountUid> m_lockEntryUid;
+    bool m_bootProfileChosen = false;
+    bool m_bootProfileEnterLock = true;
+    std::optional<AccountUid> m_bootProfileUid;
+    nxui::Widget* m_lockEntryReturnFocus = nullptr;
     int m_lastOperationMode = -1;
-    bool m_dockedApplied = false;
     bool m_dockedNow = false;
+    bool m_dockedReflowPending = false;
     int m_baseIconScale = 100;
     int m_baseShortcutScale = 100;
     bool m_sidebarBootNudge = true;      // pending one-shot startup resize nudge
@@ -673,17 +786,14 @@ private:
     std::shared_ptr<TextEntryScreen>      m_textEntry;
 
     nxui::Texture m_gameCardTex;
-    nxui::Texture m_arrowTexLeft;
-    nxui::Texture m_arrowTexRight;
     nxui::Texture m_batteryConsoleTex;
     nxui::Texture m_batteryJoyconLeftTex;
     nxui::Texture m_batteryJoyconRightTex;
-    nxui::AnimatedFloat m_arrowCenterY;
-    bool m_arrowCenterInit = false;
 
     std::shared_ptr<nxui::Box> m_bgLayer;
     std::shared_ptr<nxui::Box> m_contentLayer;
     std::shared_ptr<nxui::Box> m_overlayLayer;
+    bool m_fullscreenHomeHidden = false;
     std::shared_ptr<nxui::Box> m_topHud;
     std::shared_ptr<nxui::Box> m_leftSidebar;
     std::shared_ptr<nxui::Box> m_rightSidebar;
@@ -793,7 +903,11 @@ private:
     float m_editDragFolderOpenWait = 0.f;
     std::vector<uint64_t> m_layoutSlots;
     std::unordered_map<std::uint64_t, switchu::widgets::WidgetSize> m_gameSizes;
+    std::unordered_map<std::uint64_t, int> m_gameAspects;
     bool m_layoutDirty = false;
+    // Slots captured while Settings is open; see beginHomeLayoutHold().
+    std::vector<uint64_t> m_homeLayoutHold;
+    bool m_homeLayoutHoldActive = false;
     struct FolderCoverCacheEntry {
         std::unique_ptr<nxui::Texture> texture;
         bool preferPoster = false;
@@ -864,11 +978,16 @@ private:
     std::unordered_map<std::uint64_t, RetainedImagePin> m_retainedImagePins;
     int m_widgetAssetPage = -1;
     bool m_widgetAssetsWereSliding = false;
+    std::uint32_t m_widgetAssetStreamTick = 0;
     std::vector<std::uint8_t> m_widgetAssetCurrentScratch;
     std::vector<std::uint8_t> m_widgetAssetKeepScratch;
     int m_consoleBatteryPercent = 0;
     bool m_consoleBatteryCharging = false;
     std::vector<AppEntry> m_allApps;
+    // Parsed once per hiddenGames change instead of once per title lookup.
+    mutable std::vector<std::uint64_t> m_hiddenTitleIdsCache;
+    mutable std::string m_hiddenTitleIdsSource;
+    mutable bool m_hiddenTitleIdsCacheValid = false;
     std::uint32_t m_openFolderId = 0;
     std::uint32_t m_requestedFolderId = 0;
     std::uint64_t m_folderOpenFocusTitleId = 0;
@@ -925,6 +1044,11 @@ private:
     void restoreLayoutFlipFocusIfNeeded();
     // Cursor snap when a layout morph just finished (index remap safety).
     bool m_wasLayoutMorphing = false;
+    // Dynamic-line ring follows the row while it moves, then samples once at
+    // rest instead of rebuilding the same rect every frame.
+    bool m_lineCursorNeedsSample = false;
+    // Grid-only: one page-empty scan per update, reused by arrows and hints.
+    bool m_deletePageAvailableFrame = false;
     /// One-shot: next updateCursor places instantly (folder close / leave restore).
     bool m_snapHomeFocus = false;
     /// Hold instant cursor from leave preview until framebuffer capture finishes.
@@ -970,6 +1094,7 @@ private:
     std::uint64_t m_steamGridDbUiRevision = 0;
     std::uint64_t m_steamGridDbLastCompletedTitleId = 0;
     bool m_steamGridDbWasRunning = false;
+    HomeLayoutPreset m_homeLayout = HomeLayoutPreset::Carousel;
     AppLayoutMode m_appLayoutMode = AppLayoutMode::DynamicLine;
     bool m_settingsNeedRefresh        = false;
     std::string m_loadedRegularFontPath;
@@ -989,9 +1114,13 @@ private:
     int m_pinIconRetryFrames = 0;
     int m_pinIconRetryAttempts = 0;
     void toggleGameShortcut(std::uint64_t titleId);
+    void addGameShortcut(std::uint64_t titleId, int side);
+    void removeGameShortcut(std::uint64_t titleId);
     bool isGameShortcutPinned(std::uint64_t titleId) const;
     bool isTitleHidden(std::uint64_t titleId) const;
     std::string customTitleFor(std::uint64_t titleId) const;
+    std::pair<int, int> heroOffsetFor(std::uint64_t titleId) const;
+    void setHeroOffset(std::uint64_t titleId, int xPercent, int yPercent);
     void setGameName(std::uint64_t titleId, const std::string& name);
     void applyDockedMode(bool docked);
     void hideGameFromHome(std::uint64_t titleId);
@@ -1008,6 +1137,11 @@ private:
     void applyTitlePillLayout();
     // Crisp / Smooth / Springy, pushed to the grid and the focus ring.
     void applyMotionStyle();
+    // Style lab: applies the live chrome/focus/title/HUD/wallpaper values.
+    void applyStyleSettings();
+    void syncStyleSettingsToScreen();
+    void saveLookPreset(int slot);
+    void loadLookPreset(int slot);
     // Square tiles are a user override on the theme radius. Every icon creation
     // path has to go through this: a rebuild (wake from sleep, opening a folder,
     // a reflow) used to hand the tiles the rounded theme radius back.
@@ -1022,8 +1156,12 @@ private:
         const float pct = static_cast<float>(std::clamp(m_config.iconCornerPct, 0, 100)) / 100.f;
         return m_theme.iconCornerRadius * pct * uiRadiusScale();
     }
-    void reloadAnimatedWallpaper();
+    bool wallpaperReturnReloadExpected() const;
+    void attemptWallpaperReturnReload();
+    bool reloadAnimatedWallpaper(bool force = false);
+    void rememberLoadedWallpaper(const std::string& path);
     void cycleWallpaper();
+    void openWallpaperPicker();
     std::string m_loadedWallpaperPath;
     bool m_backgroundImageLoaded      = false;
     std::string m_pendingBackgroundImagePath;
@@ -1078,6 +1216,12 @@ private:
     bool m_leaveSplashDrawn = false;
     bool m_leaveMotionFrozen = false;
     bool m_leaveMotionFreezePending = false;
+    bool m_wallpaperReturnRefreshPending = false;
+    bool m_wallpaperReturnRetryPending = false;
+    int m_wallpaperReturnReloadAttempts = 0;
+    float m_wallpaperReturnRetryDelay = 0.f;
+    static constexpr int kWallpaperReturnMaxReloadAttempts = 3;
+    static constexpr float kWallpaperReturnRetryDelaySec = 0.25f;
     static constexpr float kLeaveSplashHoldDur = 0.06f;
     static constexpr float kLeaveSplashFadeDur = 0.25f;
 
@@ -1085,6 +1229,9 @@ private:
     bool  m_audioHeldLogged  = false;
     bool m_fastReturnRequested = false;
     bool m_startLocked = false; // MenuStartMode::LockScreen with suspended game
+    // Set on the boot that follows a shortcut-row launch; the matching
+    // suspended title is terminated as soon as the menu is ready.
+    bool m_terminateShortcutGameOnBoot = false;
     std::future<void> m_themePackageTransferFuture;
     std::future<void> m_softwareDeleteFuture;
     Result m_softwareDeleteResult = 0;
@@ -1097,7 +1244,6 @@ private:
 #ifdef SWITCHU_MENU
     switchu::smi::OperationOutcome m_startupFailure{};
 #endif
-    int m_themeRenderDebugFrames = 0;
 
     float m_returnFadeTimer = 0.f;
     float m_tutorialStartupFadeTimer = 0.f;
@@ -1122,12 +1268,20 @@ private:
     };
     // D-pad: fire once after this grace while held, then Application repeats.
     static constexpr float kHomeChordGraceSec = 0.08f;
-    // L/R/Y/A/ZL/ZR/Plus/Minus: release under this = tap; hold longer = modifier.
+    // L/R/Y/A/Plus/Minus: release under this = tap; hold longer = modifier.
     static constexpr float kHomeChordTapMaxSec = 0.35f;
+    // ZL/ZR page on a clean tap and repeat while held. At the last page ZR's
+    // existing add-page hold takes over instead.
+    static constexpr float kPageHoldDelaySec = 0.50f;
+    static constexpr float kPageHoldRepeatSec = 0.48f;
+    static constexpr float kPageHoldRetrySec = 0.12f;
+    int   m_pageHoldDir = 0;
+    float m_pageHoldSec = 0.f;
+    float m_pageHoldNextSec = 0.f;
+    bool  m_pageHoldAddLock = false;
     nxui::AnimatedFloat m_hintPanelW{0.f};
     nxui::AnimatedFloat m_hintPanelH{0.f};
     nxui::AnimatedFloat m_hintContentReveal{1.f};
-    std::string m_hintSignature;
     static constexpr float kReturnFadeInDur = 0.22f;
     static constexpr float kTutorialStartupFadeDur = 0.34f;
 };

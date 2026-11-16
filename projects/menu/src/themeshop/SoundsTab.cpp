@@ -14,6 +14,13 @@ ThemeShopScreen::Tab themeshop::tabs::SoundsTab::build(ThemeShopScreen& screen) 
 
     {
         SettingItem it;
+        it.label = i18n.tr("themeshop.sounds.section_sound", "Sound");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("settings.music.menu_music", "Menu Music");
         it.type = ItemType::Toggle;
         it.boolVal = screen.m_musicEnabled;
@@ -50,6 +57,13 @@ ThemeShopScreen::Tab themeshop::tabs::SoundsTab::build(ThemeShopScreen& screen) 
             screen.m_sfxVolume = std::clamp(self.floatVal, 0.f, 1.f);
             if (screen.m_sfxVolumeCb) screen.m_sfxVolumeCb(screen.m_sfxVolume);
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("themeshop.sounds.section_theme_music", "Theme music");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 

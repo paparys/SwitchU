@@ -827,6 +827,13 @@ void AudioManager::update(float dt) {
         if (dur > 0.f && m_positionSeconds > dur)
             m_positionSeconds = dur;
     }
+
+    m_sfxClock += dt;
+    m_sfxTrimTimer += dt;
+    if (m_sfxTrimTimer >= 1.f) {
+        m_sfxTrimTimer = 0.f;
+        trimSfx();
+    }
 }
 
 float AudioManager::durationSeconds() const {
@@ -1129,63 +1136,140 @@ bool AudioManager::currentTrackFileExistsUnlocked() const {
 }
 
 void AudioManager::loadSfx(Sfx id, const std::string& path) {
-    Mix_Chunk* chunk = Mix_LoadWAV(path.c_str());
-    if (!chunk) {
-        std::fprintf(stderr, "[Audio] Failed to load SFX %s: %s\n", path.c_str(), Mix_GetError());
+    const int key = static_cast<int>(id);
+    std::lock_guard<std::mutex> lk(m_sfxMutex);
+
+    // Register only. Decoding every preset clip at startup delayed the first
+    // usable frame; the PCM is now loaded on first play and trimmed when idle.
+    auto existing = m_sfxPaths.find(key);
+    if (existing != m_sfxPaths.end() && existing->second == path) {
+        m_sfxLastUse[key] = m_sfxClock;
         return;
     }
-    Mix_VolumeChunk(chunk, (int)(m_sfxVolume * MIX_MAX_VOLUME));
-    std::lock_guard<std::mutex> lk(m_sfxMutex);
-    auto it = m_sfx.find(static_cast<int>(id));
+
+    auto it = m_sfx.find(key);
     if (it != m_sfx.end()) {
-        Mix_FreeChunk(it->second);
-        it->second = chunk;
-    } else {
-        m_sfx[static_cast<int>(id)] = chunk;
+        if (it->second)
+            Mix_FreeChunk(it->second);
+        m_sfx.erase(it);
     }
+    m_sfxPaths[key] = path;
+    m_sfxLastUse[key] = m_sfxClock;
 }
 
 void AudioManager::clearSfx() {
     std::lock_guard<std::mutex> lk(m_sfxMutex);
     Mix_HaltChannel(-1);
-    for (auto& [id, chunk] : m_sfx) Mix_FreeChunk(chunk);
+    for (auto& [id, chunk] : m_sfx) {
+        if (chunk) Mix_FreeChunk(chunk);
+    }
     m_sfx.clear();
-    for (auto& [id, chunk] : m_namedSfx) Mix_FreeChunk(chunk);
+    for (auto& [id, chunk] : m_namedSfx) {
+        if (chunk) Mix_FreeChunk(chunk);
+    }
     m_namedSfx.clear();
     m_namedSfxVolumeScales.clear();
+    m_sfxPaths.clear();
+    m_namedSfxPaths.clear();
+    m_sfxLastUse.clear();
+    m_namedSfxLastUse.clear();
 }
 
 void AudioManager::playSfx(Sfx id) {
+    const int key = static_cast<int>(id);
     std::lock_guard<std::mutex> lk(m_sfxMutex);
-    auto it = m_sfx.find(static_cast<int>(id));
-    if (it != m_sfx.end()) {
-        Mix_PlayChannel(-1, it->second, 0);
+
+    auto pathIt = m_sfxPaths.find(key);
+    if (pathIt == m_sfxPaths.end())
+        return;
+
+    auto it = m_sfx.find(key);
+    if (it == m_sfx.end() || !it->second) {
+        Mix_Chunk* loaded = Mix_LoadWAV(pathIt->second.c_str());
+        if (!loaded) {
+            std::fprintf(stderr, "[Audio] Failed to load SFX %s: %s\n",
+                         pathIt->second.c_str(), Mix_GetError());
+            return;
+        }
+        Mix_VolumeChunk(loaded, (int)(m_sfxVolume * MIX_MAX_VOLUME));
+        m_sfx[key] = loaded;
+        it = m_sfx.find(key);
     }
+    m_sfxLastUse[key] = m_sfxClock;
+    Mix_PlayChannel(-1, it->second, 0);
 }
 
 void AudioManager::loadNamedSfx(const std::string& id, const std::string& path, float volumeScale) {
-    Mix_Chunk* chunk = Mix_LoadWAV(path.c_str());
-    if (!chunk) {
-        std::fprintf(stderr, "[Audio] Failed to load named SFX %s: %s\n", path.c_str(), Mix_GetError());
-        return;
-    }
-    Mix_VolumeChunk(chunk, (int)(m_sfxVolume * volumeScale * MIX_MAX_VOLUME));
     std::lock_guard<std::mutex> lk(m_sfxMutex);
+
+    m_namedSfxVolumeScales[id] = volumeScale;
+    m_namedSfxLastUse[id] = m_sfxClock;
+
+    auto existing = m_namedSfxPaths.find(id);
+    if (existing != m_namedSfxPaths.end() && existing->second == path)
+        return;
+
     auto it = m_namedSfx.find(id);
     if (it != m_namedSfx.end()) {
-        Mix_FreeChunk(it->second);
-        it->second = chunk;
-    } else {
-        m_namedSfx[id] = chunk;
+        if (it->second)
+            Mix_FreeChunk(it->second);
+        m_namedSfx.erase(it);
     }
-    m_namedSfxVolumeScales[id] = volumeScale;
+    m_namedSfxPaths[id] = path;
 }
 
 void AudioManager::playNamedSfx(const std::string& id) {
     std::lock_guard<std::mutex> lk(m_sfxMutex);
+
+    auto pathIt = m_namedSfxPaths.find(id);
+    if (pathIt == m_namedSfxPaths.end())
+        return;
+
     auto it = m_namedSfx.find(id);
-    if (it != m_namedSfx.end()) {
-        Mix_PlayChannel(-1, it->second, 0);
+    if (it == m_namedSfx.end() || !it->second) {
+        Mix_Chunk* loaded = Mix_LoadWAV(pathIt->second.c_str());
+        if (!loaded) {
+            std::fprintf(stderr, "[Audio] Failed to load named SFX %s: %s\n",
+                         pathIt->second.c_str(), Mix_GetError());
+            return;
+        }
+        float scale = 1.f;
+        auto scaleIt = m_namedSfxVolumeScales.find(id);
+        if (scaleIt != m_namedSfxVolumeScales.end())
+            scale = scaleIt->second;
+        Mix_VolumeChunk(loaded, (int)(m_sfxVolume * scale * MIX_MAX_VOLUME));
+        m_namedSfx[id] = loaded;
+        it = m_namedSfx.find(id);
+    }
+    m_namedSfxLastUse[id] = m_sfxClock;
+    Mix_PlayChannel(-1, it->second, 0);
+}
+
+void AudioManager::trimSfx(float idleSeconds) {
+    std::lock_guard<std::mutex> lk(m_sfxMutex);
+
+    for (auto it = m_sfx.begin(); it != m_sfx.end();) {
+        auto use = m_sfxLastUse.find(it->first);
+        const float last = (use == m_sfxLastUse.end()) ? -1.0e9f : use->second;
+        if (m_sfxClock - last > idleSeconds) {
+            if (it->second)
+                Mix_FreeChunk(it->second);
+            it = m_sfx.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (auto it = m_namedSfx.begin(); it != m_namedSfx.end();) {
+        auto use = m_namedSfxLastUse.find(it->first);
+        const float last = (use == m_namedSfxLastUse.end()) ? -1.0e9f : use->second;
+        if (m_sfxClock - last > idleSeconds) {
+            if (it->second)
+                Mix_FreeChunk(it->second);
+            it = m_namedSfx.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -1193,9 +1277,12 @@ void AudioManager::setSfxVolume(float vol) {
     std::lock_guard<std::mutex> lk(m_sfxMutex);
     m_sfxVolume = vol;
     for (auto& [id, chunk] : m_sfx) {
-        Mix_VolumeChunk(chunk, (int)(vol * MIX_MAX_VOLUME));
+        if (chunk)
+            Mix_VolumeChunk(chunk, (int)(vol * MIX_MAX_VOLUME));
     }
     for (auto& [id, chunk] : m_namedSfx) {
+        if (!chunk)
+            continue;
         float scale = 1.f;
         auto it = m_namedSfxVolumeScales.find(id);
         if (it != m_namedSfxVolumeScales.end())

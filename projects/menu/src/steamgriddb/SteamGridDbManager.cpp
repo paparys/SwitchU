@@ -14,14 +14,47 @@
 #include <fstream>
 #include <future>
 #include <list>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <system_error>
+#include <unordered_map>
 
 namespace {
 
 constexpr const char* kApiBase = "https://www.steamgriddb.com/api/v2";
 constexpr int kMatcherVersion = 4; // v4: short query tokens cover longer titles.
+
+// Per-title existence cache for custom art. Low nibble marks which kinds have
+// been probed, high nibble whether the file was there (bit << 4).
+enum ArtProbeBit : std::uint8_t {
+    kProbeIcon     = 1u,
+    kProbePoster   = 2u,
+    kProbeGridWide = 4u,
+};
+std::mutex g_artProbeMutex;
+std::unordered_map<std::uint64_t, std::uint8_t> g_artProbeBits;
+
+bool cachedArtExists(std::uint64_t titleId, std::uint8_t bit, const std::string& path) {
+    {
+        std::lock_guard<std::mutex> lock(g_artProbeMutex);
+        const auto it = g_artProbeBits.find(titleId);
+        if (it != g_artProbeBits.end() && (it->second & bit) != 0)
+            return (it->second & static_cast<std::uint8_t>(bit << 4)) != 0;
+    }
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    {
+        std::lock_guard<std::mutex> lock(g_artProbeMutex);
+        std::uint8_t& bits = g_artProbeBits[titleId];
+        bits |= bit;
+        if (exists)
+            bits |= static_cast<std::uint8_t>(bit << 4);
+        else
+            bits &= static_cast<std::uint8_t>(~static_cast<std::uint8_t>(bit << 4));
+    }
+    return exists;
+}
 
 struct ArtworkKindInfo {
     const char* endpoint = "/icons";
@@ -793,6 +826,7 @@ SteamGridDbManager::ApplyResult SteamGridDbManager::applyCandidate(
         }
         if (bytes.empty() || !saveBytes(destination, bytes))
             throw std::runtime_error("Artwork download failed");
+        invalidateArtProbe(result.titleId);
         DebugLog::log("[steamgriddb] apply downloaded title=%016llX bytes=%zu",
                       static_cast<unsigned long long>(result.titleId),
                       bytes.size());
@@ -900,6 +934,21 @@ bool SteamGridDbManager::hasPoster(std::uint64_t titleId) {
     return titleId != 0 && std::filesystem::exists(posterPath(titleId), ec);
 }
 
+bool SteamGridDbManager::hasIconCached(std::uint64_t titleId) {
+    return titleId != 0 && cachedArtExists(titleId, kProbeIcon, iconPath(titleId));
+}
+
+bool SteamGridDbManager::hasPosterCached(std::uint64_t titleId) {
+    return titleId != 0 && cachedArtExists(titleId, kProbePoster, posterPath(titleId));
+}
+
+void SteamGridDbManager::invalidateArtProbe(std::uint64_t titleId) {
+    if (titleId == 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_artProbeMutex);
+    g_artProbeBits.erase(titleId);
+}
+
 bool SteamGridDbManager::hasGridWide(std::uint64_t titleId) {
     std::error_code ec;
     return titleId != 0 && std::filesystem::exists(gridWidePath(titleId), ec);
@@ -935,6 +984,10 @@ bool SteamGridDbManager::clearArtwork(std::uint64_t titleId, ArtworkKind kind) {
             removed = true;
         ec.clear();
     };
+
+    // The art files below are about to change: drop cached existence probes so
+    // the next icon load re-stats instead of trusting a stale answer.
+    invalidateArtProbe(titleId);
 
     const bool clearHero = kind == ArtworkKind::None || kind == ArtworkKind::Hero;
     const bool clearLogo = kind == ArtworkKind::None || kind == ArtworkKind::Logo;

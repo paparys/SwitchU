@@ -50,6 +50,8 @@ public:
         return true;
     }
 
+    const SystemAction* front() const { return m_items.empty() ? nullptr : &m_items.front(); }
+
     bool empty() const { return m_items.empty(); }
     std::size_t size() const { return m_items.size(); }
     void clear() { m_items.clear(); }

@@ -44,8 +44,14 @@ public:
     nxui::Texture* texture();
     const nxui::Texture* texture() const;
 
+    /// GPU bytes held by the uploaded frames.
+    std::size_t gpuBytes() const;
+
     bool valid() const { return !m_frames.empty(); }
     bool animated() const { return m_frames.size() > 1; }
+    // True when every sampled frame is fully opaque. A full-bleed opaque
+    // wallpaper hides the gradient behind it, so the menu can skip that fill.
+    bool opaque() const { return m_opaque; }
     std::size_t frameCount() const { return m_frames.size(); }
     const std::string& path() const { return m_path; }
     /// Set when a file was recognised but could not be turned into frames.
@@ -53,6 +59,7 @@ public:
 
 private:
     std::vector<nxui::Texture> m_frames;
+    bool m_opaque = true;
     std::vector<float> m_frameSeconds;
     std::size_t m_index = 0;
     float m_elapsed = 0.f;

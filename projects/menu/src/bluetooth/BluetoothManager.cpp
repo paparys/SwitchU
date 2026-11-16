@@ -194,33 +194,44 @@ void StopOpWorker() {
 void ThreadFunc(void*) {
     DebugLog::log("[bt] Thread started");
     Result rc = btmsysAcquireAudioDeviceConnectionEvent(&g_connectionEvent);
-    if (R_FAILED(rc)) {
-        DebugLog::log("[bt] AcquireAudioDeviceConnectionEvent failed: 0x%x", rc);
-        return;
-    }
+    const bool haveEvent = R_SUCCEEDED(rc);
+    if (!haveEvent)
+        DebugLog::log("[bt] AcquireAudioDeviceConnectionEvent failed: 0x%x; polling discovery", rc);
 
     while (g_threadRunning) {
-        rc = eventWait(&g_connectionEvent, 500'000'000);
-        if (R_FAILED(rc) && rc != KERNELRESULT(TimedOut)) {
-            // Only back off on a real error: an unconditional 1 ms sleep here
-            // woke this thread 1000 times a second for the whole session, which
-            // kept a core busy and defeated console sleep.
-            DebugLog::log("[bt] eventWait error: 0x%x", rc);
-            svcSleepThread(100'000'000);
-            continue;
+        if (haveEvent) {
+            // Shorter waits while discovering keep newly found devices from
+            // sitting in the service until an unrelated connection event.
+            rc = eventWait(&g_connectionEvent,
+                           g_discovering ? 250'000'000 : 500'000'000);
+            if (R_FAILED(rc) && rc != KERNELRESULT(TimedOut)) {
+                // Only back off on a real error: an unconditional 1 ms sleep here
+                // woke this thread 1000 times a second for the whole session, which
+                // kept a core busy and defeated console sleep.
+                DebugLog::log("[bt] eventWait error: 0x%x", rc);
+                svcSleepThread(100'000'000);
+            } else if (R_SUCCEEDED(rc)) {
+                ReloadConnected();
+                ReloadPaired();
+                ReloadDiscovered();
+                // The service raises the event once per change; a short debounce keeps a
+                // burst (pair + connect + profile) from reading the state repeatedly.
+                svcSleepThread(50'000'000);
+                continue;
+            }
+        } else {
+            svcSleepThread(250'000'000);
         }
-        if (R_FAILED(rc))
-            continue; // timed out: nothing changed
-        ReloadConnected();
-        ReloadPaired();
-        ReloadDiscovered();
-        // The service raises the event once per change; a short debounce keeps a
-        // burst (pair + connect + profile) from reading the state repeatedly.
-        svcSleepThread(50'000'000);
+
+        // Discovery has no completion event of its own. Poll the service while a
+        // search is active so found devices reach the settings list.
+        if (g_discovering)
+            ReloadDiscovered();
     }
 
     DebugLog::log("[bt] Thread exiting");
-    eventClose(&g_connectionEvent);
+    if (haveEvent)
+        eventClose(&g_connectionEvent);
 }
 
 } // anonymous namespace
@@ -339,13 +350,22 @@ std::string DeviceName(const BtmAudioDevice& device) {
 
 void StartDiscovery() {
     Result rc = btmsysStartAudioDeviceDiscovery();
-    if (R_FAILED(rc))
-        DebugLog::log("[bt] StartDiscovery failed: 0x%x", rc);
-    else {
-        g_discovering = true;
-        g_discoveredChanged = true;
-        DebugLog::log("[bt] Discovery started");
+    if (R_FAILED(rc)) {
+        // A previous search can still be live in the service after the menu was
+        // reopened. Treat that as success so polling and the Stop button work.
+        bool active = false;
+        if (R_SUCCEEDED(btmsysIsDiscoveryingAudioDevice(&active)) && active)
+            rc = 0;
     }
+    if (R_FAILED(rc)) {
+        DebugLog::log("[bt] StartDiscovery failed: 0x%x", rc);
+        return;
+    }
+
+    g_discovering = true;
+    g_discoveredChanged = true;
+    ReloadDiscovered();
+    DebugLog::log("[bt] Discovery started");
 }
 
 void StopDiscovery() {

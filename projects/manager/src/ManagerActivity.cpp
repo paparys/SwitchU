@@ -120,7 +120,6 @@ bool ManagerActivity::onCreate() {
     m_panel->setBorderColor(m_theme.panelBorder.withAlpha(0.52f));
     m_panel->setHighlightColor(m_theme.panelHighlight.withAlpha(0.13f));
     m_panel->setBorderWidth(1.5f);
-    m_panel->setLiquidGlassEnabled(true);
     m_panel->setPanelOpacity(0.98f);
     rootBox().addChild(m_panel);
 
@@ -147,7 +146,6 @@ bool ManagerActivity::onCreate() {
     m_statusBadge->setRect({390.f, 202.f, 500.f, 74.f});
     m_statusBadge->setCornerRadius(24.f);
     m_statusBadge->setBorderWidth(1.4f);
-    m_statusBadge->setLiquidGlassEnabled(true);
     rootBox().addChild(m_statusBadge);
 
     m_statusLabel = std::make_shared<nxui::Label>();

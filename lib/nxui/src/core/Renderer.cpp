@@ -9,6 +9,29 @@
 
 namespace nxui {
 
+namespace {
+// Clip rects live in the fixed 1280x720 UI space. Convert them to framebuffer
+// pixels with the same scale the viewport applies.
+DkScissor uiScissor(const Rect& r, int fbWidth, int fbHeight) {
+    const float scaleX = static_cast<float>(fbWidth) / GpuDevice::FB_WIDTH;
+    const float scaleY = static_cast<float>(fbHeight) / GpuDevice::FB_HEIGHT;
+    const int maxX = fbWidth;
+    const int maxY = fbHeight;
+    int x0 = (int)std::floor(std::max(0.f, r.x) * scaleX);
+    int y0 = (int)std::floor(std::max(0.f, r.y) * scaleY);
+    int x1 = (int)std::ceil(
+        std::min(static_cast<float>(GpuDevice::FB_WIDTH), r.x + r.width) * scaleX);
+    int y1 = (int)std::ceil(
+        std::min(static_cast<float>(GpuDevice::FB_HEIGHT), r.y + r.height) * scaleY);
+    x0 = std::clamp(x0, 0, maxX);
+    y0 = std::clamp(y0, 0, maxY);
+    x1 = std::clamp(x1, x0, maxX);
+    y1 = std::clamp(y1, y0, maxY);
+    return DkScissor{(uint32_t)x0, (uint32_t)y0,
+                     (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
+}
+} // namespace
+
 static void ortho(float* m, float w, float h) {
     std::memset(m, 0, 16 * sizeof(float));
     m[ 0] =  2.f / w;
@@ -21,14 +44,12 @@ static void ortho(float* m, float w, float h) {
 
 Renderer::Renderer(GpuDevice& gpu) : m_gpu(gpu) {
     m_clipStack.reserve(8);
-    resetLiquidGlassSettings();
+    // Descriptor slots churn every icon swap; reserving keeps the frame path
+    // from growing these vectors mid-render.
+    m_freeDescSlots.reserve(64);
+    m_deferredDescSlots.reserve(64);
 }
 Renderer::~Renderer() {}
-
-void Renderer::resetLiquidGlassSettings() {
-    m_liquidGlassSettings = LiquidGlassSettings{};
-}
-
 bool Renderer::initialize() {
     std::printf("[Renderer] Loading shaders...\n");
     if (!loadShaders()) {
@@ -141,9 +162,6 @@ bool Renderer::loadShaders() {
     ok = loadDksh(m_vertShaders[(int)ShaderProgram::Wave], s_shaderBasePath + "pass_vsh.dksh") && ok;
     ok = loadDksh(m_fragShaders[(int)ShaderProgram::Wave], s_shaderBasePath + "wave_fsh.dksh") && ok;
 
-    ok = loadDksh(m_vertShaders[(int)ShaderProgram::LiquidGlass], s_shaderBasePath + "pass_vsh.dksh") && ok;
-    ok = loadDksh(m_fragShaders[(int)ShaderProgram::LiquidGlass], s_shaderBasePath + "liquid_glass_fsh.dksh") && ok;
-
     ok = loadDksh(m_vertShaders[(int)ShaderProgram::Gradient], s_shaderBasePath + "basic_vsh.dksh") && ok;
     ok = loadDksh(m_fragShaders[(int)ShaderProgram::Gradient], s_shaderBasePath + "gradient_fsh.dksh") && ok;
 
@@ -238,22 +256,46 @@ void Renderer::useShader(ShaderProgram prog) {
     if (prog == m_curShader) return;
     flush();
     m_curShader = prog;
+    // Returning to Basic invalidates the cached per-draw fragment block: a
+    // custom push may still be bound in the command stream.
+    if (prog == ShaderProgram::Basic)
+        m_basicFsUboValid = false;
     int idx = (int)prog;
     auto cmd = m_gpu.cmdBuf();
     cmd.bindShaders(DkStageFlag_GraphicsMask, {&m_vertShaders[idx], &m_fragShaders[idx]});
 }
 
 void Renderer::pushFsUniforms(const FsUniforms& fs) {
-    flush();
-    int slot = m_gpu.slot();
     auto cmd = m_gpu.cmdBuf();
+
+    // Identical uniforms do not change what the queued vertices sample, so the
+    // batch stays intact and the existing block is re-bound. Flushing here was
+    // costing one draw call per effect pass even when nothing changed.
+    if (m_fsUniformsValid && m_lastFsShader == m_curShader &&
+        std::memcmp(&fs, &m_lastFsUniforms, sizeof(fs)) == 0) {
+        cmd.bindUniformBuffer(DkStage_Fragment, 1, m_lastFsUboAddr,
+                              GpuDevice::FS_UBO_SIZE);
+        return;
+    }
+
+    flush();
+    cmd = m_gpu.cmdBuf();
+    int slot = m_gpu.slot();
     auto fsUboAddr = m_gpu.nextFsUboGpuAddr(slot);
     cmd.pushConstants(fsUboAddr, GpuDevice::FS_UBO_SIZE, 0, sizeof(fs), &fs);
     cmd.bindUniformBuffer(DkStage_Fragment, 1, fsUboAddr, GpuDevice::FS_UBO_SIZE);
+
+    m_lastFsUniforms = fs;
+    m_lastFsShader = m_curShader;
+    m_lastFsUboAddr = fsUboAddr;
+    m_fsUniformsValid = true;
+    // A custom block supersedes the cached Basic one.
+    m_basicFsUboValid = false;
 }
 
 void Renderer::beginFrame() {
     ++m_frameSerial;
+    m_sharedBackdropValid = false;
     for (std::size_t i = 0; i < m_deferredDescSlots.size();) {
         if (m_deferredDescSlots[i].reusableFrame <= m_frameSerial) {
             m_freeDescSlots.push_back(m_deferredDescSlots[i].slot);
@@ -267,11 +309,16 @@ void Renderer::beginFrame() {
     m_vtxBase  = static_cast<Vertex2D*>(m_gpu.vtxCpuAddr(slot));
     m_vtxCount = 0;
     m_vtxBatchStart = 0;
+    m_drawCalls = 0;
     m_curTexSlot = -1;
     m_texturing  = false;
     m_curShader  = ShaderProgram::Basic;
     m_shapeRadius = 0.f;
     m_shapeThickness = 0.f;
+    m_fsUniformsValid = false;
+    m_basicFsUboValid = false;
+    m_lastFsUboAddr = 0;
+    m_basicFsUboAddr = 0;
     m_gpu.resetFsUboRing(slot);
     m_clipStack.clear();
     m_reusableOffscreenCaptureValid = false;
@@ -279,15 +326,18 @@ void Renderer::beginFrame() {
     auto cmd = m_gpu.cmdBuf();
 
     dk::ImageView colorTarget{m_gpu.fbImage(slot)};
-    dk::ImageView dsTarget{m_gpu.dsImage()};
-    cmd.bindRenderTargets(&colorTarget, &dsTarget);
+    // 2D UI: bind colour only. Depth testing is disabled below, so the old
+    // framebuffer-sized S8 attachment was pure memory and per-pass bandwidth.
+    cmd.bindRenderTargets(&colorTarget);
 
+    const int fbWidth  = m_gpu.framebufferWidth();
+    const int fbHeight = m_gpu.framebufferHeight();
     cmd.setViewports(0, DkViewport{0.f, 0.f,
-        (float)m_gpu.width(), (float)m_gpu.height(), 0.f, 1.f});
-    cmd.setScissors(0, DkScissor{0, 0, (uint32_t)m_gpu.width(), (uint32_t)m_gpu.height()});
+        (float)fbWidth, (float)fbHeight, 0.f, 1.f});
+    cmd.setScissors(0, DkScissor{0, 0,
+        (uint32_t)fbWidth, (uint32_t)fbHeight});
 
     cmd.clearColor(0, DkColorMask_RGBA, 0.05f, 0.08f, 0.15f, 1.f);
-    cmd.clearDepthStencil(false, 0.f, 0xFF, 0);
 
     int idx = (int)ShaderProgram::Basic;
     cmd.bindShaders(DkStageFlag_GraphicsMask, {&m_vertShaders[idx], &m_fragShaders[idx]});
@@ -356,12 +406,22 @@ void Renderer::flush() {
     }
 
     if (m_curShader == ShaderProgram::Basic) {
-        FsUniforms fs = {};
-        fs.useTexture = m_texturing ? 1 : 0;
-        auto fsUboAddr = m_gpu.nextFsUboGpuAddr(slot);
-        cmd.pushConstants(fsUboAddr, GpuDevice::FS_UBO_SIZE,
-                          0, sizeof(int32_t) * 4, &fs);
-        cmd.bindUniformBuffer(DkStage_Fragment, 1, fsUboAddr, GpuDevice::FS_UBO_SIZE);
+        // The Basic program only varies useTexture. Reuse one ring slot while
+        // that state holds instead of pushing a fresh block per draw.
+        if (!m_basicFsUboValid || m_basicFsTexturing != m_texturing) {
+            FsUniforms fs = {};
+            fs.useTexture = m_texturing ? 1 : 0;
+            auto addr = m_gpu.nextFsUboGpuAddr(slot);
+            cmd.pushConstants(addr, GpuDevice::FS_UBO_SIZE,
+                              0, sizeof(int32_t) * 4, &fs);
+            m_basicFsUboAddr = addr;
+            m_basicFsUboValid = true;
+            m_basicFsTexturing = m_texturing;
+        }
+        cmd.bindUniformBuffer(DkStage_Fragment, 1, m_basicFsUboAddr,
+                              GpuDevice::FS_UBO_SIZE);
+        // Basic's block is the one now bound, so a cached custom block is stale.
+        m_fsUniformsValid = false;
     }
 
     int texSlot = (m_texturing && m_curTexSlot >= 0) ? m_curTexSlot : WHITE_TEX_SLOT;
@@ -371,6 +431,7 @@ void Renderer::flush() {
     cmd.bindVtxBuffer(0, vtxAddr, batchVerts * sizeof(Vertex2D));
 
     cmd.draw(DkPrimitive_Triangles, batchVerts, 1, 0, 0);
+    ++m_drawCalls;
 
     m_vtxBatchStart = m_vtxCount;
 }
@@ -379,12 +440,14 @@ void Renderer::flush() {
 
 void Renderer::bindRenderTarget(int offscreenIdx) {
     flush();
+    if (offscreenIdx == 0)
+        m_sharedBackdropValid = false;
     auto cmd = m_gpu.cmdBuf();
     dk::ImageView colorTarget{m_gpu.offscreenImage(offscreenIdx)};
     cmd.bindRenderTargets(&colorTarget);
 
-    constexpr uint32_t offW = GpuDevice::FB_WIDTH / 2;
-    constexpr uint32_t offH = GpuDevice::FB_HEIGHT / 2;
+    constexpr uint32_t offW = GpuDevice::OFFSCREEN_WIDTH;
+    constexpr uint32_t offH = GpuDevice::OFFSCREEN_HEIGHT;
     cmd.setViewports(0, DkViewport{0.f, 0.f, (float)offW, (float)offH, 0.f, 1.f});
     cmd.setScissors(0, DkScissor{0, 0, offW, offH});
 
@@ -401,17 +464,19 @@ void Renderer::restoreRenderTarget() {
     auto cmd = m_gpu.cmdBuf();
     int slot = m_gpu.slot();
     dk::ImageView colorTarget{m_gpu.fbImage(slot)};
-    dk::ImageView dsTarget{m_gpu.dsImage()};
-    cmd.bindRenderTargets(&colorTarget, &dsTarget);
+    // 2D UI: bind colour only. Depth testing is disabled below, so the old
+    // framebuffer-sized S8 attachment was pure memory and per-pass bandwidth.
+    cmd.bindRenderTargets(&colorTarget);
 
+    const int fbWidth  = m_gpu.framebufferWidth();
+    const int fbHeight = m_gpu.framebufferHeight();
     cmd.setViewports(0, DkViewport{0.f, 0.f,
-        (float)m_gpu.width(), (float)m_gpu.height(), 0.f, 1.f});
+        (float)fbWidth, (float)fbHeight, 0.f, 1.f});
     if (m_clipStack.empty()) {
-        cmd.setScissors(0, DkScissor{0, 0, (uint32_t)m_gpu.width(), (uint32_t)m_gpu.height()});
+        cmd.setScissors(0, DkScissor{0, 0,
+            (uint32_t)fbWidth, (uint32_t)fbHeight});
     } else {
-        auto& r = m_clipStack.back();
-        cmd.setScissors(0, DkScissor{(uint32_t)std::max(0.f, r.x), (uint32_t)std::max(0.f, r.y),
-                                     (uint32_t)std::max(0.f, r.width), (uint32_t)std::max(0.f, r.height)});
+        cmd.setScissors(0, uiScissor(m_clipStack.back(), fbWidth, fbHeight));
     }
 
     updateProjection();
@@ -421,7 +486,16 @@ void Renderer::captureToOffscreen(bool reuseIfValid) {
     if (reuseIfValid && m_reusableOffscreenCaptureValid) {
         return;
     }
+    // Several glass widgets sample the same scene. Each capture is a flush, a
+    // full barrier and a full-screen blit, so a caller that asked for reuse gets
+    // the capture already taken this frame instead of a second one.
+    if (reuseIfValid) {
+        if (m_reuseCaptureFrame == m_frameSerial)
+            return;
+        m_reuseCaptureFrame = m_frameSerial;
+    }
 
+    m_sharedBackdropValid = false;
     flush();
     auto cmd = m_gpu.cmdBuf();
     int slot = m_gpu.slot();
@@ -436,16 +510,16 @@ void Renderer::captureToOffscreen(bool reuseIfValid) {
         0,
         0,
         0,
-        (uint32_t)m_gpu.width(),
-        (uint32_t)m_gpu.height(),
+        (uint32_t)m_gpu.framebufferWidth(),
+        (uint32_t)m_gpu.framebufferHeight(),
         1,
     };
     DkImageRect dstRect{
         0,
         0,
         0,
-        (uint32_t)m_gpu.width() / 2,
-        (uint32_t)m_gpu.height() / 2,
+        (uint32_t)GpuDevice::OFFSCREEN_WIDTH,
+        (uint32_t)GpuDevice::OFFSCREEN_HEIGHT,
         1,
     };
     cmd.blitImage(src, srcRect, dst, dstRect, 0);
@@ -454,6 +528,103 @@ void Renderer::captureToOffscreen(bool reuseIfValid) {
     cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image);
 
     m_reusableOffscreenCaptureValid = reuseIfValid;
+}
+
+void Renderer::captureSharedBackdrop(const Rect& region, float radius, int passes) {
+    if (!m_gpu.offscreenReady()) return;
+    if (region.width <= 0.f || region.height <= 0.f) return;
+    if (m_gpu.width() <= 0 || m_gpu.height() <= 0) return;
+
+    // Match applyBlur's effective kernel so the captured margin covers every
+    // pass: a radius past the cap becomes extra passes instead.
+    float effRadius = std::max(0.f, radius);
+    int effPasses = std::max(0, passes);
+    if (effRadius > 2.5f && effPasses > 0) {
+        const float widen = effRadius / 2.5f;
+        effPasses = std::min(24, static_cast<int>(std::ceil(effPasses * widen * widen)));
+        effRadius = 2.5f;
+    }
+
+    constexpr int offW = GpuDevice::OFFSCREEN_WIDTH;
+    constexpr int offH = GpuDevice::OFFSCREEN_HEIGHT;
+    const float ox = static_cast<float>(offW) / static_cast<float>(m_gpu.width());
+    const float oy = static_cast<float>(offH) / static_cast<float>(m_gpu.height());
+    // A 9-tap pass spreads 4 * radius texels in each direction.
+    const float margin = static_cast<float>(effPasses) * effRadius * 4.f + 2.f;
+
+    int x0 = static_cast<int>(std::floor(region.x * ox - margin));
+    int y0 = static_cast<int>(std::floor(region.y * oy - margin));
+    int x1 = static_cast<int>(std::ceil((region.x + region.width) * ox + margin));
+    int y1 = static_cast<int>(std::ceil((region.y + region.height) * oy + margin));
+    x0 = std::clamp(x0, 0, offW);
+    y0 = std::clamp(y0, 0, offH);
+    x1 = std::clamp(x1, 0, offW);
+    y1 = std::clamp(y1, 0, offH);
+    if (x1 <= x0 || y1 <= y0) return;
+
+    if (m_sharedBackdropValid && m_sharedBackdropFrame == m_frameSerial
+        && m_sharedBackdropPasses == effPasses
+        && std::abs(m_sharedBackdropRadius - effRadius) < 0.001f
+        && m_sharedBackdropX0 == x0 && m_sharedBackdropY0 == y0
+        && m_sharedBackdropX1 == x1 && m_sharedBackdropY1 == y1) {
+        return;
+    }
+
+    // Capture only the pixels the blur reads. Scaling the offscreen bounds
+    // straight to framebuffer texels keeps the region at the same place in
+    // offscreen 0 that drawOffscreen samples.
+    const int fbW = m_gpu.framebufferWidth();
+    const int fbH = m_gpu.framebufferHeight();
+    const int srcX0 = static_cast<int>(std::lround(static_cast<double>(x0) * fbW / offW));
+    const int srcY0 = static_cast<int>(std::lround(static_cast<double>(y0) * fbH / offH));
+    const int srcX1 = static_cast<int>(std::lround(static_cast<double>(x1) * fbW / offW));
+    const int srcY1 = static_cast<int>(std::lround(static_cast<double>(y1) * fbH / offH));
+    const int srcW = std::max(0, srcX1 - srcX0);
+    const int srcH = std::max(0, srcY1 - srcY0);
+
+    m_sharedBackdropValid = false;
+    flush();
+    auto cmd = m_gpu.cmdBuf();
+    cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+    dk::ImageView src{m_gpu.fbImage(m_gpu.slot())};
+    dk::ImageView dst{m_gpu.offscreenImage(0)};
+    if (srcW > 0 && srcH > 0) {
+        DkImageRect srcRect{
+            static_cast<std::uint32_t>(srcX0),
+            static_cast<std::uint32_t>(srcY0),
+            0,
+            static_cast<std::uint32_t>(srcW),
+            static_cast<std::uint32_t>(srcH),
+            1,
+        };
+        DkImageRect dstRect{
+            static_cast<std::uint32_t>(x0),
+            static_cast<std::uint32_t>(y0),
+            0,
+            static_cast<std::uint32_t>(x1 - x0),
+            static_cast<std::uint32_t>(y1 - y0),
+            1,
+        };
+        cmd.blitImage(src, srcRect, dst, dstRect, 0);
+    }
+    cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+
+    const DkScissor scissor{
+        static_cast<std::uint32_t>(x0),
+        static_cast<std::uint32_t>(y0),
+        static_cast<std::uint32_t>(x1 - x0),
+        static_cast<std::uint32_t>(y1 - y0),
+    };
+    applyBlurRegion(effRadius, effPasses, &scissor);
+
+    m_sharedBackdropValid = true;
+    m_sharedBackdropFrame = m_frameSerial;
+    m_sharedBackdropRadius = effRadius;
+    m_sharedBackdropPasses = effPasses;
+    m_sharedBackdropX0 = x0;
+    m_sharedBackdropY0 = y0;
+    m_sharedBackdropX1 = x1;
+    m_sharedBackdropY1 = y1;
 }
 
 bool Renderer::downloadFramebufferRgba(std::vector<uint8_t>& outRgba,
@@ -468,6 +639,9 @@ void Renderer::copyOffscreen(int srcTarget, int dstTarget) {
     if (srcTarget < 0 || srcTarget >= GpuDevice::NUM_OFFSCREEN) return;
     if (dstTarget < 0 || dstTarget >= GpuDevice::NUM_OFFSCREEN) return;
     if (srcTarget == dstTarget) return;
+    // A copy into offscreen 0 replaces the cached frosted backdrop.
+    if (dstTarget == 0)
+        m_sharedBackdropValid = false;
 
     flush();
 
@@ -480,8 +654,8 @@ void Renderer::copyOffscreen(int srcTarget, int dstTarget) {
         0,
         0,
         0,
-        (uint32_t)m_gpu.width() / 2,
-        (uint32_t)m_gpu.height() / 2,
+        (uint32_t)GpuDevice::OFFSCREEN_WIDTH,
+        (uint32_t)GpuDevice::OFFSCREEN_HEIGHT,
         1,
     };
     cmd.blitImage(src, rect, dst, rect, 0);
@@ -517,75 +691,11 @@ void Renderer::drawOffscreenRounded(int target, const Rect& dest, float radius, 
     useShader(ShaderProgram::Basic);
 }
 
-void Renderer::drawLiquidGlass(int target, const Rect& panelRect, float radius,
-                               const Color& tint, float opacity, float shade) {
-    if (opacity <= 0.01f || target < 0 || target >= GpuDevice::NUM_OFFSCREEN)
-        return;
-    // Solid glass: no backdrop sampling, no refraction. Draw one opaque plate
-    // in the chosen colour so busy wallpapers cannot wash the panel out.
-    if (m_glassSolid) {
-        Color plate = m_glassTintEnabled ? m_glassTint : tint;
-        plate.a = 1.f;
-        useShader(ShaderProgram::Basic);
-        drawRoundedRect(panelRect, plate.withAlpha(opacity), radius);
-        return;
-    }
-
-    if (!m_gpu.offscreenReady()) {
-        drawFrostedInset(panelRect, tint, Color::white().withAlpha(0.18f),
-                         Color::white().withAlpha(0.08f), radius, opacity);
-        return;
-    }
-
-    useShader(ShaderProgram::LiquidGlass);
-    const auto& glass = m_liquidGlassSettings;
-    FsUniforms fs{};
-    fs.useTexture = 1;
-    fs.param1 = glass.refractionIntensity;
-    fs.param2 = std::clamp(glass.blurIntensity, 0.f, 2.5f);
-    fs.param3 = glass.noiseIntensity;
-    fs.extra[0] = glass.glowIntensity;
-    fs.extra[1] = glass.saturation;
-    fs.extra[2] = glass.opacityMultiplier;
-    fs.extra[3] = glass.roughness;
-    fs.extra[4] = glass.animSpeed;
-    fs.extra[5] = glass.time;
-    fs.extra[6] = glass.powerFactor;
-    fs.extra[7] = glass.fPower;
-    fs.extra[8] = glass.refA;
-    fs.extra[9] = glass.refB;
-    fs.extra[10] = glass.refC;
-    fs.extra[11] = glass.refD;
-    fs.extra[12] = glass.glowWeight;
-    fs.extra[13] = glass.glowBias;
-    fs.extra[14] = glass.glowEdge0;
-    fs.extra[15] = glass.glowEdge1;
-    // A user-picked glass colour wins over the panel's own tint. The shader
-    // only mixes up to 34%, so lift the alpha to keep the choice visible.
-    const Color glassTintUsed = m_glassTintEnabled
-        ? Color(m_glassTint.r, m_glassTint.g, m_glassTint.b, std::max(tint.a, 0.86f))
-        : tint;
-    fs.extra[16] = glassTintUsed.r;
-    fs.extra[17] = glassTintUsed.g;
-    fs.extra[18] = glassTintUsed.b;
-    fs.extra[19] = glassTintUsed.a;
-    fs.extra[20] = panelRect.x;
-    fs.extra[21] = panelRect.y;
-    fs.extra[22] = panelRect.width;
-    fs.extra[23] = panelRect.height;
-    fs.extra[24] = static_cast<float>(m_gpu.width());
-    fs.extra[25] = static_cast<float>(m_gpu.height());
-    fs.extra[26] = std::clamp(shade, 0.f, 1.f);
-    fs.extra[27] = std::max(0.f, radius);
-    pushFsUniforms(fs);
-    bindTexture(m_offDescSlot[target]);
-    addQuad(panelRect.x, panelRect.y, panelRect.right(), panelRect.bottom(),
-            0.f, 0.f, 1.f, 1.f, Color::white().withAlpha(opacity));
-    flush();
-    useShader(ShaderProgram::Basic);
+void Renderer::applyBlur(float radius, int passes) {
+    applyBlurRegion(radius, passes, nullptr);
 }
 
-void Renderer::applyBlur(float radius, int passes) {
+void Renderer::applyBlurRegion(float radius, int passes, const DkScissor* scissor) {
     if (!m_gpu.offscreenReady()) return;
 
     constexpr float kMaxSpread = 2.5f;
@@ -600,14 +710,20 @@ void Renderer::applyBlur(float radius, int passes) {
     passes = std::max(0, passes);
 
     m_reusableOffscreenCaptureValid = false;
+    m_sharedBackdropValid = false;
+    // The blur overwrites part of offscreen 0, so an earlier "reusable" mark
+    // must not let a later shader-glass panel sample this buffer as sharp.
+    m_reuseCaptureFrame = 0;
 
-    constexpr float offW = (float)(GpuDevice::FB_WIDTH / 2);
-    constexpr float offH = (float)(GpuDevice::FB_HEIGHT / 2);
+    constexpr float offW = (float)GpuDevice::OFFSCREEN_WIDTH;
+    constexpr float offH = (float)GpuDevice::OFFSCREEN_HEIGHT;
 
     for (int p = 0; p < passes; ++p) {
-        // H blur: off0 -> off1
+        // H blur: off0 -> off1. The shader writes alpha 1.0 over a full-screen
+        // quad, so the target neither needs a clear before the draw nor keeps
+        // anything from the previous pass.
         bindRenderTarget(1);
-        m_gpu.cmdBuf().clearColor(0, DkColorMask_RGBA, 0.f, 0.f, 0.f, 0.f);
+        if (scissor) m_gpu.cmdBuf().setScissors(0, *scissor);
         useShader(ShaderProgram::BlurH);
         FsUniforms fs = {};
         fs.useTexture = 1;
@@ -622,7 +738,7 @@ void Renderer::applyBlur(float radius, int passes) {
 
         // V blur: off1 -> off0
         bindRenderTarget(0);
-        m_gpu.cmdBuf().clearColor(0, DkColorMask_RGBA, 0.f, 0.f, 0.f, 0.f);
+        if (scissor) m_gpu.cmdBuf().setScissors(0, *scissor);
         useShader(ShaderProgram::BlurV);
         pushFsUniforms(fs);
         bindTexture(m_offDescSlot[1]);
@@ -675,6 +791,13 @@ void Renderer::addQuad(float x0, float y0, float x1, float y1,
                         float u0, float v0, float u1, float v1,
                         const Color& c)
 {
+    // Straight-alpha blending: a zero-alpha quad contributes nothing. Widgets
+    // that fade out keep submitting their geometry for several frames, so
+    // dropping it here avoids both the fill and the vertex work.
+    if (c.a <= 0.0005f) return;
+    // Degenerate quads (collapsed progress bars, zero-size spacers) rasterize
+    // nothing but still burn vertex slots and can force a batch flush.
+    if (x1 <= x0 || y1 <= y0) return;
     if (m_vtxCount + 6 > GpuDevice::MAX_VERTICES) flush();
     addVertex(x0, y0, u0, v0, c);
     addVertex(x1, y0, u1, v0, c);
@@ -711,6 +834,7 @@ void Renderer::addQuadGradH(float x0, float y0, float x1, float y1,
 }
 
 void Renderer::drawRect(const Rect& r, const Color& c) {
+    if (fullyClipped(r)) return;
     bindTexture(-1);
     addQuad(r.x, r.y, r.right(), r.bottom(), 0, 0, 1, 1, c);
 }
@@ -814,6 +938,14 @@ void Renderer::drawTriangle(const Vec2& p1, const Vec2& p2, const Vec2& p3, cons
     addVertex(p3.x, p3.y, 0, 0, c);
 }
 
+void Renderer::drawGradientTriangle(const Vec2& p1, const Vec2& p2, const Vec2& p3,
+                                    const Color& c1, const Color& c2, const Color& c3) {
+    bindTexture(-1);
+    addVertex(p1.x, p1.y, 0, 0, c1);
+    addVertex(p2.x, p2.y, 0, 0, c2);
+    addVertex(p3.x, p3.y, 0, 0, c3);
+}
+
 void Renderer::drawLine(const Vec2& from, const Vec2& to, const Color& c, float thickness) {
     Vec2 d = (to - from).normalized();
     Vec2 n = {-d.y, d.x};
@@ -831,12 +963,14 @@ void Renderer::drawLine(const Vec2& from, const Vec2& to, const Color& c, float 
 
 void Renderer::drawTexture(const Texture* tex, const Rect& dest, const Color& tint) {
     if (!tex) return;
+    if (fullyClipped(dest)) return;
     bindTexture(tex->descriptorSlot());
     addQuad(dest.x, dest.y, dest.right(), dest.bottom(), 0, 0, 1, 1, tint);
 }
 
 void Renderer::drawTextureSub(const Texture* tex, const Rect& src, const Rect& dest, const Color& tint) {
     if (!tex) return;
+    if (fullyClipped(dest)) return;
     float tw = (float)tex->width(), th = (float)tex->height();
     float u0 = src.x / tw, v0 = src.y / th;
     float u1 = src.right() / tw, v1 = src.bottom() / th;
@@ -858,6 +992,7 @@ void Renderer::endShape() {
 
 void Renderer::drawRoundedMasked(const Rect& dest, float radius, const Color& color,
                                  const Rect& uv, float thickness) {
+    if (fullyClipped(dest)) return;
     beginShape(dest, radius, thickness);
     addQuad(dest.x, dest.y, dest.right(), dest.bottom(),
             uv.x, uv.y, uv.right(), uv.bottom(), color);
@@ -897,6 +1032,13 @@ void Renderer::drawText(const std::string& text, const Vec2& pos, Font* font,
     font->draw(*this, text, pos, color, scale);
 }
 
+bool Renderer::fullyClipped(const Rect& r) const {
+    if (m_clipStack.empty()) return false;
+    const Rect& clip = m_clipStack.back();
+    return r.right() <= clip.x || r.x >= clip.right()
+        || r.bottom() <= clip.y || r.y >= clip.bottom();
+}
+
 void Renderer::pushClipRect(const Rect& r) {
     flush();
     Rect clip = r;
@@ -908,23 +1050,22 @@ void Renderer::pushClipRect(const Rect& r) {
         float y1 = std::min(clip.bottom(), prev.bottom());
         clip = {x0, y0, std::max(0.f, x1 - x0), std::max(0.f, y1 - y0)};
     }
+    const int fbWidth  = m_gpu.framebufferWidth();
+    const int fbHeight = m_gpu.framebufferHeight();
     m_clipStack.push_back(clip);
-    m_gpu.cmdBuf().setScissors(0, DkScissor{
-        (uint32_t)std::max(0.f, clip.x), (uint32_t)std::max(0.f, clip.y),
-        (uint32_t)std::max(0.f, clip.width), (uint32_t)std::max(0.f, clip.height)});
+    m_gpu.cmdBuf().setScissors(0, uiScissor(clip, fbWidth, fbHeight));
 }
 
 void Renderer::popClipRect() {
     flush();
     if (!m_clipStack.empty()) m_clipStack.pop_back();
+    const int fbWidth  = m_gpu.framebufferWidth();
+    const int fbHeight = m_gpu.framebufferHeight();
     if (m_clipStack.empty()) {
         m_gpu.cmdBuf().setScissors(0, DkScissor{
-            0, 0, (uint32_t)m_gpu.width(), (uint32_t)m_gpu.height()});
+            0, 0, (uint32_t)fbWidth, (uint32_t)fbHeight});
     } else {
-        auto& r = m_clipStack.back();
-        m_gpu.cmdBuf().setScissors(0, DkScissor{
-            (uint32_t)std::max(0.f, r.x), (uint32_t)std::max(0.f, r.y),
-            (uint32_t)std::max(0.f, r.width), (uint32_t)std::max(0.f, r.height)});
+        m_gpu.cmdBuf().setScissors(0, uiScissor(m_clipStack.back(), fbWidth, fbHeight));
     }
 }
 

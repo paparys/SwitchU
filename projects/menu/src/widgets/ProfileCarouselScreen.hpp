@@ -8,10 +8,12 @@
 #include <nxui/Theme.hpp>
 #include <switch.h>
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // One console account as shown on HOME.
@@ -28,6 +30,7 @@ struct HomeProfile {
 class ProfileCarouselScreen final : public nxui::GlassWidget {
 public:
     enum class CardKind { Nobody, Profile, AddUser };
+    enum class Mode { DefaultProfile, LockSelect };
 
     using VoidCb = std::function<void()>;
     using StringCb = std::function<void(const std::string&)>;
@@ -36,14 +39,22 @@ public:
 
     ProfileCarouselScreen();
 
-    void setFont(nxui::Font* font) { m_font = font; }
-    void setSmallFont(nxui::Font* font) { m_smallFont = font; }
+    void setFont(nxui::Font* font) { m_font = font; clearMeasureCache(); }
+    void setSmallFont(nxui::Font* font) { m_smallFont = font; clearMeasureCache(); }
     void setTheme(const nxui::Theme* theme) { m_theme = theme; }
     void setProfiles(std::vector<HomeProfile> profiles, bool addUserAvailable);
     void setLockedUid(std::optional<AccountUid> uid) { m_lockedUid = uid; }
+    // Profiles whose four-step code is enabled. The lock picker marks these
+    // tiles with a padlock so protection is visible before a user is chosen.
+    void setLockProtectedProfiles(const std::vector<AccountUid>& uids) {
+        m_lockProtectedProfiles = uids;
+    }
+    void setMode(Mode mode);
+    Mode mode() const { return m_mode; }
 
     void onOpenProfile(UidCb cb) { m_openProfileCb = std::move(cb); }
     void onLockProfile(LockCb cb) { m_lockProfileCb = std::move(cb); }
+    void onSelectProfile(UidCb cb) { m_selectProfileCb = std::move(cb); }
     void onAddUser(VoidCb cb) { m_addUserCb = std::move(cb); }
     void onClosed(VoidCb cb) { m_closedCb = std::move(cb); }
     void onNavigateSfx(VoidCb cb) { m_navSfxCb = std::move(cb); }
@@ -53,6 +64,10 @@ public:
 
     void show();
     void hide();
+    // Closes on this frame instead of fading. Used when a profile pick leads
+    // straight into the Lock view, so HOME is never uncovered in between.
+    // Runs onClosed synchronously before the frame paints.
+    void hideInstantly();
     bool isActive() const { return m_active || m_animatingOut; }
     bool isOpen() const { return m_active && !m_animatingOut; }
     CardKind selectedKind() const { return tileKind(m_selected); }
@@ -65,11 +80,17 @@ public:
     void render(nxui::Renderer& ren) override;
 
 private:
-    // Tiles are "nobody" (index 0), every profile, then the "add user" entry.
+    // Default mode shows "nobody", every profile, then "add user". Lock mode
+    // shows only real profiles, so the lock gate cannot be skipped.
     int tileCount() const {
+        if (m_mode == Mode::LockSelect)
+            return (int)m_profiles.size();
         return 1 + (int)m_profiles.size() + (m_addUserAvailable ? 1 : 0);
     }
     CardKind tileKind(int index) const {
+        if (m_mode == Mode::LockSelect)
+            return index >= 0 && index < (int)m_profiles.size()
+                ? CardKind::Profile : CardKind::Nobody;
         if (index <= 0) return CardKind::Nobody;
         if (index <= (int)m_profiles.size()) return CardKind::Profile;
         return CardKind::AddUser;
@@ -77,6 +98,7 @@ private:
     bool onAddUserTile() const { return tileKind(m_selected) == CardKind::AddUser; }
     const HomeProfile* tileProfile(int index) const;
     bool isLockedTile(int index) const;
+    bool tileNeedsCode(int index) const;
     int lockedTileIndex() const;
     std::string tileName(int index) const;
 
@@ -94,15 +116,28 @@ private:
     void drawTile(nxui::Renderer& ren, int index, float alpha);
     void drawAvatar(nxui::Renderer& ren, int index, const nxui::Rect& r, float radius, float alpha);
     void drawCheckBadge(nxui::Renderer& ren, const nxui::Rect& tile, float alpha);
+    void drawLockBadge(nxui::Renderer& ren, const nxui::Rect& tile, float alpha);
     void drawBubble(nxui::Renderer& ren, float alpha);
     void drawDetails(nxui::Renderer& ren, float alpha);
+    nxui::Vec2 cachedTextSize(nxui::Font* font, const std::string& text);
+    void clearMeasureCache() {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+    }
 
     nxui::Font* m_font = nullptr;
     nxui::Font* m_smallFont = nullptr;
     const nxui::Theme* m_theme = nullptr;
+    // The selected tile's name and the lock badge are redrawn every frame;
+    // their metrics only change when the selection or font changes.
+    std::unordered_map<const nxui::Font*,
+                       std::unordered_map<std::string, nxui::Vec2>> m_measureCache;
+    std::size_t m_measureCacheEntries = 0;
     std::vector<HomeProfile> m_profiles;
+    Mode m_mode = Mode::DefaultProfile;
     bool m_addUserAvailable = false;
     std::optional<AccountUid> m_lockedUid;
+    std::vector<AccountUid> m_lockProtectedProfiles;
 
     bool m_active = false;
     bool m_animatingOut = false;
@@ -114,6 +149,7 @@ private:
 
     UidCb m_openProfileCb;
     LockCb m_lockProfileCb;
+    UidCb m_selectProfileCb;
     VoidCb m_addUserCb;
     VoidCb m_closedCb;
     VoidCb m_navSfxCb;

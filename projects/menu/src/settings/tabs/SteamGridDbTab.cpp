@@ -31,6 +31,25 @@ SettingsScreen::Tab settings::tabs::SteamGridDbTab::build(SettingsScreen& screen
     };
     tab.items.push_back(std::move(enabled));
 
+    SettingItem heroes;
+    heroes.type = ItemType::Toggle;
+    heroes.label = i18n.tr("settings.steamgriddb.show_heroes", "Show hero backdrops");
+    heroes.description = i18n.tr("settings.steamgriddb.show_heroes_desc",
+        "Full-screen per-game hero art. Turn off to keep covers, icons, and logos; "
+        "the wallpaper shows through instead.");
+    heroes.boolVal = screen.m_steamGridDbShowHeroes;
+    heroes.anim01 = heroes.boolVal ? 1.f : 0.f;
+    heroes.indentLevel = 1;
+    heroes.enabled = screen.m_steamGridDbEnabled;
+    heroes.onChange = [&screen](SettingItem& item) {
+        if (!screen.m_steamGridDbEnabled)
+            return;
+        screen.m_steamGridDbShowHeroes = item.boolVal;
+        if (screen.m_steamGridDbShowHeroesCb)
+            screen.m_steamGridDbShowHeroesCb(item.boolVal);
+    };
+    tab.items.push_back(std::move(heroes));
+
     auto addViewToggle = [&](const char* labelKey, const char* label,
                              const char* descKey, const char* desc,
                              bool& flag) {
@@ -140,15 +159,15 @@ SettingsScreen::Tab settings::tabs::SteamGridDbTab::build(SettingsScreen& screen
 
     tab.onUpdate = [](SettingsScreen::Tab& current, TabbedOverlayScreen& base) {
         auto& owner = static_cast<SettingsScreen&>(base);
-        // Section, master, 2 view toggles, poster, logo, API key, scan
-        if (current.items.size() < 8) return;
+        // Section, master, hero, 2 view toggles, poster, logo, API key, scan
+        if (current.items.size() < 9) return;
 
-        for (int i = 2; i <= 5; ++i) {
+        for (int i = 2; i <= 6; ++i) {
             current.items[static_cast<std::size_t>(i)].enabled = owner.m_steamGridDbEnabled;
             current.items[static_cast<std::size_t>(i)].indentLevel = 1;
         }
 
-        auto& key = current.items[6];
+        auto& key = current.items[7];
         key.description = owner.m_steamGridDbHasApiKey
             ? nxui::I18n::instance().tr("settings.steamgriddb.api_key_set", "Configured (hidden)")
             : nxui::I18n::instance().tr("settings.steamgriddb.api_key_missing", "Not configured");

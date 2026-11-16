@@ -28,6 +28,13 @@ SettingsScreen::Tab settings::tabs::InternetTab::build(SettingsScreen& screen) {
     Tab t;
     t.name = i18n.tr("settings.tabs.internet", "Internet");
 
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.internet.section_connection", "Connection");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
     u32 ip = 0;
     std::string ssid;
     bool nifmOk = R_SUCCEEDED(nifmInitialize(NifmServiceType_User));
@@ -74,6 +81,13 @@ SettingsScreen::Tab settings::tabs::InternetTab::build(SettingsScreen& screen) {
         it.onChange = [](SettingItem& self) {
             setsysSetWirelessLanEnableFlag(self.boolVal);
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.internet.section_downloads", "Downloads");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 

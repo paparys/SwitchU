@@ -85,7 +85,17 @@ public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };
 
+class StyleTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
 class AppearanceTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
+class CarouselMovementTab {
 public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };
@@ -95,9 +105,16 @@ public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };
 
+class AllAppsTab {
+public:
+    static SettingsScreen::Tab build(SettingsScreen& screen);
+};
+
 class DockedTab {
 public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
+    // Display owners the docked rows so output and docked sizing live together.
+    static void appendTo(SettingsScreen& screen, SettingsScreen::Tab& tab);
 };
 
 class LockScreenTab {
@@ -105,7 +122,7 @@ public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };
 
-class GlassTab {
+class OpacityTab {
 public:
     static SettingsScreen::Tab build(SettingsScreen& screen);
 };

@@ -109,6 +109,13 @@ public:
     static bool hasIcon(std::uint64_t titleId);
     static bool hasPoster(std::uint64_t titleId);
     static bool hasGridWide(std::uint64_t titleId);
+    // Cached variants for hot paths: icon streaming used to spend up to two
+    // failed SD opens per tile on every visit. A miss is remembered so a title
+    // without custom art costs a map lookup; invalidateArtProbe() is called
+    // whenever the art files for a title are written or removed.
+    static bool hasIconCached(std::uint64_t titleId);
+    static bool hasPosterCached(std::uint64_t titleId);
+    static void invalidateArtProbe(std::uint64_t titleId);
 
     /// Per-title SteamGridDB search string shared by Hero/Logo/Icon/Poster/GridWide.
     static std::string savedSearchQuery(std::uint64_t titleId);

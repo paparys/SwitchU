@@ -257,6 +257,13 @@ SettingsScreen::Tab settings::tabs::StorageTab::build(SettingsScreen& screen) {
                            i18n.tr("settings.storage.used", "Used"), usedText);
     };
 
+    {
+        SettingItem section;
+        section.label = i18n.tr("settings.storage.section_capacity", "Capacity");
+        section.type = ItemType::Section;
+        t.items.push_back(std::move(section));
+    }
+
     SettingItem internalBar;
     internalBar.label = i18n.tr("settings.storage.internal", "System Memory");
     internalBar.type = ItemType::Progress;

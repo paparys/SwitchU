@@ -1,5 +1,6 @@
 #include "BatteryWidget.hpp"
 #include "BatteryDrawing.hpp"
+#include "../ui/ChromeTokens.hpp"
 #include <nxui/core/I18n.hpp>
 #include <nxui/core/Renderer.hpp>
 #include <switch.h>
@@ -77,7 +78,11 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
     // its terminal; there is no charging slot to reserve on the right.
     float groupW = bw + 1.6f * s + 5.f * s;
     float bx = cr.x + (cr.width - groupW) * 0.5f;
-    float textH = m_font ? m_font->measure("100%").y * 0.75f * s : 14.f * s;
+    if (m_cachedHeightFont != m_font || m_cachedTextHeight <= 0.f) {
+        m_cachedHeightFont = m_font;
+        m_cachedTextHeight = m_font ? m_font->measure("100%").y * 0.75f : 14.f;
+    }
+    float textH = m_cachedTextHeight * s;
     float contentH = bh + 6.f * s + textH;
     float by = cr.y + (cr.height - contentH) * 0.5f;
     float op = m_opacity;
@@ -167,11 +172,6 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
         float boltY = body.y + (bh - boltH) * 0.5f;
         nxui::Rect boltRect = {boltX, boltY, boltW, boltH};
 
-        // Dark halo so the bolt keeps its edge over the lit (mint) cells.
-        ren.drawRoundedRect(boltRect.expanded(2.2f * s),
-                            nxui::Color(0.03f, 0.06f, 0.05f, 0.42f * op),
-                            boltH * 0.28f);
-
         nxui::Color glow = nxui::Color(1.f, 0.74f, 0.12f, 0.18f * op * boltPulse);
         drawLightningBolt(ren, boltRect.expanded(2.8f * s), glow,
                           glow.withAlpha(0.f), 0.f);
@@ -190,10 +190,16 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
             std::snprintf(buf, sizeof(buf), "%d%%", (int)(level * 100 + 0.5f));
         else
             std::snprintf(buf, sizeof(buf), "--%%");
-        nxui::Vec2 sz = m_font->measure(buf);
+        if (m_cachedPctFont != m_font || m_cachedPctText != buf) {
+            m_cachedPctFont = m_font;
+            m_cachedPctText = buf;
+            m_cachedPctSize = m_font->measure(buf);
+        }
+        const nxui::Vec2 sz = m_cachedPctSize;
         float tx = cr.x + (cr.width - sz.x * 0.75f * s) * 0.5f;
         float ty = by + bh + 6.f * s;
-        ren.drawText(buf, {tx, ty}, m_font, m_textColor.withAlpha(op), 0.75f * s);
+        ren.drawText(buf, {tx, ty}, m_font, m_textColor.withAlpha(op),
+                     switchu::ui::chrome::kTypeRow * s);
     }
 
     // Chevron centered in the free space to the right of the battery group.
@@ -211,6 +217,10 @@ void BatteryWidget::onContentRender(nxui::Renderer& ren) {
 nxui::Vec2 BatteryWidget::computeContentSize() const {
     const float s = m_scale;
     float bw = 46.f * s, bh = 22.f * s;
-    float textH = m_font ? m_font->measure("100%").y * 0.75f * s : 14.f * s;
+    if (m_cachedHeightFont != m_font || m_cachedTextHeight <= 0.f) {
+        m_cachedHeightFont = m_font;
+        m_cachedTextHeight = m_font ? m_font->measure("100%").y * 0.75f : 14.f;
+    }
+    float textH = m_cachedTextHeight * s;
     return {bw + 6.6f * s, bh + 6.f * s + textH};
 }

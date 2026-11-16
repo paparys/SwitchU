@@ -48,6 +48,12 @@ protected:
 
 private:
     FolderInfo m_folder;
+    // Ellipsizing the folder name walks a font query per character; the header
+    // redraws every frame, so keep the fitted string until its inputs move.
+    std::string m_cachedHeaderName;
+    std::string m_cachedHeaderNameSource;
+    float m_cachedHeaderNameWidth = -1.f;
+    nxui::Font* m_cachedHeaderNameFont = nullptr;
     VoidCb m_openCb;
     VoidCb m_renameCb;
     VoidCb m_deleteCb;

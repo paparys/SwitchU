@@ -51,6 +51,8 @@ inline Event* commandEvent() {
     return g_commandEventAvailable ? &g_holder.PopInteractiveOutDataEvent : nullptr;
 }
 
+inline Result releaseExternalContent();
+
 inline Result create() {
     const uint64_t startedAt = armGetSystemTick();
     switchu::FileLog::log("[menu_la] create begin active=%d holderActive=%d",
@@ -61,6 +63,7 @@ inline Result create() {
     if (R_FAILED(rc)) {
         switchu::FileLog::log("[menu_la] CreateLibApplet id=0x%X FAIL: 0x%X",
                               (u32)kMenuAppletId, rc);
+        releaseExternalContent();
         return rc;
     }
     switchu::FileLog::log("[menu_la] create ok id=0x%X elapsed=%lums",
@@ -80,14 +83,22 @@ inline Result cleanupHolder() {
     g_active = false;
     g_commandEventInitialized = false;
     g_commandEventAvailable = false;
-    if (g_externalRegistered) {
-        const Result rc = switchu::daemon::unregisterExternalContent(
-            switchu::smi::kMenuTakeoverProgramId);
-        if (R_FAILED(rc))
-            return rc;
-        g_externalRegistered = false;
-    }
     return 0;
+}
+
+// The external-content entry is independent of the holder: a normal reap keeps
+// it registered so the next menu start skips the unregister/register pair.
+// Only an explicit teardown or a failed start releases it.
+inline Result releaseExternalContent() {
+    if (!g_externalRegistered)
+        return 0;
+    const Result rc = switchu::daemon::unregisterExternalContent(
+        switchu::smi::kMenuTakeoverProgramId);
+    // ldr:ro reports nothing left to drop once it has consumed the entry. The
+    // flag still has to clear, or prepare() would keep skipping the refresh and
+    // the next launch would run the content installed for the Album title.
+    g_externalRegistered = false;
+    return rc;
 }
 
 inline Result terminate(uint64_t timeoutNs = 15'000'000'000ULL);
@@ -99,14 +110,20 @@ inline Result prepare() {
         const Result terminateRc = terminate();
         if (R_FAILED(terminateRc))
             return terminateRc;
-    } else if (g_externalRegistered) {
-        const Result unregisterRc = switchu::daemon::unregisterExternalContent(
-            switchu::smi::kMenuTakeoverProgramId);
-        if (R_FAILED(unregisterRc))
-            return unregisterRc;
-        g_externalRegistered = false;
     }
+
     if (kEnableExternalContentLaunch) {
+        // The menu takes over the Album applet (AppletId_LibraryAppletPhotoViewer,
+        // program 010000000000100D). ldr:ro hands the registered external code to
+        // the next program start only, so a registration left over from the last
+        // menu session is spent: the applet then runs whatever is installed for
+        // that title - hbmenu on consoles with the usual Album takeover mod.
+        // Refresh it before every launch instead of trusting the cached flag.
+        if (g_externalRegistered) {
+            const Result dropRc = releaseExternalContent();
+            if (R_FAILED(dropRc))
+                switchu::FileLog::log("[menu_la] stale external content release rc=0x%X", dropRc);
+        }
         const uint64_t registerStartedAt = armGetSystemTick();
         Result ecsRc = switchu::daemon::registerExternalContent(
             switchu::smi::kMenuTakeoverProgramId, "/switch/SwitchU/bin/menu");
@@ -147,6 +164,7 @@ inline Result startPrepared(smi::MenuStartMode mode, const smi::SystemStatus& st
     if (R_FAILED(rc)) {
         switchu::FileLog::log("[menu_la] ArgsPush FAIL: 0x%X", rc);
         cleanupHolder();
+        releaseExternalContent();
         return rc;
     }
 
@@ -162,6 +180,7 @@ inline Result startPrepared(smi::MenuStartMode mode, const smi::SystemStatus& st
     if (R_FAILED(rc)) {
         switchu::FileLog::log("[menu_la] Start FAIL: 0x%X", rc);
         cleanupHolder();
+        releaseExternalContent();
         return rc;
     }
 
@@ -194,8 +213,9 @@ inline Result terminate(uint64_t timeoutNs) {
             g_lastRuntimeNs = armTicksToNs(armGetSystemTick() - g_startedAtTick);
     }
     const Result cleanupRc = cleanupHolder();
+    const Result releaseRc = releaseExternalContent();
     switchu::FileLog::log("[menu_la] terminate done reason=%d", (int)g_lastExitReason);
-    return cleanupRc;
+    return R_FAILED(cleanupRc) ? cleanupRc : releaseRc;
 }
 
 inline bool checkFinished() {

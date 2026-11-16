@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class ContextMenu final : public nxui::GlassWidget {
@@ -64,6 +65,10 @@ private:
     VoidCallback m_onActivate;
     VoidCallback m_onClose;
     nxui::AnimatedFloat m_reveal{0.f};
+    // A context menu redraws its visible rows every frame; labels do not
+    // change between draws, so their font metrics are cached per font.
+    std::unordered_map<std::string, nxui::Vec2> m_measureCache;
+    nxui::Font* m_cachedMeasureFont = nullptr;
 
     static constexpr float kPanelWidth = 312.f;
     static constexpr float kPanelPadding = 14.f;

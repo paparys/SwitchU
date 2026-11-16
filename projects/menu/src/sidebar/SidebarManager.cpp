@@ -1,5 +1,5 @@
 #include "SidebarManager.hpp"
-#include "ui/SurfaceStyle.hpp"
+#include "ui/ChromeTokens.hpp"
 #include "core/DebugLog.hpp"
 #include "icons/IconPackManager.hpp"
 #include "widgets/AdaptiveIconLoad.hpp"
@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr int kSidebarIconCount = 6;
+constexpr int kSidebarIconCount = 7;
 constexpr float kSidebarButtonSize = 70.f;
 constexpr float kSidebarColumnGap = 16.f;
 constexpr float kSidebarButtonPadding = 6.f;
@@ -27,15 +27,16 @@ constexpr float kDynamicStripY = 17.f;
 constexpr float kDynamicStripDownBias = 4.f;
 constexpr float kDynamicLeftGroupX = 190.f;
 constexpr float kDynamicRightGroupX = 902.f;
-// Breathing room the plate keeps around the six buttons.
+// Breathing room the plate keeps around the shortcut buttons.
 constexpr float kStripPlatePad = 9.f;
+// Extra chrome height on top of that pad, split evenly above and below the
+// row. Buttons keep their size and sit on the bar's centre line.
+constexpr float kStripBarGrowY = 17.f;
 // Air kept between a shortcut stack and the tile band.
 constexpr float kColumnClearGap = 10.f;
-// Gap under the pinned-game row when the applets are in side columns.
-constexpr float kPinnedRowMargin = 14.f;
 // Mirrors IconGrid::kLayoutMorphDuration so chrome and tiles land together.
 constexpr float kSidebarGlideDuration = 0.40f;
-// Tiny cascade across the six buttons: reads as one gesture, not six snaps.
+// Tiny cascade across the buttons: reads as one gesture, not separate snaps.
 constexpr float kSidebarGlideStagger = 0.022f;
 
 bool pathExists(const std::string& path) {
@@ -61,21 +62,42 @@ void SidebarManager::build(nxui::GpuDevice& gpu, nxui::Renderer& ren,
     const float gap = kSidebarColumnGap * m_buttonScale;
     const float leftX = kSidebarMarginX;
     const float rightX = 1280.f - kSidebarMarginX - btnSize;
-    const float totalH = 3 * btnSize + 2.f * gap;
-    float startY = 360.f - totalH * 0.5f;
+    // Both stacks use the same three-applet rhythm, centred vertically.
+    const float leftTotalH = 4.f * btnSize + 3.f * gap;
+    const float rightTotalH = 3.f * btnSize + 2.f * gap;
+    const float leftStartY = 360.f - leftTotalH * 0.5f;
+    const float rightStartY = 360.f - rightTotalH * 0.5f;
 
     if (!m_stripPlateWidget) {
         m_stripPlateWidget = std::make_shared<nxui::GlassPanel>();
         m_stripPlateWidget->setTag("shortcutStripPlate");
         m_stripPlateWidget->setBlurEnabled(false);
-        m_stripPlateWidget->setLiquidGlassEnabled(true);
-        m_stripPlateWidget->setForceLiquidGlass(true);
+        // The strip is a flat, colour-tinted plate. A liquid-glass surface only
+        // shaded the pill and asked for a full-screen backdrop capture every
+        // frame; the panel's own rim still hugs the plate, and the themed base
+        // alpha keeps the translucent layer.
         m_stripPlateWidget->setVisible(false);
+    }
+    // build() can run after the settings pass that stores the saved gradient.
+    // Re-apply it on the widget so a freshly created plate cannot spend its
+    // first frames (or its whole lifetime) on the flat fill.
+    m_stripPlateWidget->setGradientFill(
+        m_stripGradient, m_stripGradientA, m_stripGradientB);
+    m_stripPlateWidget->setGradientPhase(m_stripGradientPhase);
+    if (!m_searchBar) {
+        m_searchBar = std::make_shared<GameSearchBar>();
+        m_searchBar->setVisible(false);
+        m_searchBar->setAccessibilityLabel(
+            nxui::I18n::instance().tr("home.search_games", "Search games"));
+        m_searchBar->setAccessibilityHint(
+            nxui::I18n::instance().tr("home.search_hint",
+                                      "A to search for a game."));
     }
 
     m_leftButtons.clear();
     m_rightButtons.clear();
     m_settingsButton = nullptr;
+    m_allAppsButton  = nullptr;
     m_themeShopButton = nullptr;
     m_albumButton    = nullptr;
     m_buttonGlides.clear();
@@ -105,37 +127,42 @@ void SidebarManager::build(nxui::GpuDevice& gpu, nxui::Renderer& ren,
     {
         auto album = makeBtn(&m_icons[0], "sidebar.album", "Album", actions.onAlbum);
         m_albumButton = album.get();
-        album->setRect({leftX, startY + 0.f * (btnSize + gap), btnSize, btnSize});
+        album->setRect({leftX, leftStartY + 0.f * (btnSize + gap), btnSize, btnSize});
         m_leftButtons.push_back(std::move(album));
 
         auto miiEditor = makeBtn(&m_icons[1], "sidebar.mii_editor", "Mii Editor", actions.onMiiEditor);
-        miiEditor->setRect({leftX, startY + 1.f * (btnSize + gap), btnSize, btnSize});
+        miiEditor->setRect({leftX, leftStartY + 1.f * (btnSize + gap), btnSize, btnSize});
         m_leftButtons.push_back(std::move(miiEditor));
+
+        auto allApps = makeBtn(&m_icons[6], "sidebar.all_apps", "All Apps", actions.onAllApps);
+        m_allAppsButton = allApps.get();
+        allApps->setRect({leftX, leftStartY + 2.f * (btnSize + gap), btnSize, btnSize});
+        m_leftButtons.push_back(std::move(allApps));
 
         auto settings = makeBtn(&m_icons[5], "sidebar.settings", "Settings", actions.onSettings);
         m_settingsButton = settings.get();
-        settings->setRect({leftX, startY + 2.f * (btnSize + gap), btnSize, btnSize});
+        settings->setRect({leftX, leftStartY + 3.f * (btnSize + gap), btnSize, btnSize});
         m_leftButtons.push_back(std::move(settings));
     }
 
     {
         auto ctrl = makeBtn(&m_icons[2], "sidebar.controllers", "Controllers", actions.onControllers);
-        ctrl->setRect({rightX, startY + 0.f * (btnSize + gap), btnSize, btnSize});
+        ctrl->setRect({rightX, rightStartY + 0.f * (btnSize + gap), btnSize, btnSize});
         m_rightButtons.push_back(std::move(ctrl));
 
         // Theme Shop middle / Power (Sleep) bottom — matches left stack rhythm
         // (utility → destination → system action).
         auto themeShop = makeBtn(&m_icons[4], "sidebar.theme_shop", "Theme Shop", actions.onMiiverse);
         m_themeShopButton = themeShop.get();
-        themeShop->setRect({rightX, startY + 1.f * (btnSize + gap), btnSize, btnSize});
+        themeShop->setRect({rightX, rightStartY + 1.f * (btnSize + gap), btnSize, btnSize});
         m_rightButtons.push_back(std::move(themeShop));
 
         auto sleep = makeBtn(&m_icons[3], "sidebar.sleep", "Sleep", actions.onSleep);
-        sleep->setRect({rightX, startY + 2.f * (btnSize + gap), btnSize, btnSize});
+        sleep->setRect({rightX, rightStartY + 2.f * (btnSize + gap), btnSize, btnSize});
         m_rightButtons.push_back(std::move(sleep));
     }
 
-    // Remember the stock six so the pinned sockets below stay independent of
+    // Remember the stock applets so the pinned sockets below stay independent of
     // them: the applets are fixed chrome and are never repurposed.
     if ((int)m_gameIcons.size() != kPinnedSlotCount)
         m_gameIcons.resize(kPinnedSlotCount);
@@ -233,6 +260,16 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
         button->setCustomNavigation(nxui::FocusDirection::UP, nullptr);
         button->setCustomNavigation(nxui::FocusDirection::DOWN, nullptr);
     }
+    // Pinned sockets are not part of the strip's ordered applet list, but they
+    // share the same side row in the grid layouts. Clear their old strip/column
+    // links too before the new row is wired.
+    for (auto& button : m_pinButtons) {
+        if (!button) continue;
+        button->setCustomNavigation(nxui::FocusDirection::LEFT, nullptr);
+        button->setCustomNavigation(nxui::FocusDirection::RIGHT, nullptr);
+        button->setCustomNavigation(nxui::FocusDirection::UP, nullptr);
+        button->setCustomNavigation(nxui::FocusDirection::DOWN, nullptr);
+    }
 
     m_dynamicLine = enabled;
     // Grid and strip need opposite button chrome (pills vs. bare glyphs).
@@ -268,40 +305,184 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
             stripY = std::clamp(stripY, bandTop,
                                 std::max(bandTop, bandTop + bandH - stripSize));
         }
-        float leftGroupX = kDynamicLeftGroupX;
-    float rightGroupX = kDynamicRightGroupX;
-    for (std::size_t i = 0; i < ordered.size(); ++i) {
-            auto* button = ordered[i];
-            const bool rightGroup = i >= m_leftButtons.size();
-            const std::size_t groupIndex = rightGroup ? i - m_leftButtons.size() : i;
+        // The search shortcut is a normal icon in the strip. It owns the first
+        // socket of the left group, so the applets shift one place right and the
+        // group span / pin clearance include the extra socket.
+        const float leftSlotCount = static_cast<float>(m_leftButtons.size())
+            + (m_searchBar ? 1.f : 0.f);
+        const float leftGroupSpan = leftSlotCount * stripSize
+            + (leftSlotCount > 0.f ? leftSlotCount - 1.f : 0.f) * stripGap;
+        const float rightGroupSpan = static_cast<float>(m_rightButtons.size()) * stripSize
+            + static_cast<float>(m_rightButtons.size() > 0 ? m_rightButtons.size() - 1 : 0) * stripGap;
+        const float leftClusterSpan = leftGroupSpan;
+        const float rightClusterSpan = rightGroupSpan;
+        const float pinStep = stripSize + stripGap;
+
+        // Collect the pins before placing the applets: how many sit on a side
+        // decides how far that side's stock cluster has to move out.
+        std::vector<AppletButton*> leftPins;
+        std::vector<AppletButton*> rightPins;
+        for (int slot = 0; slot < kPinnedSlotCount; ++slot) {
+            if (slot >= static_cast<int>(m_pinButtons.size()))
+                break;
+            auto& btn = m_pinButtons[static_cast<std::size_t>(slot)];
+            if (!btn || !btn->isVisible())
+                continue;
+            (gameShortcutSide(slot) == 0 ? leftPins : rightPins).push_back(btn.get());
+        }
+        m_visiblePins = static_cast<int>(leftPins.size() + rightPins.size());
+
+        auto groupStart = [&](bool rightGroup, float groupSpan) {
             const float baseX = rightGroup ? kDynamicRightGroupX : kDynamicLeftGroupX;
-            // Each group is three buttons wide and travels on its own paddle,
-            // clamped so it slides instead of being pushed off screen.
-            const float groupSpan = 2.f * (stripSize + stripGap) + stripSize;
             const float lowShift = 8.f - baseX;
             const float highShift = 1272.f - (baseX + groupSpan);
             const float shift = rightGroup ? m_stripNudgeRight : m_stripNudgeX;
-            float groupX = baseX + std::clamp(shift,
-                                              std::min(lowShift, highShift),
-                                              std::max(lowShift, highShift));
-            // While the band is merged the capsules are part of this row, so a
-            // paddle stops at them instead of sliding a cluster underneath.
-            if (m_anchorValid) {
-                if (rightGroup)
-                    groupX = std::min(groupX,
-                                      m_anchorBattery.x - kColumnClearGap - groupSpan);
-                else
-                    groupX = std::max(groupX,
-                                      m_anchorProfile.right() + kColumnClearGap);
+            return baseX + std::clamp(shift,
+                                      std::min(lowShift, highShift),
+                                      std::max(lowShift, highShift));
+        };
+        float leftGroupX = groupStart(false, leftGroupSpan);
+        float rightGroupX = groupStart(true, rightGroupSpan);
+        // While the band is merged the capsules are part of this row. The
+        // profile tile and the battery pill are different widths, so clamping
+        // each cluster against its own capsule pushed only the battery side
+        // inward and left the left icons farther from the centre than the
+        // right ones. Mirror the pair instead: both clusters keep the same
+        // clearance from their capsule.
+        if (m_anchorValid) {
+            const float leftInset = std::max(
+                leftGroupX, m_anchorProfile.right() + kColumnClearGap);
+            const float rightInset = std::max(
+                1280.f - (rightGroupX + rightGroupSpan),
+                1280.f - (m_anchorBattery.x - kColumnClearGap));
+            const float inset = std::max(leftInset, rightInset);
+            leftGroupX = inset;
+            rightGroupX = 1280.f - inset - rightGroupSpan;
+        }
+        leftGroupX = std::clamp(leftGroupX, 8.f, 1272.f - leftGroupSpan);
+        rightGroupX = std::clamp(rightGroupX, 8.f, 1272.f - rightGroupSpan);
+
+        // Adding a pin must move that side's applets out of the way instead
+        // of growing the pin row into the clock. Start with the normal gap and
+        // tighten it only when a full three-pin side would otherwise leave the
+        // clock no room. The tight fallback still keeps every button outside
+        // the clock; it may sit closer to the outer capsule.
+        struct SideFit {
+            float x = 0.f;
+            float gap = kColumnClearGap;
+            bool fits = false;
+        };
+        const auto fitSide = [&](bool rightSide) {
+            const auto& pins = rightSide ? rightPins : leftPins;
+            const float groupSpan = rightSide ? rightGroupSpan : leftGroupSpan;
+            const float clusterSpan = rightSide ? rightClusterSpan : leftClusterSpan;
+            const float pinSpan = pins.empty()
+                ? 0.f
+                : (static_cast<float>(pins.size()) - 1.f) * pinStep + stripSize;
+            const float baseX = rightSide ? rightGroupX : leftGroupX;
+            SideFit fit;
+            const float gaps[] = {kColumnClearGap, 5.f, 2.f};
+            for (float gap : gaps) {
+                float minX = 8.f;
+                float maxX = 1272.f - groupSpan;
+                if (m_anchorValid) {
+                    if (rightSide)
+                        maxX = std::min(maxX,
+                            m_anchorBattery.x - gap - groupSpan);
+                    else
+                        minX = std::max(minX,
+                            m_anchorProfile.right() + gap);
+                }
+                if (m_anchorClockValid) {
+                    const float pinGap = pins.empty() ? 0.f : gap;
+                    if (rightSide)
+                        minX = std::max(minX,
+                            m_anchorClock.right() + gap + pinSpan + pinGap);
+                    else
+                        maxX = std::min(maxX,
+                            m_anchorClock.x - gap - pinSpan - pinGap
+                            - clusterSpan);
+                }
+                if (minX <= maxX) {
+                    fit.x = std::clamp(baseX, minX, maxX);
+                    fit.gap = gap;
+                    fit.fits = true;
+                    return fit;
+                }
             }
-            groupX = std::clamp(groupX, 8.f, 1272.f - groupSpan);
-            if (rightGroup)
-                rightGroupX = groupX;
-            else
-                leftGroupX = groupX;
+
+            // The frame cannot hold both clusters at this size. Keep the
+            // clock clear and let the row crowd its outer capsule; covering
+            // the time is the one overlap this layout must avoid.
+            float minX = 8.f;
+            float maxX = 1272.f - groupSpan;
+            if (m_anchorClockValid) {
+                const float pinGap = pins.empty() ? 0.f : 2.f;
+                if (rightSide)
+                    minX = std::max(minX,
+                        m_anchorClock.right() + 2.f + pinSpan + pinGap);
+                else
+                    maxX = std::min(maxX,
+                        m_anchorClock.x - 2.f - pinSpan - pinGap
+                        - clusterSpan);
+            }
+            if (minX > maxX) {
+                if (m_anchorClockValid) {
+                    fit.x = std::clamp(rightSide ? minX : maxX,
+                                       8.f, 1272.f - groupSpan);
+                    fit.gap = 2.f;
+                    return fit;
+                }
+                minX = maxX = std::clamp(baseX, 8.f, 1272.f - groupSpan);
+            }
+            fit.x = std::clamp(baseX, minX, maxX);
+            fit.gap = 2.f;
+            return fit;
+        };
+        SideFit leftFit = fitSide(false);
+        SideFit rightFit = fitSide(true);
+        // One side can be asked to hold more pins than its clock clearance
+        // allows (the generic Add row keeps using the last chosen side). Spill
+        // the excess onto the other side instead of drawing it through the
+        // clock. This only moves what does not fit; a normal 3/3 split stays
+        // exactly where the player put it.
+        for (int guard = 0; guard < kPinnedSlotCount; ++guard) {
+            if (leftFit.fits && rightFit.fits)
+                break;
+            if (!leftFit.fits && !rightFit.fits)
+                break;
+            if (!rightFit.fits && !rightPins.empty()) {
+                leftPins.push_back(rightPins.front());
+                rightPins.erase(rightPins.begin());
+            } else if (!leftFit.fits && !leftPins.empty()) {
+                rightPins.insert(rightPins.begin(), leftPins.back());
+                leftPins.pop_back();
+            } else {
+                break;
+            }
+            leftFit = fitSide(false);
+            rightFit = fitSide(true);
+        }
+        leftGroupX = leftFit.x;
+        rightGroupX = rightFit.x;
+
+        // Place search only after fitSide() has settled the group origin. That
+        // pass can move the left cluster to clear the clock and pins; placing
+        // search first left it at the old x while the applets moved onto it.
+        if (m_searchBar) {
+            m_searchBar->setRect({leftGroupX, stripY, stripSize, stripSize});
+            m_searchBar->setVisible(true);
+        }
+
+        for (std::size_t i = 0; i < ordered.size(); ++i) {
+            auto* button = ordered[i];
+            const bool rightGroup = i >= m_leftButtons.size();
+            const std::size_t groupIndex = rightGroup ? i - m_leftButtons.size() : i;
+            const float groupX = rightGroup ? rightGroupX : leftGroupX;
+            const float slotIndex = static_cast<float>(groupIndex)
+                + (!rightGroup && m_searchBar ? 1.f : 0.f);
             place(button,
-                  {groupX + static_cast<float>(groupIndex) *
-                                (stripSize + stripGap),
+                  {groupX + slotIndex * (stripSize + stripGap),
                    stripY,
                    stripSize,
                    stripSize},
@@ -319,158 +500,168 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
             button->setCustomNavigation(nxui::FocusDirection::LEFT, leftTarget);
             button->setCustomNavigation(nxui::FocusDirection::RIGHT, rightTarget);
         }
-        // Pinned games continue the chosen applet cluster's row: left pins grow
-        // rightwards from the left group, right pins grow leftwards from the
-        // right group. They never take one of the six applets' sockets.
-        std::vector<AppletButton*> pins;
-        for (auto& btn : m_pinButtons)
-            if (btn && btn->isVisible()) pins.push_back(btn.get());
-        m_visiblePins = static_cast<int>(pins.size());
-        if (!pins.empty()) {
-            const float clusterSpan = 3.f * stripSize + 2.f * stripGap;
-            const float pinsSpan = (static_cast<float>(pins.size()) - 1.f)
-                                 * (stripSize + stripGap) + stripSize;
-            const float clear = kColumnClearGap;
-            const float lowX = leftGroupX + clusterSpan + clear;
-            const float highX = rightGroupX - clear - pinsSpan;
-            float pinsX = (m_pinSide == 0) ? lowX : highX;
-            pinsX = std::clamp(pinsX, std::min(lowX, highX), std::max(lowX, highX));
-            pinsX = std::clamp(pinsX, 8.f, std::max(8.f, 1272.f - pinsSpan));
-            for (std::size_t i = 0; i < pins.size(); ++i) {
-                place(pins[i],
-                      {pinsX + static_cast<float>(i) * (stripSize + stripGap),
+        // Pinned games continue the applet row on the side they were added to.
+        // Left pins grow rightwards from the left group; right pins grow
+        // leftwards from the right group. They never take an applet socket.
+        const auto placePins = [&](const std::vector<AppletButton*>& group,
+                                   bool rightSide, float gap, float clusterSpan) {
+            if (group.empty())
+                return;
+            const float span = (static_cast<float>(group.size()) - 1.f) * pinStep
+                             + stripSize;
+            float x = rightSide
+                ? rightGroupX - gap - span
+                : leftGroupX + clusterSpan + gap;
+            x = std::clamp(x, 8.f, std::max(8.f, 1272.f - span));
+            for (std::size_t i = 0; i < group.size(); ++i) {
+                place(group[i],
+                      {x + static_cast<float>(i) * pinStep,
                        stripY, stripSize, stripSize},
                       static_cast<int>(i));
             }
-            // Keep the row on the one horizontal chain: last left applet ->
-            // pins -> first right applet, so it never becomes a dead end.
-            nxui::Widget* leftEnd = m_leftButtons.empty()
-                ? nullptr : static_cast<nxui::Widget*>(m_leftButtons.back().get());
-            nxui::Widget* rightStart = m_rightButtons.empty()
-                ? nullptr : static_cast<nxui::Widget*>(m_rightButtons.front().get());
-            for (std::size_t i = 0; i < pins.size(); ++i) {
-                pins[i]->setCustomNavigation(nxui::FocusDirection::LEFT,
-                    i == 0 ? leftEnd : static_cast<nxui::Widget*>(pins[i - 1]));
-                pins[i]->setCustomNavigation(nxui::FocusDirection::RIGHT,
-                    i + 1 < pins.size() ? static_cast<nxui::Widget*>(pins[i + 1])
-                                        : rightStart);
-            }
-            if (!m_leftButtons.empty())
-                m_leftButtons.back()->setCustomNavigation(nxui::FocusDirection::RIGHT,
-                    static_cast<nxui::Widget*>(pins.front()));
-            if (!m_rightButtons.empty())
-                m_rightButtons.front()->setCustomNavigation(nxui::FocusDirection::LEFT,
-                    static_cast<nxui::Widget*>(pins.back()));
+        };
+        placePins(leftPins, false, leftFit.gap, leftClusterSpan);
+        placePins(rightPins, true, rightFit.gap, rightClusterSpan);
+        // One horizontal chain across the whole row: search -> left applets ->
+        // left pins -> right pins -> right applets. Ends hop into the HUD
+        // capsules. Search is a real shortcut slot, not a detached field.
+        std::vector<nxui::Widget*> chain;
+        chain.reserve((m_searchBar ? 1u : 0u) + m_leftButtons.size()
+                      + leftPins.size() + rightPins.size()
+                      + m_rightButtons.size());
+        if (m_searchBar)
+            chain.push_back(m_searchBar.get());
+        for (auto& b : m_leftButtons) chain.push_back(b.get());
+        for (auto* b : leftPins) chain.push_back(b);
+        for (auto* b : rightPins) chain.push_back(b);
+        for (auto& b : m_rightButtons) chain.push_back(b.get());
+        for (std::size_t i = 0; i < chain.size(); ++i) {
+            nxui::Widget* left = (i == 0)
+                ? (m_hudLeftTarget ? m_hudLeftTarget : chain[i])
+                : chain[i - 1];
+            nxui::Widget* right = (i + 1 == chain.size())
+                ? (m_hudRightTarget ? m_hudRightTarget : chain[i])
+                : chain[i + 1];
+            chain[i]->setCustomNavigation(nxui::FocusDirection::LEFT, left);
+            chain[i]->setCustomNavigation(nxui::FocusDirection::RIGHT, right);
         }
         syncStripPlateGeometry();
         return;
     }
 
+    if (m_searchBar)
+        m_searchBar->setVisible(false);
+
     const float colSize = kSidebarButtonSize * m_buttonScale;
     const float colGap  = kSidebarColumnGap * m_buttonScale;
-    const float totalH = 3.f * colSize + 2.f * colGap;
-    const float startY = 360.f - totalH * 0.5f;
-    const float rightX = 1280.f - kSidebarMarginX - colSize;
+    std::vector<AppletButton*> leftPins;
+    std::vector<AppletButton*> rightPins;
+    for (int slot = 0; slot < kPinnedSlotCount; ++slot) {
+        if (slot >= static_cast<int>(m_pinButtons.size()))
+            break;
+        auto& btn = m_pinButtons[static_cast<std::size_t>(slot)];
+        if (!btn || !btn->isVisible())
+            continue;
+        (gameShortcutSide(slot) == 0 ? leftPins : rightPins).push_back(btn.get());
+    }
+    m_visiblePins = static_cast<int>(leftPins.size() + rightPins.size());
+
+    // One row per side: the stock applets followed by that side's pinned
+    // games. Keeping them in a single column means the nudge slider moves the
+    // whole side row, and there is no second column to overlap the first.
+    std::vector<AppletButton*> leftRow;
+    std::vector<AppletButton*> rightRow;
+    leftRow.reserve(m_leftButtons.size() + leftPins.size());
+    rightRow.reserve(m_rightButtons.size() + rightPins.size());
+    for (auto& button : m_leftButtons)  leftRow.push_back(button.get());
+    for (auto* button : leftPins)       leftRow.push_back(button);
+    for (auto& button : m_rightButtons) rightRow.push_back(button.get());
+    for (auto* button : rightPins)      rightRow.push_back(button);
+
+    // Both sides share one button size so the rows read as a pair. Only when
+    // the longest row cannot fit between the HUD and the bottom edge do the
+    // gap and then the icons tighten; the row stays fully on-screen.
+    constexpr float kSideRowTop = 96.f;
+    constexpr float kSideRowBottom = 712.f;
+    constexpr float kSideRowMinGap = 4.f;
+    const float sideRowAvailH = std::max(1.f, kSideRowBottom - kSideRowTop);
+    const std::size_t longestRow = std::max(leftRow.size(), rightRow.size());
+    float sideSize = colSize;
+    float sideGap = colGap;
+    const auto rowHeight = [&](std::size_t count) {
+        return static_cast<float>(count) * sideSize
+            + static_cast<float>(count > 0 ? count - 1 : 0) * sideGap;
+    };
+    float longestH = rowHeight(longestRow);
+    if (longestRow > 1 && longestH > sideRowAvailH) {
+        sideGap = std::max(kSideRowMinGap,
+            (sideRowAvailH - static_cast<float>(longestRow) * sideSize)
+                / static_cast<float>(longestRow - 1));
+        longestH = rowHeight(longestRow);
+        if (longestH > sideRowAvailH) {
+            sideSize = std::max(32.f,
+                (sideRowAvailH - static_cast<float>(longestRow - 1) * kSideRowMinGap)
+                    / static_cast<float>(longestRow));
+            sideGap = kSideRowMinGap;
+            longestH = rowHeight(longestRow);
+        }
+    }
+    const auto rowStartY = [&](std::size_t count) {
+        const float totalH = rowHeight(count);
+        return std::clamp(360.f - totalH * 0.5f,
+                          kSideRowTop,
+                          std::max(kSideRowTop, kSideRowBottom - totalH));
+    };
+
+    const float rightX = 1280.f - kSidebarMarginX - sideSize;
     const float leftShift = std::clamp(m_stripNudgeX,
-        8.f - kSidebarMarginX, 1272.f - colSize - kSidebarMarginX);
+        8.f - kSidebarMarginX, 1272.f - sideSize - kSidebarMarginX);
     const float rightShift = std::clamp(m_stripNudgeRight,
-        8.f - rightX, 1272.f - colSize - rightX);
-    // The sliders may pull a stack outward as far as they like, but inward
-    // travel stops at the tile band: the shortcuts and the grid stay separate
-    // instead of one sliding over the other.
-    const float leftMax = std::max(8.f, m_clearLeft - kColumnClearGap - colSize);
+        8.f - rightX, 1272.f - sideSize - rightX);
+    // The nudge sliders move each whole side row. Inward travel stops before
+    // the tile band, so the row remains inside the reserved side gutter.
+    const float leftMax = std::max(8.f, m_clearLeft - kColumnClearGap - sideSize);
     const float leftColX = std::clamp(kSidebarMarginX + leftShift, 8.f, leftMax);
-    const float rightMin = std::min(1272.f - colSize, m_clearRight + kColumnClearGap);
+    const float rightMin = std::min(1272.f - sideSize, m_clearRight + kColumnClearGap);
     const float rightColX = std::clamp(rightX + rightShift,
-                                       std::max(8.f, rightMin), 1272.f - colSize);
-    for (std::size_t i = 0; i < m_leftButtons.size(); ++i) {
-        place(m_leftButtons[i].get(),
-              {leftColX,
-               startY + static_cast<float>(i) * (colSize + colGap),
-               colSize, colSize},
-              static_cast<int>(i));
-    }
-    for (std::size_t i = 0; i < m_rightButtons.size(); ++i) {
-        place(m_rightButtons[i].get(),
-              {rightColX,
-               startY + static_cast<float>(i) * (colSize + colGap),
-               colSize, colSize},
-              static_cast<int>(i));
-    }
-    // Column layout: pinned games stack beside the chosen applet column, two
-    // sub-columns of three so the block is exactly as tall as the stack.
-    std::vector<AppletButton*> pins;
-    for (auto& btn : m_pinButtons)
-        if (btn && btn->isVisible()) pins.push_back(btn.get());
-    m_visiblePins = static_cast<int>(pins.size());
-    if (!pins.empty()) {
-        constexpr int kPinsPerColumn = 3;
-        const float innerX = (m_pinSide == 0)
-            ? leftColX + colSize + colGap
-            : rightColX - colGap - colSize;
-        const float step = colSize + colGap;
-        for (std::size_t i = 0; i < pins.size(); ++i) {
-            const int col = static_cast<int>(i) / kPinsPerColumn;
-            const int row = static_cast<int>(i) % kPinsPerColumn;
-            const float x = (m_pinSide == 0)
-                ? innerX + static_cast<float>(col) * step
-                : innerX - static_cast<float>(col) * step;
-            place(pins[i],
-                  {std::clamp(x, 8.f, 1272.f - colSize),
-                   startY + static_cast<float>(row) * step,
-                   colSize, colSize},
+                                       std::max(8.f, rightMin), 1272.f - sideSize);
+
+    const auto placeRow = [&](const std::vector<AppletButton*>& row, float x) {
+        const float startY = rowStartY(row.size());
+        for (std::size_t i = 0; i < row.size(); ++i) {
+            place(row[i],
+                  {x,
+                   startY + static_cast<float>(i) * (sideSize + sideGap),
+                   sideSize, sideSize},
                   static_cast<int>(i));
         }
-        // Wire the block by row and column: UP/DOWN inside a sub-column,
-        // LEFT/RIGHT across to the applet stack it belongs to.
-        for (std::size_t i = 0; i < pins.size(); ++i) {
-            const int col = static_cast<int>(i) / kPinsPerColumn;
-            const int row = static_cast<int>(i) % kPinsPerColumn;
-            const std::size_t partner = (col == 0)
-                ? i + static_cast<std::size_t>(kPinsPerColumn)
-                : i - static_cast<std::size_t>(kPinsPerColumn);
-            const bool partnerExists = partner < pins.size();
-            const std::size_t up = (row == 0) ? i : i - 1;
-            const std::size_t down = (row == kPinsPerColumn - 1) ? i : i + 1;
-            pins[i]->setCustomNavigation(nxui::FocusDirection::UP,
-                static_cast<nxui::Widget*>(pins[up]));
-            pins[i]->setCustomNavigation(nxui::FocusDirection::DOWN,
-                static_cast<nxui::Widget*>(pins[down]));
-            nxui::Widget* across = nullptr;
-            const auto& stack = (m_pinSide == 0) ? m_leftButtons : m_rightButtons;
-            if (col == 0 && !stack.empty()) {
-                const std::size_t rowIndex = std::min<std::size_t>(
-                    static_cast<std::size_t>(row), stack.size() - 1);
-                across = static_cast<nxui::Widget*>(stack[rowIndex].get());
-            }
-            pins[i]->setCustomNavigation(nxui::FocusDirection::LEFT,
-                (m_pinSide == 0) ? across
-                                 : (partnerExists
-                                        ? static_cast<nxui::Widget*>(pins[partner])
-                                        : nullptr));
-            pins[i]->setCustomNavigation(nxui::FocusDirection::RIGHT,
-                (m_pinSide == 0)
-                    ? (partnerExists ? static_cast<nxui::Widget*>(pins[partner])
-                                     : nullptr)
-                    : across);
+        // One chain down each side. LEFT/RIGHT stay unbound here so the focus
+        // engine can step from the row into the grid spatially.
+        for (std::size_t i = 0; i < row.size(); ++i) {
+            const std::size_t up = (i == 0) ? i : i - 1;
+            const std::size_t down = (i + 1 == row.size()) ? i : i + 1;
+            row[i]->setCustomNavigation(nxui::FocusDirection::UP,
+                static_cast<nxui::Widget*>(row[up]));
+            row[i]->setCustomNavigation(nxui::FocusDirection::DOWN,
+                static_cast<nxui::Widget*>(row[down]));
         }
-    }
-    if (!m_leftButtons.empty()) {
-        m_leftButtons.front()->setCustomNavigation(nxui::FocusDirection::UP,
-                                                   m_leftButtons.front().get());
-        m_leftButtons.back()->setCustomNavigation(nxui::FocusDirection::DOWN,
-                                                  m_leftButtons.back().get());
-    }
-    if (!m_rightButtons.empty()) {
-        m_rightButtons.front()->setCustomNavigation(nxui::FocusDirection::UP,
-                                                    m_rightButtons.front().get());
-        m_rightButtons.back()->setCustomNavigation(nxui::FocusDirection::DOWN,
-                                                   m_rightButtons.back().get());
-    }
+    };
+    placeRow(leftRow, leftColX);
+    placeRow(rightRow, rightColX);
+}
+
+float SidebarManager::sideGutterWidth(int buttonScalePercent) {
+    const float scale = static_cast<float>(
+        std::clamp(buttonScalePercent, 70, 150)) / 100.f;
+    const float colSize = kSidebarButtonSize * scale;
+    // Outer margin + the single side row + air before the tiles.
+    return kSidebarMarginX + colSize + kColumnClearGap;
 }
 
 void SidebarManager::setDynamicLineDownAction(std::function<void()> action) {
-    auto configure = [&action](std::shared_ptr<AppletButton>& button) {
+    auto configure = [&action](nxui::Widget* button) {
+        if (!button)
+            return;
         button->setCustomNavigation(nxui::FocusDirection::DOWN, nullptr);
         button->removeAction(static_cast<uint64_t>(nxui::Button::DDown));
         button->removeAction(static_cast<uint64_t>(nxui::Button::LStickD));
@@ -478,8 +669,9 @@ void SidebarManager::setDynamicLineDownAction(std::function<void()> action) {
         if (action)
             button->addDirectionAction(nxui::FocusDirection::DOWN, action);
     };
-    for (auto& button : m_leftButtons) configure(button);
-    for (auto& button : m_rightButtons) configure(button);
+    for (auto& button : m_leftButtons) configure(button.get());
+    for (auto& button : m_rightButtons) configure(button.get());
+    configure(m_searchBar.get());
 }
 
 void SidebarManager::setDynamicLineUpTarget(nxui::Widget* target) {
@@ -487,6 +679,8 @@ void SidebarManager::setDynamicLineUpTarget(nxui::Widget* target) {
         button->setCustomNavigation(nxui::FocusDirection::UP, target);
     for (auto& button : m_rightButtons)
         button->setCustomNavigation(nxui::FocusDirection::UP, target);
+    if (m_searchBar)
+        m_searchBar->setCustomNavigation(nxui::FocusDirection::UP, target);
 }
 
 void SidebarManager::setDynamicLineProfileTarget(nxui::Widget* profile) {
@@ -506,20 +700,32 @@ void SidebarManager::setDynamicLineBatteryTarget(nxui::Widget* battery) {
     m_rightButtons.back()->setCustomNavigation(nxui::FocusDirection::RIGHT, battery);
 }
 
-void SidebarManager::setHudAnchors(const nxui::Rect& profile, const nxui::Rect& battery) {
+void SidebarManager::setHudAnchors(const nxui::Rect& profile,
+                                   const nxui::Rect& clock,
+                                   const nxui::Rect& battery) {
     const auto same = [](const nxui::Rect& a, const nxui::Rect& b) {
         return std::abs(a.x - b.x) < 0.5f && std::abs(a.y - b.y) < 0.5f
             && std::abs(a.width - b.width) < 0.5f
             && std::abs(a.height - b.height) < 0.5f;
     };
     const bool valid = profile.width > 0.f && battery.width > 0.f;
-    if (valid == m_anchorValid && same(profile, m_anchorProfile)
+    const bool clockValid = clock.width > 0.f && clock.height > 0.f;
+    if (valid == m_anchorValid && clockValid == m_anchorClockValid
+        && same(profile, m_anchorProfile) && same(clock, m_anchorClock)
         && same(battery, m_anchorBattery))
         return;
     m_anchorProfile = profile;
+    m_anchorClock = clock;
     m_anchorBattery = battery;
     m_anchorValid = valid;
-    syncStripPlateGeometry();
+    m_anchorClockValid = clockValid;
+    // The clock can be nudged or resized independently of the strip. Re-place
+    // the row when its rect moves so the clearance is refreshed in the same
+    // frame instead of waiting for the next unrelated layout event.
+    if (m_dynamicLine && (!m_leftButtons.empty() || !m_rightButtons.empty()))
+        setDynamicLineLayout(true);
+    else
+        syncStripPlateGeometry();
 }
 
 void SidebarManager::reloadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
@@ -613,6 +819,7 @@ void SidebarManager::loadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
 
     static const char* iconFiles[] = {
         "album.png", "mii_editor.png", "controller.png", "power.png", "themes.png", "settings.png",
+        "all_apps.png",
     };
     // Resize in place, never clear: these are handed to the buttons as raw
     // pointers, and reallocating them here is what left the glyphs attached to
@@ -643,14 +850,15 @@ void SidebarManager::loadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
     // entry's frame storage; clearing the entries first freed the texture and
     // left the pointer naming whatever the allocator reused next. That is how a
     // shortcut ended up wearing another shortcut's icon after a restart.
-    if (m_leftButtons.size() == 3 && m_rightButtons.size() == 3) {
+    if (m_leftButtons.size() == 4 && m_rightButtons.size() == 3) {
         AppletButton* byGlyph[kSidebarIconCount] = {
             m_leftButtons[0].get(),   // album
             m_leftButtons[1].get(),   // mii editor
             m_rightButtons[0].get(),  // controllers
             m_rightButtons[2].get(),  // power -> Sleep
             m_rightButtons[1].get(),  // themes -> Theme Shop
-            m_leftButtons[2].get(),   // settings
+            m_leftButtons[3].get(),   // settings
+            m_leftButtons[2].get(),   // all apps
         };
         for (int i = 0; i < kSidebarIconCount; ++i) {
             if (!byGlyph[i])
@@ -674,7 +882,7 @@ void SidebarManager::loadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
         else if (def.iconIdx == 2) btn = m_rightButtons[0].get();
         else if (def.iconIdx == 3) btn = m_rightButtons[2].get(); // power → Sleep
         else if (def.iconIdx == 4) btn = m_rightButtons[1].get(); // themes → Theme Shop
-        else if (def.iconIdx == 5) btn = m_leftButtons[2].get();
+        else if (def.iconIdx == 5) btn = m_leftButtons[3].get();
         if (!btn)
             continue;
 
@@ -693,6 +901,10 @@ void SidebarManager::loadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
             continue;
         }
 
+        if (!def.webpFile) {
+            btn->setIcon(staticTex);
+            continue;
+        }
         nxui::Texture* idleTex = def.useFirstFrame ? nullptr : staticTex;
         tryLoadAnimation(gpu, ren, resolveAsset(def.webpFile), btn, idleTex);
         btn->setIcon(idleTex ? idleTex : staticTex);
@@ -702,15 +914,16 @@ void SidebarManager::loadAssets(nxui::GpuDevice& gpu, nxui::Renderer& ren,
     // button it was bound to and the texture object behind it. If the icons
     // ever cross over, the log shows whether the file resolution or the
     // pointer binding is the one at fault.
-    if (m_leftButtons.size() == 3 && m_rightButtons.size() == 3) {
+    if (m_leftButtons.size() == 4 && m_rightButtons.size() == 3) {
         static const char* kTraceFiles[kSidebarIconCount] = {
             "album.png", "mii_editor.png", "controller.png",
-            "power.png", "themes.png", "settings.png",
+            "power.png", "themes.png", "settings.png", "all_apps.png",
         };
         AppletButton* kTraceBtn[kSidebarIconCount] = {
             m_leftButtons[0].get(), m_leftButtons[1].get(),
             m_rightButtons[0].get(), m_rightButtons[2].get(),
-            m_rightButtons[1].get(), m_leftButtons[2].get(),
+            m_rightButtons[1].get(), m_leftButtons[3].get(),
+            m_leftButtons[2].get(),
         };
         for (int i = 0; i < kSidebarIconCount; ++i) {
             AppletButton* btn = kTraceBtn[i];
@@ -748,21 +961,36 @@ void SidebarManager::update(float dt, nxui::Widget* focusedWidget) {
         if (!e.button) continue;
         bool focused = (focusedWidget == e.button);
         e.anim.update(dt, focused);
+        nxui::Texture* next = nullptr;
+        bool colorArtwork = false;
         if (focused && e.anim.hasFrames()) {
-            e.button->setIcon(e.anim.currentFrame());
+            next = e.anim.currentFrame();
             // Animated WebP frames keep their own colour — no chrome tint.
-            e.button->setIconUsesColorArtwork(true);
+            colorArtwork = true;
         } else {
             // staticTex == nullptr: use frame 0 of the animation as idle
-            nxui::Texture* idle = e.staticTex ? e.staticTex
-                                              : (e.anim.hasFrames() ? e.anim.currentFrame() : nullptr);
-            e.button->setIcon(idle);
-            e.button->setIconUsesColorArtwork(e.staticTex == nullptr && e.anim.hasFrames());
+            next = e.staticTex ? e.staticTex
+                               : (e.anim.hasFrames() ? e.anim.currentFrame() : nullptr);
+            colorArtwork = e.staticTex == nullptr && e.anim.hasFrames();
         }
+        // Most frames show the same static glyph on five unfocused buttons.
+        // Only touch widget state when the displayed texture actually changes.
+        if (next != e.appliedTex || colorArtwork != e.appliedColorArtwork) {
+            e.button->setIcon(next);
+            e.button->setIconUsesColorArtwork(colorArtwork);
+            e.appliedTex = next;
+            e.appliedColorArtwork = colorArtwork;
+        }
+    }
+    if (m_stripGradient && m_stripPlateWidget) {
+        // Keep the drift running through layout transitions. Waiting for the
+        // plate to become visible froze the phase at boot and made the first
+        // frames after HOME appeared look like a static fill.
+        m_stripGradientPhase = std::fmod(m_stripGradientPhase + dt * 0.12f, 1.f);
+        m_stripPlateWidget->setGradientPhase(m_stripGradientPhase);
     }
     syncStripPlateGeometry();
 }
-
 
 void SidebarManager::applyTheme(const nxui::Theme& theme) {
     // Mono glyphs follow textPrimary (white on dark chrome / black on light,
@@ -771,6 +999,12 @@ void SidebarManager::applyTheme(const nxui::Theme& theme) {
     m_btnBase      = theme.iconDefault;
     m_btnBorder    = theme.panelBorder;
     m_btnHighlight = theme.panelHighlight;
+    if (m_searchBar) {
+        m_searchBar->setPanelColor(theme.panelBase);
+        m_searchBar->setBorderColor(theme.panelBorder);
+        m_searchBar->setTextColor(theme.textPrimary);
+        m_searchBar->setMutedColor(theme.textSecondary);
+    }
     const nxui::Color iconTint = theme.textPrimary.withAlpha(0.92f);
     auto apply = [&](std::shared_ptr<AppletButton>& btn) {
         if (!btn) return;
@@ -894,9 +1128,8 @@ void SidebarManager::setChromeStyle(float cornerRadius, float borderWidth) {
 
 void SidebarManager::applyChromeToButtons() {
     // With the plate on, the buttons must not paint their own pills or the bar
-    // turns back into six capsules. They cannot merely go transparent: the
-    // liquid-glass path clamps the body alpha up to 0.16, so the glass has to
-    // be switched off as well.
+    // turns back into six capsules. Their base alpha goes to zero so only the
+    // plate shows; the rim colour goes with it, leaving the plate's rim alone.
     // Only the strip layout has a plate to sit on; the two-column side
     // stacks keep their own pills.
     const bool plate = m_stripPlate && m_dynamicLine;
@@ -907,13 +1140,13 @@ void SidebarManager::applyChromeToButtons() {
         btn->setBaseColor(plate ? m_btnBase.withAlpha(0.f) : m_btnBase);
         btn->setBorderColor(plate ? m_btnBorder.withAlpha(0.f) : m_btnBorder);
         btn->setHighlightColor(plate ? m_btnHighlight.withAlpha(0.f) : m_btnHighlight);
-        btn->setLiquidGlassEnabled(!plate);
-        btn->setForceLiquidGlass(!plate);
         btn->setBlurEnabled(false);
     };
     for (auto& btn : m_leftButtons)  apply(btn);
     for (auto& btn : m_rightButtons) apply(btn);
     for (auto& btn : m_pinButtons)   apply(btn);
+    if (m_searchBar)
+        m_searchBar->setChromeVisible(!plate);
 }
 
 void SidebarManager::applyPaddingToButtons() {
@@ -931,13 +1164,16 @@ void SidebarManager::applyPaddingToButtons() {
     }
 }
 
-void SidebarManager::setPinSide(int side) {
-    const int clamped = std::clamp(side, 0, 1);
-    if (m_pinSide == clamped)
+void SidebarManager::setGameShortcutSide(int slot, int side) {
+    if (slot < 0 || slot >= kPinnedSlotCount)
         return;
-    m_pinSide = clamped;
-    if (!m_leftButtons.empty() || !m_rightButtons.empty())
-        setDynamicLineLayout(m_dynamicLine);
+    m_pinSides[static_cast<std::size_t>(slot)] = std::clamp(side, 0, 1);
+}
+
+int SidebarManager::gameShortcutSide(int slot) const {
+    if (slot < 0 || slot >= kPinnedSlotCount)
+        return 0;
+    return m_pinSides[static_cast<std::size_t>(slot)];
 }
 
 void SidebarManager::setStripEdge(int edge) {
@@ -962,7 +1198,12 @@ void SidebarManager::setStripNudge(float leftPx, float rightPx) {
 float SidebarManager::stripReserve() const {
     // The strip itself plus the margin it keeps from the screen edge, which is
     // the same amount the grid has to stay clear of.
-    return kDynamicStripButtonSize * m_buttonScale + 2.f * kDynamicStripY;
+    float reserve = kDynamicStripButtonSize * m_buttonScale + 2.f * kDynamicStripY;
+    // The plate reaches half the extra bar height past the old band, so the
+    // grid has to clear that too or the first tile row lands under the bar.
+    if (m_stripPlate && m_dynamicLine)
+        reserve += kStripBarGrowY * 0.5f;
+    return reserve;
 }
 
 float SidebarManager::reservedTop() const {
@@ -986,30 +1227,64 @@ void SidebarManager::setStripPlate(bool enabled) {
     syncStripPlateGeometry();
 }
 
+void SidebarManager::setStripGradient(bool enabled, const nxui::Color& a,
+                                      const nxui::Color& b) {
+    m_stripGradient = enabled;
+    m_stripGradientA = a;
+    m_stripGradientB = b;
+    // The cache owns the fully resolved plate style, so gradient changes have
+    // to invalidate it or the next layout tick can keep the old flat style.
+    m_plateCacheValid = false;
+    if (m_stripPlateWidget) {
+        m_stripPlateWidget->setGradientFill(enabled, a, b);
+        m_stripPlateWidget->setGradientPhase(m_stripGradientPhase);
+    }
+    syncStripPlateGeometry();
+}
+
+void SidebarManager::setStripFlushTop(bool enabled) {
+    if (m_stripFlushTop == enabled)
+        return;
+    m_stripFlushTop = enabled;
+    syncStripPlateGeometry();
+}
+
 void SidebarManager::setStripPlateSuppressed(bool suppressed) {
     m_plateSuppressed = suppressed;
     if (suppressed && m_stripPlateWidget)
         m_stripPlateWidget->setVisible(false);
+    if (m_searchBar)
+        m_searchBar->setVisible(!suppressed && m_dynamicLine);
+}
+
+void SidebarManager::setOpacityTint(bool enabled, const nxui::Color& tint) {
+    m_opacityTintEnabled = enabled;
+    m_opacityTint = tint;
+    // The plate cache compares the derived base colour, so force one restyle
+    // when the tint changes even if the theme itself stayed put.
+    m_plateCacheValid = false;
 }
 
 void SidebarManager::syncStripPlateGeometry() {
+    if (m_searchBar) {
+        const bool show = m_dynamicLine && !m_plateSuppressed
+            && m_searchBar->rect().width > 0.f;
+        m_searchBar->setVisible(show);
+    }
     if (!m_stripPlateWidget)
         return;
-    // Mid-morph the buttons are still travelling between the two layouts, so
-    // the bar would smear across the screen. Hide it until they land.
-    const bool gliding = std::any_of(m_buttonGlides.begin(), m_buttonGlides.end(),
-                                     [](const ButtonGlide& g) { return g.active; });
-    if (!m_stripPlate || !m_dynamicLine || m_plateSuppressed || gliding
+    // Sync runs from update(), so the plate follows the buttons through a
+    // layout morph instead of blinking out and back.
+    if (!m_stripPlate || !m_dynamicLine || m_plateSuppressed
         || m_leftButtons.empty() || m_rightButtons.empty()) {
         m_stripPlateWidget->setVisible(false);
+        m_plateCacheValid = false;
         return;
     }
 
     bool any = false;
     nxui::Rect span{};
-    auto grow = [&](const std::shared_ptr<AppletButton>& btn) {
-        if (!btn) return;
-        const nxui::Rect r = btn->rect();
+    auto grow = [&](const nxui::Rect& r) {
         if (!any) {
             span = r;
             any = true;
@@ -1022,10 +1297,15 @@ void SidebarManager::syncStripPlateGeometry() {
         span.width  = right - span.x;
         span.height = bottom - span.y;
     };
-    for (const auto& btn : m_leftButtons)  grow(btn);
-    for (const auto& btn : m_rightButtons) grow(btn);
+    for (const auto& btn : m_leftButtons)  if (btn) grow(btn->rect());
+    for (const auto& btn : m_rightButtons) if (btn) grow(btn->rect());
+    // The search field is part of the bar: the plate grows around it instead
+    // of leaving it as a loose capsule floating under the shortcuts.
+    if (m_searchBar && m_searchBar->isVisible())
+        grow(m_searchBar->rect());
     if (!any) {
         m_stripPlateWidget->setVisible(false);
+        m_plateCacheValid = false;
         return;
     }
 
@@ -1055,28 +1335,112 @@ void SidebarManager::syncStripPlateGeometry() {
         const float bandH = std::max(m_anchorProfile.height,
                                      m_anchorBattery.height);
         if (right > left + 40.f) {
+            // The band has to contain the shortcut row as well as the capsules.
+            // Sizing it from the capsules alone left it shorter than the
+            // buttons, so the focus ring reached past the bar's bottom edge.
+            // span already carries kStripPlatePad, which is exactly the ring's
+            // outward reach.
+            const float bandTop = std::min(top, span.y);
+            const float bandBottom = std::max(top + bandH, span.bottom());
             span.x = left;
-            span.y = top;
+            span.y = bandTop;
             span.width = right - left;
-            span.height = bandH;
+            span.height = bandBottom - bandTop;
         }
     }
 
-    nxui::Color base = m_btnBase;
-    base.a = std::max(base.a, switchu::ui::surface::kBandAlphaMin);
-    nxui::Color rim = m_btnBorder;
-    rim.a = std::max(rim.a, switchu::ui::surface::kBandRimAlphaMin);
+    // Bar height is chrome, not a button property: grow the plate by equal
+    // amounts above and below the row. Because span is centred on the buttons,
+    // they stay exactly on the bar's centre line without being scaled or moved.
+    span.y -= kStripBarGrowY * 0.5f;
+    span.height += kStripBarGrowY;
 
-    m_stripPlateWidget->setRect(span);
+    nxui::Color base = m_btnBase;
+    nxui::Color rim = m_btnBorder;
+    nxui::Color gradA = m_stripGradientA;
+    nxui::Color gradB = m_stripGradientB;
+    // The strip is the most visible shortcut surface, so it always takes the
+    // opacity colour. Panels keep using the Style tint mix; here a selected
+    // colour must show on every theme, including the gradient fill path that
+    // previously bypassed the tint entirely.
+    if (m_opacityTintEnabled) {
+        const auto mix = [](const nxui::Color& c, const nxui::Color& t, float m) {
+            return nxui::Color(c.r + (t.r - c.r) * m,
+                               c.g + (t.g - c.g) * m,
+                               c.b + (t.b - c.b) * m,
+                               c.a);
+        };
+        base  = mix(base, m_opacityTint, 0.82f);
+        rim   = mix(rim, m_opacityTint, 0.55f);
+        // The flat body can hand itself almost entirely to the tint. The two
+        // gradient stops cannot: at 0.82 both became the same colour and the
+        // animation disappeared. Keep over half of each authored stop so the
+        // sweep survives on tinted themes while still following the tint.
+        gradA = mix(gradA, m_opacityTint, 0.42f);
+        gradB = mix(gradB, m_opacityTint, 0.42f);
+    }
+    base.a = std::max(base.a, switchu::ui::chrome::kBandAlphaMin);
+    rim.a = std::max(rim.a, switchu::ui::chrome::kBandRimAlphaMin);
+
     // Merged ends get the capsules' pill curvature; a free-standing strip keeps
     // the tile radius so it still matches the icons.
     const float plateRadius = std::min(m_chromeRadius, span.height * 0.5f);
+    nxui::Rect plateRect = span;
+    if (m_stripFlushTop) {
+        if (m_stripEdge == 0) {
+            // Push the rounded top corners above the screen so the visible top
+            // edge is a straight cut at y=0. The bottom keeps its curve.
+            plateRect.y = -plateRadius;
+            plateRect.height = span.bottom() + plateRadius;
+        } else {
+            // Bottom strip: push the rounded bottom corners below the screen so
+            // the visible bottom edge is a straight cut at y=720. The top keeps
+            // its curve.
+            plateRect.height = (720.f + plateRadius) - plateRect.y;
+        }
+    }
+
+    // The strip is static whenever neither the row glides nor the theme changes.
+    // Compare the fully derived style so a layout change still repaints, while
+    // an idle frame touches no widget state at all.
+    const auto sameColor = [](const nxui::Color& lhs, const nxui::Color& rhs) {
+        return lhs.r == rhs.r && lhs.g == rhs.g && lhs.b == rhs.b && lhs.a == rhs.a;
+    };
+    if (m_plateCacheValid
+        && std::abs(plateRect.x - m_plateRectCache.x) < 0.01f
+        && std::abs(plateRect.y - m_plateRectCache.y) < 0.01f
+        && std::abs(plateRect.width - m_plateRectCache.width) < 0.01f
+        && std::abs(plateRect.height - m_plateRectCache.height) < 0.01f
+        && std::abs(plateRadius - m_plateRadiusCache) < 0.01f
+        && std::abs(m_chromeBorder - m_plateBorderCache) < 0.01f
+        && sameColor(base, m_plateBaseCache)
+        && sameColor(rim, m_plateRimCache)
+        && sameColor(m_btnHighlight, m_plateHighlightCache)
+        && m_stripGradient == m_plateGradientCache
+        && sameColor(gradA, m_plateGradientACache)
+        && sameColor(gradB, m_plateGradientBCache)) {
+        return;
+    }
+
+    m_stripPlateWidget->setRect(plateRect);
     m_stripPlateWidget->setCornerRadius(plateRadius);
     m_stripPlateWidget->setBorderWidth(m_chromeBorder);
     m_stripPlateWidget->setBaseColor(base);
+    m_stripPlateWidget->setGradientFill(m_stripGradient, gradA, gradB);
     m_stripPlateWidget->setBorderColor(rim);
     m_stripPlateWidget->setHighlightColor(m_btnHighlight);
     m_stripPlateWidget->setVisible(true);
+
+    m_plateRectCache = plateRect;
+    m_plateBaseCache = base;
+    m_plateRimCache = rim;
+    m_plateHighlightCache = m_btnHighlight;
+    m_plateGradientCache = m_stripGradient;
+    m_plateGradientACache = gradA;
+    m_plateGradientBCache = gradB;
+    m_plateRadiusCache = plateRadius;
+    m_plateBorderCache = m_chromeBorder;
+    m_plateCacheValid = true;
 }
 
 void SidebarManager::setGridClearance(float left, float right) {

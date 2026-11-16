@@ -1,4 +1,6 @@
 #include "SteamGridDbPickerScreen.hpp"
+#include "../ui/ChromeTokens.hpp"
+#include "../ui/DrawChrome.hpp"
 
 #include "themeshop/ThemeHttp.hpp"
 
@@ -504,8 +506,14 @@ void SteamGridDbPickerScreen::onRender(nxui::Renderer& renderer) {
     if (!m_active || !m_theme) return;
     renderer.drawRect(rect(), nxui::Color(0.f, 0.f, 0.f, 0.62f));
     const nxui::Rect panel{70.f, 38.f, 1140.f, 644.f};
-    renderer.drawRoundedRect(panel, m_theme->panelBase.withAlpha(0.98f), 28.f);
-    renderer.drawRoundedRectOutline(panel, m_theme->panelBorder.withAlpha(0.45f), 28.f, 1.5f);
+    switchu::ui::chrome::drawPanelShadow(renderer, panel,
+                                         switchu::ui::chrome::kRadiusPanel, 1.f);
+    renderer.drawRoundedRect(panel,
+                             m_theme->panelBase.withAlpha(switchu::ui::chrome::kModalAlpha),
+                             switchu::ui::chrome::kRadiusPanel);
+    renderer.drawRoundedRectOutline(panel,
+                                    m_theme->panelBorder.withAlpha(switchu::ui::chrome::kModalRim),
+                                    switchu::ui::chrome::kRadiusPanel, 1.5f);
 
     nxui::Font* titleFont = m_font ? m_font : m_smallFont;
     nxui::Font* bodyFont = m_smallFont ? m_smallFont : m_font;

@@ -12,6 +12,11 @@ SettingsScreen::Tab settings::tabs::LayoutTab::build(SettingsScreen& screen) {
     SettingsScreen::Tab tab;
     tab.name = i18n.tr("settings.tabs.layout", "Layout presets");
 
+    SettingItem presetsSection;
+    presetsSection.type = ItemType::Section;
+    presetsSection.label = i18n.tr("settings.layout.section", "Layout presets");
+    tab.items.push_back(std::move(presetsSection));
+
     for (int slot = 0; slot < 3; ++slot) {
         SettingItem row;
         row.type = ItemType::Action;
@@ -42,7 +47,7 @@ SettingsScreen::Tab settings::tabs::LayoutTab::build(SettingsScreen& screen) {
     resetLayout.type = ItemType::Action;
     resetLayout.label = i18n.tr("settings.appearance.reset_layout", "Reset icon layout");
     resetLayout.description = i18n.tr("settings.appearance.reset_layout_desc",
-        "Puts size, spacing, depth, corners and every nudge back to their stock values.");
+        "Puts size, spacing, icon shrink, corners and every nudge back to their stock values.");
     resetLayout.buttonLabel = i18n.tr("button.reset", "Reset");
     resetLayout.onChange = [&screen](SettingItem&) {
         if (screen.m_resetIconLayoutCb)

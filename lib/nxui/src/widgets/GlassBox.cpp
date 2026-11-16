@@ -31,9 +31,13 @@ void GlassBox::onRender(Renderer& ren) {
                         std::max(0.f, radius - 1.f));
 
     if (m_highlight.a > 0.01f) {
+        // Rim light lives on the lit top edge only; wrapping it around the
+        // whole plate reads as an outline rather than as glass.
+        ren.pushClipRect({r.x, r.y, r.width, 2.f});
         ren.drawRoundedRectOutline(r.shrunk(1.f),
-                                   m_highlight.withAlpha(m_highlight.a * 0.45f * op),
+                                   m_highlight.withAlpha(m_highlight.a * 0.65f * op),
                                    std::max(0.f, radius - 1.f), 1.f);
+        ren.popClipRect();
     }
 
     // Glossy rim.

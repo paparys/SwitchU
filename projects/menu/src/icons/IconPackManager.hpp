@@ -19,9 +19,9 @@ inline constexpr const char* kInstalledThemesDir = "sdmc:/config/SwitchU/themes"
 // the homebrew build, where the built-in packs are read from romfs.
 inline constexpr const char* kInstalledPacksDir = "sdmc:/switch/SwitchU/icons";
 
-// Pack glyphs live under romfs:/icons/<pack>/. Shared chrome (page arrows,
-// batteries, gamecard, music transport) ships in default/; other packs may
-// override any of these via resolveGlyphPath.
+// Pack glyphs live under romfs:/icons/<pack>/. Shared chrome (batteries,
+// gamecard, music transport) ships in default/; other packs may override
+// any of these via resolveGlyphPath.
 inline constexpr const char* kPackGlyphFiles[] = {
     "album.png",
     "mii_editor.png",

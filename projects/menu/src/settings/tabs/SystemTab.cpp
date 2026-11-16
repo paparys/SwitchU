@@ -256,6 +256,13 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
     t.name = i18n.tr("settings.tabs.system", "System");
 
     {
+        SettingItem it;
+        it.label = i18n.tr("settings.system.section_console", "This console");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
         SetSysFirmwareVersion fw{};
         SettingItem it; it.label = i18n.tr("settings.system.firmware", "Firmware Version"); it.type = ItemType::Info;
         if (R_SUCCEEDED(setsysGetFirmwareVersion(&fw)))
@@ -309,6 +316,13 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
             it.infoText = sn.number;
         else
             it.infoText = i18n.tr("common.na", "N/A");
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.system.section_clock", "Clock & time");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
@@ -464,6 +478,13 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
     }
 
     {
+        SettingItem it;
+        it.label = i18n.tr("settings.system.section_hardware", "Hardware");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
         SettingItem it; it.label = i18n.tr("settings.system.usb30", "USB 3.0"); it.type = ItemType::Toggle;
         it.description = i18n.tr(
             "settings.system.usb30_desc",
@@ -489,6 +510,13 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
             it.infoText = lot.lot;
         else
             it.infoText = i18n.tr("common.na", "N/A");
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.system.section_language", "Language & region");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
@@ -543,6 +571,13 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
         SetRegion reg = SetRegion_JPN;
         if (R_SUCCEEDED(setGetRegionCode(&reg)))
             it.intVal = (int)reg;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.system.section_updates", "Updates & privacy");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 

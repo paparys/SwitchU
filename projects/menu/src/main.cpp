@@ -3,7 +3,6 @@
 #include "core/DebugLog.hpp"
 #include "core/Config.hpp"
 #include "tutorial/TutorialActivity.hpp"
-#include "screen_fit.hpp"
 #include "usb/Mtp.hpp"
 #include <nxui/Application.hpp>
 #include <nxui/core/GpuDevice.hpp>
@@ -50,61 +49,6 @@ extern "C" {
     extern u64 __nx_vi_layer_id;
 #endif
 }
-
-namespace switchu::menu {
-
-#ifdef SWITCHU_HOMEBREW
-bool initScreenFitLayer(std::uint64_t) { return false; }
-bool applyScreenUnderscan() { return true; }
-#else
-namespace {
-u64 g_managedLayerId = 0;
-}
-
-bool initScreenFitLayer(std::uint64_t managedLayerId) {
-    if (managedLayerId == 0)
-        return false;
-    g_managedLayerId = managedLayerId;
-    return applyScreenUnderscan();
-}
-
-bool applyScreenUnderscan() {
-    if (g_managedLayerId == 0)
-        return false;
-
-    // Underscan is a TV concern: in handheld the layer is already exactly
-    // 1280x720 and must stay untouched.
-    if (appletGetOperationMode() != AppletOperationMode_Console)
-        return true;
-
-    constexpr s32 kFullW = 1920;
-    constexpr s32 kFullH = 1080;
-
-    u32 underscan = 100;
-    SetSysTvSettings tv{};
-    if (R_SUCCEEDED(setsysGetTvSettings(&tv)) && tv.underscan >= 1 && tv.underscan <= 100)
-        underscan = tv.underscan;
-
-    const s32 w = kFullW * static_cast<s32>(underscan) / 100;
-    const s32 h = kFullH * static_cast<s32>(underscan) / 100;
-
-    ViLayer layer{};
-    layer.initialized = true;
-    layer.layer_id = g_managedLayerId;
-
-    const Result rc = viSetLayerSize(&layer, w, h);
-    if (R_SUCCEEDED(rc)) {
-        viSetLayerPosition(&layer, static_cast<float>(kFullW - w) / 2.f,
-                           static_cast<float>(kFullH - h) / 2.f);
-    }
-
-    DebugLog::log("[menu] underscan=%u%% -> layer %dx%d centered rc=0x%X",
-                  underscan, w, h, rc);
-    return R_SUCCEEDED(rc);
-}
-#endif
-
-} // namespace switchu::menu
 
 #ifndef SWITCHU_HOMEBREW
 extern "C" size_t g_switchuHeapSize;
@@ -292,52 +236,42 @@ extern "C" void __appInit(void) {
             svcExitProcess();
         };
 
-        Result lastRc = viInitialize(ViServiceType_Default);
-        if (R_FAILED(lastRc))
-            failGfxProbe("viInitialize", lastRc);
-
-        ViDisplay display{};
-        ViLayer layer{};
-        bool gfxReady = false;
-        bool haveDisplay = false;
-        bool haveLayer = false;
-        lastRc = viOpenDefaultDisplay(&display);
-        if (R_FAILED(lastRc)) {
-            viExit();
-            failGfxProbe("viOpenDefaultDisplay", lastRc);
-        }
-        haveDisplay = true;
-        lastRc = viCreateLayer(&display, &layer);
-        if (R_SUCCEEDED(lastRc)) {
-            haveLayer = true;
-            gfxReady = true;
-        }
-
-        if (haveLayer)
-            viCloseLayer(&layer);
-        if (haveDisplay)
-            viCloseDisplay(&display);
+        // Only prove vi can be opened. Creating a probe layer here is
+        // destructive: for an applet viCreateLayer asks AE for the managed
+        // display layer, and closing it before libnx builds the real window
+        // leaves the applet visible on the LCD but missing from the TV stack.
+        const Result viRc = viInitialize(ViServiceType_Default);
+        if (R_FAILED(viRc))
+            failGfxProbe("viInitialize", viRc);
         viExit();
+    }
 
-        if (!gfxReady) {
-            // Avoid LibnxError_BadGfxInit (and the vi/omm cascade it caused).
-            failGfxProbe("viCreateLayer", lastRc);
+    {
+        const u64 aruid = appletGetAppletResourceUserId();
+        DebugLog::log("[menu] applet aruid=0x%llx type=%d mode=%d",
+                      (unsigned long long)aruid, (int)appletGetAppletType(),
+                      (int)appletGetOperationMode());
+        if (!aruid) {
+            // libnx only asks AE for a managed display layer when the process
+            // has an applet resource user id. Without one it creates a stray
+            // layer, which stays on the display it was made on and never
+            // follows the console to the TV.
+            u64 layer = 0;
+            const Result layerRc = appletCreateManagedDisplayLayer(&layer);
+            DebugLog::log("[menu] managed layer fallback rc=0x%X layer=0x%llx",
+                          layerRc, (unsigned long long)layer);
+            if (R_SUCCEEDED(layerRc) && layer)
+                ::__nx_vi_layer_id = layer;
         }
     }
 
-    // A library applet's managed layer is left at 1280x720 by libnx, so docked
-    // the UI sat unscaled in the middle of the 1080p output. Open the managed
-    // layer ourselves (its id is needed) and point libnx's default window at it,
-    // then size it to the output, applying the console's TV underscan setting.
-    u64 managedLayerId = 0;
-    if (R_SUCCEEDED(appletCreateManagedDisplayLayer(&managedLayerId)))
-        __nx_vi_layer_id = managedLayerId;
-
     __nx_win_init();
-    DebugLog::log("[menu] __nx_win_init done");
-
-    if (managedLayerId)
-        switchu::menu::initScreenFitLayer(managedLayerId);
+    {
+        u32 winW = 0;
+        u32 winH = 0;
+        nwindowGetDimensions(nwindowGetDefault(), &winW, &winH);
+        DebugLog::log("[menu] __nx_win_init done window=%ux%u", winW, winH);
+    }
 
     svcOutputDebugString("[SwitchU-menu] __appInit done", 29);
 }

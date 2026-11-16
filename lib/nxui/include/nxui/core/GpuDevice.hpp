@@ -47,14 +47,28 @@ struct GpuPool {
 
     DkGpuAddr gpuAddr(uint32_t off = 0) const { return gpuBase + off; }
     void*     cpuAddr(uint32_t off = 0) const { return (uint8_t*)cpuBase + off; }
+
+    void release() {
+        block = nullptr;
+        size = used = 0;
+        cpuBase = nullptr;
+        gpuBase = 0;
+    }
 };
 #endif // NXUI_BACKEND_DEKO3D
 
 class GpuDevice {
 public:
+    // Both handheld and docked present at the same native 1280x720 UI size.
     static constexpr int FB_WIDTH  = 1280;
     static constexpr int FB_HEIGHT = 720;
-    static constexpr int NUM_FB    = 2;
+    // Blur/backdrop targets stay at half the UI resolution.
+    static constexpr int OFFSCREEN_WIDTH  = FB_WIDTH / 2;
+    static constexpr int OFFSCREEN_HEIGHT = FB_HEIGHT / 2;
+    // Three swapchain images. With two, a frame that misses the deadline has
+    // to wait for the next present and the whole UI drops 60 -> 30; a third
+    // buffer absorbs a single late frame instead.
+    static constexpr int NUM_FB    = 3;
 
     static constexpr int MAX_TEXTURES   = 2048;
     static constexpr int MAX_SAMPLERS   = 16;
@@ -94,8 +108,16 @@ public:
                                  int& outW, int& outH,
                                  bool halfRes = true);
 
+    // Logical UI space. Every widget is laid out against 1280x720; the
+    // renderer stretches that space to the framebuffer's presentation size.
     int  width()  const { return FB_WIDTH; }
     int  height() const { return FB_HEIGHT; }
+    int  framebufferWidth()  const { return m_fbWidth; }
+    int  framebufferHeight() const { return m_fbHeight; }
+    // Physical pixels per logical UI pixel. Both modes present at 1.0.
+    float displayScale() const {
+        return static_cast<float>(m_fbWidth) / static_cast<float>(FB_WIDTH);
+    }
 
 #ifdef NXUI_BACKEND_DEKO3D
     // deko3d-specific accessors
@@ -138,21 +160,24 @@ public:
     void resetImagePool();
     dk::UniqueMemBlock allocImageMemory(uint32_t size);
     void freeImageMemory(uint32_t size);
+    // Hand image memory back without waiting for the GPU. It is released a few
+    // frames later, once every frame that could still sample it has been
+    // presented. Destroying a texture must never stall the queue.
+    void retireImageMemory(dk::UniqueMemBlock block, uint32_t size);
 
     // The menu applet reserves a 224 MiB heap. Keep the dynamic image cache
     // well below that process ceiling so CPU-side decodes, audio and Deko's
     // fixed framebuffer/offscreen pools retain comfortable headroom.
     static constexpr uint64_t kDefaultImageBudget = 64u * 1024u * 1024u;
     // Process free-memory cushion before accepting a new image alloc.
-    // Default 2 MiB keeps SwitchU lush; raise temporarily (e.g. Frame Tap
-    // viewer light path) so concurrent sysmodules keep remount headroom.
-    // Light target must stay below typical free-after-reclaim or every
+    // Default 2 MiB keeps SwitchU lush; the Frame Tap headroom handshake
+    // raises it temporarily so concurrent sysmodules keep remount headroom.
+    // The raised target must stay below typical free-after-reclaim or every
     // icon/menu/font alloc is refused and the shell goes empty (soak 2026-10-27).
     static constexpr uint64_t kDefaultAllocationHeadroom = 2ull * 1024ull * 1024ull;
-    // After reclaim+GPU release; clamped to free − UI reserve at enter time.
-    static constexpr uint64_t kFrameTapLightAllocationHeadroom = 16ull * 1024ull * 1024ull;
-    // Always leave this much process free for UI reloads while light.
-    static constexpr uint64_t kFrameTapLightUiReserve = 6ull * 1024ull * 1024ull;
+    // After a Frame Tap headroom reclaim; clamped to free − UI reserve.
+    static constexpr uint64_t kFrameTapReclaimAllocationHeadroom =
+        16ull * 1024ull * 1024ull;
     uint64_t imageMemoryUsed() const { return m_imageMemUsed; }
     uint64_t imageMemoryBudget() const { return kDefaultImageBudget; }
     uint64_t imageMemoryAvailable() const {
@@ -179,8 +204,6 @@ public:
 
     dk::Image&       fbImage(int i)       { return m_fbImages[i]; }
     const dk::Image& fbImage(int i) const { return m_fbImages[i]; }
-    dk::Image&       dsImage()            { return m_dsImage; }
-    const dk::Image& dsImage() const      { return m_dsImage; }
 #else
     // SDL2-specific accessors
     SDL_Renderer* sdlRenderer() const { return m_sdlRenderer; }
@@ -195,17 +218,19 @@ public:
     uint64_t imageMemoryBudget() const { return UINT64_MAX; }
     uint64_t imageMemoryAvailable() const { return UINT64_MAX; }
     static constexpr uint64_t kDefaultAllocationHeadroom = 2ull * 1024ull * 1024ull;
-    static constexpr uint64_t kFrameTapLightAllocationHeadroom = 16ull * 1024ull * 1024ull;
-    static constexpr uint64_t kFrameTapLightUiReserve = 6ull * 1024ull * 1024ull;
+    static constexpr uint64_t kFrameTapReclaimAllocationHeadroom =
+        16ull * 1024ull * 1024ull;
     uint64_t allocationHeadroom() const { return kDefaultAllocationHeadroom; }
     void setAllocationHeadroom(uint64_t) {}
 #endif
 
 private:
+    int  m_fbWidth = FB_WIDTH;
+    int  m_fbHeight = FB_HEIGHT;
 #ifdef NXUI_BACKEND_DEKO3D
-    void createFramebuffers();
-    void createDepthStencil();
+    bool createFramebuffers();
     void createOffscreenTargets();
+    bool rebuildSwapchain();
 
     dk::UniqueDevice    m_dev;
     dk::UniqueQueue     m_queue;
@@ -214,7 +239,6 @@ private:
     dk::UniqueSwapchain m_swapchain;
 
     GpuPool m_fbPool;
-    GpuPool m_dsPool;
     GpuPool m_cmdPool[NUM_FB];
     GpuPool m_uploadCmdPool;
     GpuPool m_codePool;
@@ -223,7 +247,6 @@ private:
     GpuPool m_stagingPool;
 
     dk::Image  m_fbImages[NUM_FB];
-    dk::Image  m_dsImage;
     dk::Image  m_offImages[NUM_OFFSCREEN];
     GpuPool    m_offPool;
     bool       m_offscreenReady = false;
@@ -246,6 +269,14 @@ private:
 
     uint64_t m_imageMemUsed = 0;
     uint64_t m_poolMemUsed  = 0;
+
+    // Image memory handed back while a frame may still be sampling it.
+    struct RetiredImage {
+        dk::UniqueMemBlock block;
+        uint32_t size = 0;
+        int framesLeft = 0;
+    };
+    std::vector<RetiredImage> m_retiredImages;
     uint64_t m_allocationHeadroom = kDefaultAllocationHeadroom;
     static inline LogSink s_logSink = nullptr;
 

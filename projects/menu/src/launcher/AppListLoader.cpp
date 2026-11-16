@@ -174,8 +174,8 @@ void registerEntries(std::vector<PendingApp>& apps,
                      GridModel& model,
                      IconStreamer& streamer) {
     streamer.init((int)apps.size());
-    streamer.setIconDataLoader([](uint64_t titleId) {
-        return AppListLoader::loadIconData(titleId, false);
+    streamer.setIconDataLoaderInto([](uint64_t titleId, std::vector<uint8_t>& out) {
+        return AppListLoader::loadIconDataInto(titleId, false, out);
     });
     for (int i = 0; i < (int)apps.size(); ++i) {
         auto& p = apps[i];
@@ -318,27 +318,47 @@ void AppListLoader::fetchApps(std::vector<PendingApp>& output, bool prefetchIcon
 }
 
 
-std::vector<uint8_t> AppListLoader::loadIconData(uint64_t titleId, bool preferPoster) {
-    std::vector<uint8_t> iconData;
+bool AppListLoader::loadIconDataInto(uint64_t titleId, bool preferPoster,
+                                     std::vector<uint8_t>& iconData) {
+    iconData.clear();
     if (titleId == 0)
-        return iconData;
+        return false;
 
 #ifdef SWITCHU_MENU
     auto readFile = [](const std::string& path, std::vector<uint8_t>& out) -> bool {
-        std::ifstream custom(path, std::ios::binary);
+        std::ifstream custom(path, std::ios::binary | std::ios::ate);
         if (!custom.is_open())
             return false;
-        out.assign(std::istreambuf_iterator<char>(custom),
-                   std::istreambuf_iterator<char>());
-        return !out.empty();
+        const std::streamoff size = custom.tellg();
+        if (size <= 0)
+            return false;
+        custom.seekg(0, std::ios::beg);
+        // Size-first read: one allocation per icon instead of letting the
+        // stream grow a ~128 KB buffer incrementally while scrolling.
+        out.resize(static_cast<std::size_t>(size));
+        if (!custom.read(reinterpret_cast<char*>(out.data()),
+                         static_cast<std::streamsize>(size))) {
+            out.clear();
+            return false;
+        }
+        return true;
     };
-    if (preferPoster && readFile(SteamGridDbManager::posterPath(titleId), iconData))
-        return iconData;
-    if (readFile(SteamGridDbManager::iconPath(titleId), iconData))
-        return iconData;
+    if (preferPoster && SteamGridDbManager::hasPosterCached(titleId) &&
+        readFile(SteamGridDbManager::posterPath(titleId), iconData))
+        return true;
+    if (SteamGridDbManager::hasIconCached(titleId) &&
+        readFile(SteamGridDbManager::iconPath(titleId), iconData))
+        return true;
     iconData = switchu::control_cache::readIcon(titleId);
 #endif
 
+    return !iconData.empty();
+}
+
+
+std::vector<uint8_t> AppListLoader::loadIconData(uint64_t titleId, bool preferPoster) {
+    std::vector<uint8_t> iconData;
+    loadIconDataInto(titleId, preferPoster, iconData);
     return iconData;
 }
 

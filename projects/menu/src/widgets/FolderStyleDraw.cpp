@@ -5,6 +5,10 @@
 #include <nxui/core/Texture.hpp>
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstddef>
+#include <unordered_map>
+#include <vector>
 
 namespace switchu::folders {
 namespace {
@@ -53,6 +57,32 @@ struct FittedTitle {
 
 FittedTitle measureTitle(nxui::Font* font, const std::string& title, float room,
                          float preferredScale, float minScale) {
+    if (!font)
+        return {};
+
+    struct Variant {
+        float room = 0.f;
+        float preferredScale = 0.f;
+        float minScale = 0.f;
+        FittedTitle fit;
+    };
+    // Folder tiles share one font and redraw every frame. The fitted title is a
+    // pure function of font, title and the three layout inputs; cache it.
+    static std::unordered_map<const nxui::Font*,
+                              std::unordered_map<std::string, std::vector<Variant>>> cache;
+    static std::size_t entries = 0;
+
+    auto& byTitle = cache[font];
+    const auto it = byTitle.find(title);
+    if (it != byTitle.end()) {
+        for (const auto& variant : it->second) {
+            if (variant.room == room
+                && variant.preferredScale == preferredScale
+                && variant.minScale == minScale)
+                return variant.fit;
+        }
+    }
+
     FittedTitle out;
     const nxui::Vec2 measured = font->measure(title);
     out.scale = preferredScale;
@@ -61,6 +91,16 @@ FittedTitle measureTitle(nxui::Font* font, const std::string& title, float room,
     out.scale = std::max(minScale, out.scale);
     out.width = measured.x * out.scale;
     out.height = measured.y * out.scale;
+
+    if (entries >= 512) {
+        cache.clear();
+        entries = 0;
+    }
+    auto& variants = cache[font][title];
+    if (variants.size() >= 4)
+        variants.clear();
+    variants.push_back({room, preferredScale, minScale, out});
+    ++entries;
     return out;
 }
 

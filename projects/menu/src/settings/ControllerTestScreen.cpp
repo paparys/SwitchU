@@ -21,7 +21,6 @@ ControllerTestScreen::ControllerTestScreen() {
     setFrameworkTouchEnabled(false);
     setVisible(false);
     setFocusable(true);
-    setLiquidGlassEnabled(false);
     setBlurEnabled(false);
 }
 

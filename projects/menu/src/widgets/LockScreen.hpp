@@ -150,6 +150,9 @@ private:
     nxui::Texture m_heroTex;
     std::vector<std::uint8_t> m_pendingHero;
     bool m_hasHero = false;
+    // Average luma of the hero's upper third, so the ink can follow the picture
+    // instead of assuming every hero wants white text.
+    float m_heroLum = -1.f;
 
     nxui::Texture m_iconTex;
     std::vector<std::uint8_t> m_pendingIcon;

@@ -41,6 +41,10 @@ public:
     using PendingTransform = std::function<void(std::vector<PendingApp>&)>;
     // preferPoster: load SteamGridDB Poster (tall cover) when present, else icon.
     static std::vector<uint8_t> loadIconData(uint64_t titleId, bool preferPoster = false);
+    // Reuses the caller's buffer so streaming a page of icons does not allocate
+    // a fresh ~128 KB vector per tile. Returns true when bytes were produced.
+    static bool loadIconDataInto(uint64_t titleId, bool preferPoster,
+                                 std::vector<uint8_t>& out);
 
     // Streaming path: fetch apps and hand compressed icon data to the streamer.
     void load(GridModel& model, IconStreamer& streamer);

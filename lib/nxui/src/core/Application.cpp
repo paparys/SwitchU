@@ -254,12 +254,66 @@ void Application::dispatchInput() {
 // Main loop
 // ══════════════════════════════════════════════════════════════════════════════
 
+void Application::pumpAppletMessages() {
+    // libnx caches applet state and dispatches it only when applet messages
+    // are processed. This custom loop never called appletMainLoop(), so drain
+    // what is pending here; appletGetMessage() waits with a zero timeout, so
+    // this returns instead of blocking the frame.
+    constexpr u32 kExitRequest = 4;   // AppletMessage_ExitRequest
+    for (int i = 0; i < 32; ++i) {
+        u32 msg = 0;
+        if (R_FAILED(appletGetMessage(&msg)))
+            break;
+        appletProcessMessage(msg);
+        if (msg == kExitRequest) {
+            m_running = false;
+            break;
+        }
+    }
+}
+
+void Application::paceFrame() {
+    // Switch presents at 60 Hz in both modes. Three swapchain images let the
+    // CPU queue up to two frames ahead, so without pacing the ticks alternate
+    // between "no wait" and a double interval: the UI advances one frame, then
+    // two, which reads as judder in a slow scroll even though the average rate
+    // is 60. Sleep off the surplus while ahead; a late frame never sleeps.
+    const uint64_t tickFreq = armGetSystemTickFreq();
+    if (m_frameTicks == 0) {
+        m_frameTicks = tickFreq / 60;
+        m_nextFrameTick = armGetSystemTick();
+    }
+    if (m_frameTicks == 0 || tickFreq == 0)
+        return;
+
+    const uint64_t now = armGetSystemTick();
+    if (m_nextFrameTick > now) {
+        const uint64_t ahead = m_nextFrameTick - now;
+        if (ahead > m_frameTicks / 4) {
+            // Leave a sliver so the sleep never overshoots into the next vsync.
+            const uint64_t sleepTicks = ahead - m_frameTicks / 16;
+            svcSleepThread(sleepTicks * 1000000000ull / tickFreq);
+        }
+    } else if (now - m_nextFrameTick > m_frameTicks * 2) {
+        m_nextFrameTick = now;   // fell behind: drop the backlog
+    }
+    m_nextFrameTick += m_frameTicks;
+}
+
 void Application::run() {
     uint64_t prevTick = armGetSystemTick();
-    float idleSeconds = 0.f;
-    bool skipIdleFrame = false;
+    // Rolling frame cost, logged once per ~2 s. Keeping update and present
+    // separate distinguishes a CPU-bound activity from a GPU-bound frame
+    // without the ImGui overlay, which stalls the queue with waitIdle().
+    const double tickFreq = static_cast<double>(armGetSystemTickFreq());
+    double perfFrameMs = 0.0;
+    double perfUpdateMs = 0.0;
+    float perfWorstMs = 0.f;
+    std::uint32_t perfFrames = 0;
 
     while (m_running) {
+        pumpAppletMessages();
+
         uint64_t nowTick = armGetSystemTick();
         float dt = static_cast<float>(nowTick - prevTick)
                  / static_cast<float>(armGetSystemTickFreq());
@@ -284,16 +338,13 @@ void Application::run() {
         }
 
         m_input.update();
-        if (m_input.hasUserActivity()) {
-            idleSeconds = 0.f;
-            skipIdleFrame = false;
-        } else {
-            idleSeconds += dt;
-        }
         dispatchInput();
 
         if (m_activity) {
+            const uint64_t updateStart = armGetSystemTick();
             m_activity->onUpdate(dt);
+            perfUpdateMs += static_cast<double>(armGetSystemTick() - updateStart)
+                          * 1000.0 / tickFreq;
             if (!applyPendingActivity()) {
                 m_running = false;
                 break;
@@ -301,17 +352,11 @@ void Application::run() {
             m_activity->m_rootBox->update(dt);
 
             if (m_renderEnabled) {
-                // Static menus do not need a full GPU submission at 60 Hz.
-                // Keep input/update responsive, but present every other frame
-                // after the UI has been idle long enough for transitions to
-                // settle. Any new input immediately restores 60 Hz.
-                if (idleSeconds >= 2.f) {
-                    skipIdleFrame = !skipIdleFrame;
-                    if (skipIdleFrame) {
-                        svcSleepThread(16'000'000ULL);
-                        continue;
-                    }
-                }
+                // Present every frame. The old idle throttle skipped every other
+                // frame and slept 16 ms after two seconds without input, putting
+                // a stationary menu on a 30 Hz cadence that also drifted against
+                // vsync. Input latency matters more than the idle submission.
+                const uint64_t frameStart = armGetSystemTick();
                 m_gpu.beginFrame();
                 m_renderer->beginFrame();
                 m_activity->m_rootBox->render(*m_renderer);
@@ -319,11 +364,29 @@ void Application::run() {
                 m_renderer->endFrame();
                 m_gpu.endFrame();
                 m_activity->onAfterPresent(*m_renderer);
+
+                const double frameMs =
+                    static_cast<double>(armGetSystemTick() - frameStart) * 1000.0 / tickFreq;
+                perfFrameMs += frameMs;
+                if (frameMs > perfWorstMs) perfWorstMs = static_cast<float>(frameMs);
+                if (++perfFrames >= 120) {
+                    GpuDevice::logGpu(
+                        "[perf] 120f avg=%.2fms update=%.2fms worst=%.2fms draws=%u verts=%u",
+                        perfFrameMs / perfFrames, perfUpdateMs / perfFrames,
+                        perfWorstMs, m_renderer->drawCallCount(),
+                        m_renderer->vertexCount());
+                    perfFrameMs = 0.0;
+                    perfUpdateMs = 0.0;
+                    perfWorstMs = 0.f;
+                    perfFrames = 0;
+                }
             } else {
                 // Yield CPU while another app owns the foreground.
                 svcSleepThread(100000000LL); // 100 ms
             }
         }
+
+        paceFrame();
     }
 }
 

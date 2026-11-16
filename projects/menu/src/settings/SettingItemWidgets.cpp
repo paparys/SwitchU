@@ -9,6 +9,10 @@
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
+#include "ui/ChromeTokens.hpp"
+#include "ui/TextFit.hpp"
+
+namespace chrome = switchu::ui::chrome;
 
 namespace settings::widgets {
 
@@ -26,29 +30,9 @@ std::string fitCacheKey(nxui::Font* font, const std::string& text, float scale, 
          + "\n" + text;
 }
 
-void popCodepoint(std::string& s) {
-    while (!s.empty()) {
-        const unsigned char c = (unsigned char)s.back();
-        s.pop_back();
-        if ((c & 0xC0) != 0x80)
-            break;
-    }
-}
-
 std::string fitTextToWidthUncached(nxui::Font* font, const std::string& text,
                                    float scale, float maxWidth) {
-    if (font->measure(text).x * scale <= maxWidth)
-        return text;
-
-    constexpr const char* kEllipsis = "...";
-    std::string out = text;
-    while (!out.empty()) {
-        popCodepoint(out); // remove one codepoint at a time
-        std::string candidate = out + kEllipsis;
-        if (font->measure(candidate).x * scale <= maxWidth)
-            return candidate;
-    }
-    return kEllipsis;
+    return switchu::ui::text::ellipsize(font, text, maxWidth, scale);
 }
 
 // Returns a fitted string, using a cache to avoid repeated measurements of the same text.
@@ -138,13 +122,16 @@ public:
 
         m_label = std::make_shared<nxui::Label>(item.label);
         m_label->setMultiline(item.wrapLabel);
-        m_label->setScale(0.94f);
+        m_label->setScale(chrome::kTypeTitle);
         m_label->setHAlign(nxui::Label::HAlign::Left);
         m_label->setVAlign(nxui::Label::VAlign::Top);
         m_left->addChild(m_label);
 
         m_desc = std::make_shared<nxui::Label>(item.description);
-        m_desc->setScale(0.74f);
+        // Start hidden so screens that never enable descriptions never render
+        // it; syncCommon only flips visibility on an actual state change.
+        m_desc->setVisible(false);
+        m_desc->setScale(chrome::kTypeRow);
         m_desc->setHAlign(nxui::Label::HAlign::Left);
         m_desc->setVAlign(nxui::Label::VAlign::Top);
         m_left->addChild(m_desc);
@@ -209,16 +196,24 @@ protected:
         const bool showPreview = m_item.previewFont && !m_item.previewText.empty();
         float previewW = 0.f;
         if (showPreview) {
+            bool previewChanged = m_cachedPreviewWidth < 0.f;
             if (m_item.previewFont != m_cachedPreviewFont) {
                 m_cachedPreviewFont = m_item.previewFont;
                 m_preview->setFont(m_item.previewFont);
+                previewChanged = true;
             }
             if (m_cachedPreviewText != m_item.previewText) {
                 m_cachedPreviewText = m_item.previewText;
                 m_preview->setText(m_cachedPreviewText);
+                previewChanged = true;
             }
-            const nxui::Vec2 psz = m_item.previewFont->measure(m_item.previewText);
-            previewW = std::clamp(psz.x + 8.f, 88.f, 140.f);
+            // Clock-font rows carry a live preview; measuring its sample text on
+            // every frame forced a full font layout per visible row.
+            if (previewChanged) {
+                const nxui::Vec2 psz = m_item.previewFont->measure(m_item.previewText);
+                m_cachedPreviewWidth = std::clamp(psz.x + 8.f, 88.f, 140.f);
+            }
+            previewW = m_cachedPreviewWidth;
         }
 
         float usedTrailing = 0.f;
@@ -243,17 +238,32 @@ protected:
         m_right->setRect(rightRect);
 
         if (m_cachedShowDesc && smallFont()) {
-            const std::string fitted = fitTextToWidth(
-                smallFont(), m_item.description, 0.74f, leftRect.width);
-            if (fitted != m_displayedDescription) {
-                m_displayedDescription = fitted;
-                m_desc->setText(m_displayedDescription);
-                m_descMeasure = m_desc->measureText();
+            // Fitting builds a cache key and measures the string; only redo it
+            // when the description, font or column width actually moves.
+            if (smallFont() != m_cachedFitDescFont
+                || std::abs(m_cachedFitDescWidth - leftRect.width) > 0.25f
+                || m_cachedFitDescSource != m_item.description) {
+                m_cachedFitDescFont = smallFont();
+                m_cachedFitDescWidth = leftRect.width;
+                m_cachedFitDescSource = m_item.description;
+                const std::string fitted = fitTextToWidth(
+                    smallFont(), m_item.description, 0.78f, leftRect.width);
+                if (fitted != m_displayedDescription) {
+                    m_displayedDescription = fitted;
+                    m_desc->setText(m_displayedDescription);
+                    m_descMeasure = m_desc->measureText();
+                }
             }
         }
 
-        if (m_item.wrapLabel)
-            m_labelMeasure = m_label->measureWrappedText(std::max(1.f, leftRect.width));
+        if (m_item.wrapLabel) {
+            const float wrapWidth = std::max(1.f, leftRect.width);
+            if (m_cachedWrapDirty || std::abs(m_cachedWrapWidth - wrapWidth) > 0.25f) {
+                m_cachedWrapDirty = false;
+                m_cachedWrapWidth = wrapWidth;
+                m_labelMeasure = m_label->measureWrappedText(wrapWidth);
+            }
+        }
 
         float totalTextH = m_labelMeasure.y;
         if (m_cachedShowDesc)
@@ -287,11 +297,13 @@ protected:
         nxui::Font* rowSmallFont = smallFont();
         const nxui::Theme* rowTheme = theme();
         const bool isSection = (m_item.type == SettingsScreen::ItemType::Section);
-        const bool showDesc = !m_item.description.empty() && !isSection;
-        const float labelScale = isSection ? 0.82f : 0.94f;
+        const bool showDesc = m_ctx.showDescriptions
+            && !m_item.description.empty() && !isSection;
+        const float labelScale = isSection ? chrome::kTypeSection : chrome::kTypeTitle;
 
         if (rowFont != m_cachedFont) {
             m_cachedFont = rowFont;
+            m_cachedWrapDirty = true;
             if (rowFont)
                 m_label->setFont(rowFont);
             m_labelMeasure = m_label->measureText();
@@ -305,6 +317,7 @@ protected:
 
         if (m_cachedLabelText != m_item.label) {
             m_cachedLabelText = m_item.label;
+            m_cachedWrapDirty = true;
             m_label->setText(m_cachedLabelText);
             m_labelMeasure = m_label->measureText();
         }
@@ -320,6 +333,7 @@ protected:
         }
         if (std::abs(m_cachedLabelScale - labelScale) > 0.001f) {
             m_cachedLabelScale = labelScale;
+            m_cachedWrapDirty = true;
             m_label->setScale(labelScale);
             m_labelMeasure = m_label->measureText();
         }
@@ -374,6 +388,12 @@ private:
     bool m_cachedEnabled = true;
     nxui::Vec2 m_labelMeasure = {0.f, 0.f};
     nxui::Vec2 m_descMeasure = {0.f, 0.f};
+    float m_cachedPreviewWidth = -1.f;
+    nxui::Font* m_cachedFitDescFont = nullptr;
+    float m_cachedFitDescWidth = -1.f;
+    std::string m_cachedFitDescSource;
+    float m_cachedWrapWidth = -1.f;
+    bool m_cachedWrapDirty = true;
 };
 
 class SectionRowWidget final : public SettingRowBase {
@@ -390,7 +410,7 @@ public:
     InfoRowWidget(SettingsScreen::SettingItem& item, const SettingWidgetContext& ctx)
         : SettingRowBase(item, ctx) {
         m_value = std::make_shared<nxui::Label>(item.infoText);
-        m_value->setScale(0.84f);
+        m_value->setScale(chrome::kTypeRow);
         m_value->setHAlign(nxui::Label::HAlign::Right);
         m_value->setVAlign(nxui::Label::VAlign::Center);
         m_right->addChild(m_value);
@@ -398,7 +418,7 @@ public:
 protected:
     float preferredRightWidth(float rowWidth) const override {
         if (m_item.infoText.empty()) return 0.f;
-        return std::max(120.f, rowWidth * 0.42f);
+        return std::clamp(rowWidth * 0.34f, 190.f, 280.f);
     }
 
     void syncRight(const nxui::Rect& rightRect) override {
@@ -414,10 +434,20 @@ protected:
             m_cachedValueTheme = rowTheme;
             m_value->setTextColor(rowTheme->textSecondary);
         }
-        std::string fitted = fitTextToWidth(rowSmallFont, m_item.infoText, 0.84f, rightRect.width);
-        if (m_cachedValueText != fitted) {
-            m_cachedValueText = fitted;
-            m_value->setText(m_cachedValueText);
+        // Fitting shapes text and builds a cache key; only redo it when the
+        // value, the font or the column width actually changes.
+        if (rowSmallFont != m_cachedFitFont
+            || std::abs(m_cachedFitWidth - rightRect.width) > 0.25f
+            || m_cachedFitSource != m_item.infoText) {
+            m_cachedFitFont = rowSmallFont;
+            m_cachedFitWidth = rightRect.width;
+            m_cachedFitSource = m_item.infoText;
+            const std::string fitted = fitTextToWidth(
+                rowSmallFont, m_item.infoText, chrome::kTypeRow, rightRect.width);
+            if (m_cachedValueText != fitted) {
+                m_cachedValueText = fitted;
+                m_value->setText(m_cachedValueText);
+            }
         }
         m_value->setOpacity(opacity());
         m_value->setRect(rightRect);
@@ -427,6 +457,9 @@ private:
     nxui::Font* m_cachedValueFont = nullptr;
     const nxui::Theme* m_cachedValueTheme = nullptr;
     std::string m_cachedValueText;
+    nxui::Font* m_cachedFitFont = nullptr;
+    float m_cachedFitWidth = -1.f;
+    std::string m_cachedFitSource;
 };
 
 class ToggleRowWidget final : public SettingRowBase {
@@ -438,12 +471,12 @@ public:
         m_track->setPadding(4.f);
         m_track->setAlignItems(nxui::AlignItems::CENTER);
         m_track->setJustifyContent(nxui::JustifyContent::FLEX_START);
-        m_track->setCornerRadius(16.f);
+        m_track->setCornerRadius(chrome::kRadiusPill);
         m_track->setBorderWidth(0.f);
 
         m_knob = std::make_shared<nxui::GlassBox>();
         m_knob->setSize(24.f, 24.f);
-        m_knob->setCornerRadius(12.f);
+        m_knob->setCornerRadius(chrome::kRadiusPill);
         m_knob->setBorderWidth(0.f);
 
         m_track->addChild(m_knob);
@@ -451,7 +484,7 @@ public:
     }
 protected:
     float preferredRightWidth(float rowWidth) const override {
-        return std::max(120.f, rowWidth * 0.42f);
+        return std::clamp(rowWidth * 0.34f, 190.f, 280.f);
     }
 
     void syncRight(const nxui::Rect& rightRect) override {
@@ -459,8 +492,12 @@ protected:
 
         float t = std::clamp(m_item.anim01, 0.f, 1.f);
         if (rowTheme) {
-            nxui::Color offC = nxui::Color(0.45f, 0.45f, 0.5f, 1.f);
-            nxui::Color onC = nxui::Color(0.2f, 0.8f, 0.4f, 1.f);
+            // Follow the theme accent instead of a hardcoded green so the
+            // toggle matches the sliders, focus ring and tab accent.
+            nxui::Color offC = nxui::Color::lerp(rowTheme->panelBase,
+                                                 rowTheme->textSecondary,
+                                                 chrome::kControlOffMix);
+            nxui::Color onC = rowTheme->cursorNormal;
             nxui::Color bg = nxui::Color(
                 offC.r + (onC.r - offC.r) * t,
                 offC.g + (onC.g - offC.g) * t,
@@ -500,11 +537,11 @@ public:
         m_track->setJustifyContent(nxui::JustifyContent::FLEX_START);
         m_track->setGap(0.f);
         m_track->setPadding(0.f);
-        m_track->setCornerRadius(6.f);
+        m_track->setCornerRadius(chrome::kRadiusIndicator);
         m_track->setBorderWidth(0.f);
 
         m_fill = std::make_shared<nxui::GlassBox>();
-        m_fill->setCornerRadius(4.f);
+        m_fill->setCornerRadius(chrome::kRadiusIndicator);
         m_fill->setBorderWidth(0.f);
         m_track->addChild(m_fill);
 
@@ -515,7 +552,7 @@ public:
         m_track->addChild(m_knob);
 
         m_pct = std::make_shared<nxui::Label>("0%");
-        m_pct->setScale(0.84f);
+        m_pct->setScale(chrome::kTypeRow);
         m_pct->setHAlign(nxui::Label::HAlign::Right);
         m_pct->setVAlign(nxui::Label::VAlign::Center);
         m_pct->setMarginLeft(10.f);
@@ -526,7 +563,7 @@ public:
 
 protected:
     float preferredRightWidth(float rowWidth) const override {
-        return std::max(170.f, rowWidth * 0.42f);
+        return std::clamp(rowWidth * 0.34f, 190.f, 280.f);
     }
 
     void syncRight(const nxui::Rect& rightRect) override {
@@ -553,27 +590,38 @@ protected:
         };
 
         if (rowTheme) {
-            m_track->setBaseColor(nxui::Color(0.3f, 0.3f, 0.35f, 0.5f * opacity()));
-            m_fill->setBaseColor(rowTheme->cursorNormal.withAlpha(0.9f * opacity()));
+            m_track->setBaseColor(nxui::Color::lerp(
+                rowTheme->panelBase, rowTheme->textSecondary,
+                chrome::kControlTrackMix).withAlpha(
+                    chrome::kControlTrackAlpha * opacity()));
+            m_fill->setBaseColor(rowTheme->cursorNormal.withAlpha(
+                chrome::kControlFillAlpha * opacity()));
             m_knob->setBaseColor(nxui::Color(1.f, 1.f, 1.f, opacity()));
             m_pct->setTextColor(rowTheme->textPrimary);
         }
 
-        int pct = (int)std::round(t * 100.f);
-        std::string pctText;
-        if (!m_item.infoText.empty()) {
-            pctText = m_item.infoText;
-        } else if (m_item.valueSpan != 0) {
-            const int value = m_item.valueBase
-                + static_cast<int>(std::lround(t * static_cast<float>(m_item.valueSpan)));
-            pctText = (m_item.valueSigned && value > 0 ? "+" : "")
-                + std::to_string(value) + m_item.valueSuffix;
-        } else {
-            pctText = std::to_string(pct) + "%";
-        }
-        if (pctText != m_cachedPctText) {
-            m_cachedPctText = pctText;
-            m_pct->setText(m_cachedPctText);
+        // std::to_string allocates; rebuilding the label every frame for every
+        // visible slider was pure garbage once the value had settled.
+        if (std::abs(t - m_cachedSliderT) > 0.0005f
+            || m_cachedInfoText != m_item.infoText) {
+            m_cachedSliderT = t;
+            m_cachedInfoText = m_item.infoText;
+            const int pct = (int)std::round(t * 100.f);
+            std::string pctText;
+            if (!m_item.infoText.empty()) {
+                pctText = m_item.infoText;
+            } else if (m_item.valueSpan != 0) {
+                const int value = m_item.valueBase
+                    + static_cast<int>(std::lround(t * static_cast<float>(m_item.valueSpan)));
+                pctText = (m_item.valueSigned && value > 0 ? "+" : "")
+                    + std::to_string(value) + m_item.valueSuffix;
+            } else {
+                pctText = std::to_string(pct) + "%";
+            }
+            if (pctText != m_cachedPctText) {
+                m_cachedPctText = pctText;
+                m_pct->setText(m_cachedPctText);
+            }
         }
         if (rowSmallFont != m_cachedPctFont) {
             m_cachedPctFont = rowSmallFont;
@@ -605,6 +653,8 @@ private:
     std::shared_ptr<nxui::Label> m_pct;
     nxui::Font* m_cachedPctFont = nullptr;
     std::string m_cachedPctText;
+    float m_cachedSliderT = -1.f;
+    std::string m_cachedInfoText;
 };
 
 class ProgressRowWidget final : public SettingRowBase {
@@ -619,16 +669,16 @@ public:
         m_track->setJustifyContent(nxui::JustifyContent::FLEX_START);
         m_track->setGap(0.f);
         m_track->setPadding(0.f);
-        m_track->setCornerRadius(6.f);
+        m_track->setCornerRadius(chrome::kRadiusIndicator);
         m_track->setBorderWidth(0.f);
 
         m_fill = std::make_shared<nxui::GlassBox>();
-        m_fill->setCornerRadius(4.f);
+        m_fill->setCornerRadius(chrome::kRadiusIndicator);
         m_fill->setBorderWidth(0.f);
         m_track->addChild(m_fill);
 
         m_pct = std::make_shared<nxui::Label>("0%");
-        m_pct->setScale(0.78f);
+        m_pct->setScale(chrome::kTypeRow);
         m_pct->setHAlign(nxui::Label::HAlign::Right);
         m_pct->setVAlign(nxui::Label::VAlign::Center);
         m_pct->setMarginLeft(10.f);
@@ -639,7 +689,7 @@ public:
     }
 protected:
     float preferredRightWidth(float rowWidth) const override {
-        return std::max(170.f, rowWidth * 0.42f);
+        return std::clamp(rowWidth * 0.34f, 190.f, 280.f);
     }
 
     void syncRight(const nxui::Rect& rightRect) override {
@@ -680,16 +730,23 @@ protected:
         };
 
         if (rowTheme) {
-            m_track->setBaseColor(nxui::Color(0.3f, 0.3f, 0.35f, 0.5f * opacity()));
-            m_fill->setBaseColor(rowTheme->cursorNormal.withAlpha(0.9f * opacity()));
+            m_track->setBaseColor(nxui::Color::lerp(
+                rowTheme->panelBase, rowTheme->textSecondary,
+                chrome::kControlTrackMix).withAlpha(
+                    chrome::kControlTrackAlpha * opacity()));
+            m_fill->setBaseColor(rowTheme->cursorNormal.withAlpha(
+                chrome::kControlFillAlpha * opacity()));
             m_pct->setTextColor(rowTheme->textPrimary);
         }
 
-        int pct = (int)std::round(t * 100.f);
-        std::string pctText = std::to_string(pct) + "%";
-        if (pctText != m_cachedPctText) {
-            m_cachedPctText = pctText;
-            m_pct->setText(m_cachedPctText);
+        if (std::abs(t - m_cachedProgressT) > 0.0005f) {
+            m_cachedProgressT = t;
+            const int pct = (int)std::round(t * 100.f);
+            std::string pctText = std::to_string(pct) + "%";
+            if (pctText != m_cachedPctText) {
+                m_cachedPctText = pctText;
+                m_pct->setText(m_cachedPctText);
+            }
         }
         if (rowSmallFont != m_cachedPctFont) {
             m_cachedPctFont = rowSmallFont;
@@ -710,6 +767,7 @@ private:
     std::shared_ptr<nxui::Label> m_pct;
     nxui::Font* m_cachedPctFont = nullptr;
     std::string m_cachedPctText;
+    float m_cachedProgressT = -1.f;
 };
 
 class SelectorRowWidget final : public SettingRowBase {
@@ -720,10 +778,10 @@ public:
         m_pill->setPadding(8.f, 12.f, 8.f, 12.f);
         m_pill->setAlignItems(nxui::AlignItems::CENTER);
         m_pill->setJustifyContent(nxui::JustifyContent::SPACE_BETWEEN);
-        m_pill->setCornerRadius(11.f);
+        m_pill->setCornerRadius(chrome::kRadiusControl);
 
         m_value = std::make_shared<nxui::Label>("");
-        m_value->setScale(0.82f);
+        m_value->setScale(chrome::kTypeRow);
         m_value->setGrow(1.f);
         m_value->setHAlign(nxui::Label::HAlign::Left);
         m_value->setVAlign(nxui::Label::VAlign::Center);
@@ -731,7 +789,7 @@ public:
         // Colour chip shown when the row carries swatches. Lives inside the
         // pill so it reads as part of the value, not a separate control.
         m_swatch = std::make_shared<nxui::GlassBox>();
-        m_swatch->setCornerRadius(7.f);
+        m_swatch->setCornerRadius(chrome::nested(chrome::kRadiusControl, 2.f));
         m_swatch->setBorderWidth(1.f);
         m_swatch->setVisible(false);
         m_pill->addChild(m_swatch);
@@ -740,7 +798,7 @@ public:
     }
 protected:
     float preferredRightWidth(float rowWidth) const override {
-        return std::max(170.f, rowWidth * 0.38f);
+        return std::clamp(rowWidth * 0.34f, 190.f, 280.f);
     }
 
     void syncRight(const nxui::Rect& rightRect) override {
@@ -757,10 +815,17 @@ protected:
             h
         };
 
-        std::string text = m_item.options.empty() ? std::string() : m_item.options[idx];
-        text = fitTextToWidth(rowSmallFont, text, 0.82f, std::max(0.f, pillRect.width - 24.f));
-        if (text != m_cachedValueText) {
-            m_cachedValueText = text;
+        static const std::string kEmptyOption;
+        const std::string& sourceText = m_item.options.empty()
+            ? kEmptyOption : m_item.options[idx];
+        const float fitWidth = std::max(0.f, pillRect.width - 24.f);
+        if (rowSmallFont != m_cachedFitFont
+            || std::abs(m_cachedFitWidth - fitWidth) > 0.25f
+            || m_cachedFitSource != sourceText) {
+            m_cachedFitFont = rowSmallFont;
+            m_cachedFitWidth = fitWidth;
+            m_cachedFitSource = sourceText;
+            m_cachedValueText = fitTextToWidth(rowSmallFont, sourceText, chrome::kTypeRow, fitWidth);
             m_value->setText(m_cachedValueText);
         }
         if (rowSmallFont != m_cachedFont) {
@@ -802,6 +867,9 @@ private:
     std::shared_ptr<nxui::Label> m_value;
     nxui::Font* m_cachedFont = nullptr;
     std::string m_cachedValueText;
+    nxui::Font* m_cachedFitFont = nullptr;
+    float m_cachedFitWidth = -1.f;
+    std::string m_cachedFitSource;
 };
 
 class ActionRowWidget final : public SettingRowBase {
@@ -809,9 +877,9 @@ public:
     ActionRowWidget(SettingsScreen::SettingItem& item, const SettingWidgetContext& ctx)
         : SettingRowBase(item, ctx) {
         m_secondaryBtn = std::make_shared<ActionButton>();
-        m_secondaryBtn->setCornerRadius(9.f);
+        m_secondaryBtn->setCornerRadius(chrome::kRadiusControl);
         m_secondaryLabel = std::make_shared<nxui::Label>(item.secondaryButtonLabel);
-        m_secondaryLabel->setScale(0.90f);
+        m_secondaryLabel->setScale(chrome::kTypeTitle);
         m_secondaryLabel->setHAlign(nxui::Label::HAlign::Center);
         m_secondaryLabel->setVAlign(nxui::Label::VAlign::Center);
         m_secondaryLabel->setGrow(1.f);
@@ -819,9 +887,9 @@ public:
         m_right->addChild(m_secondaryBtn);
 
         m_btn = std::make_shared<ActionButton>();
-        m_btn->setCornerRadius(9.f);
+        m_btn->setCornerRadius(chrome::kRadiusControl);
         m_btnLabel = std::make_shared<nxui::Label>(item.effectiveButtonLabel());
-        m_btnLabel->setScale(0.84f);
+        m_btnLabel->setScale(chrome::kTypeRow);
         m_btnLabel->setHAlign(nxui::Label::HAlign::Center);
         m_btnLabel->setVAlign(nxui::Label::VAlign::Center);
         m_btnLabel->setGrow(1.f);

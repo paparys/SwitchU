@@ -99,6 +99,13 @@ ThemeShopScreen::Tab themeshop::tabs::LockScreenTab::build(ThemeShopScreen& scre
 
     {
         SettingItem it;
+        it.label = i18n.tr("themeshop.lock.section_lock", "Lock screen");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("themeshop.options.lock_screen", "Lock Screen");
         it.description = i18n.tr(
             "themeshop.options.lock_screen_desc",
@@ -110,6 +117,13 @@ ThemeShopScreen::Tab themeshop::tabs::LockScreenTab::build(ThemeShopScreen& scre
             screen.m_lockScreenEnabled = self.boolVal;
             if (screen.m_lockScreenCb) screen.m_lockScreenCb(self.boolVal);
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("themeshop.lock.section_clock", "Clock");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
@@ -154,6 +168,13 @@ ThemeShopScreen::Tab themeshop::tabs::LockScreenTab::build(ThemeShopScreen& scre
 
     {
         SettingItem it;
+        it.label = i18n.tr("themeshop.lock.section_transition", "Transition");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("themeshop.options.lock_transition", "Lock Transition");
         it.description = i18n.tr(
             "themeshop.options.lock_transition_desc",
@@ -180,16 +201,17 @@ ThemeShopScreen::Tab themeshop::tabs::LockScreenTab::build(ThemeShopScreen& scre
         t.items.push_back(std::move(it));
     }
 
+    // Section headers sit at 0 (Lock screen), 2 (Clock) and 5 (Transition).
     t.onUpdate = [&screen](Tab& tab, TabbedOverlayScreen&) {
-        if (tab.items.size() < 5)
+        if (tab.items.size() < 8)
             return;
-        tab.items[0].boolVal = screen.m_lockScreenEnabled;
-        tab.items[0].anim01 = screen.m_lockScreenEnabled ? 1.f : 0.f;
-        syncClockFontSelector(screen, tab.items[1]);
-        tab.items[2].boolVal = screen.m_themeLockClockFontOverride;
-        tab.items[2].anim01 = screen.m_themeLockClockFontOverride ? 1.f : 0.f;
-        tab.items[3].intVal = std::clamp(screen.m_lockScreenTransition, 0, 3);
-        LockScreenTab::syncTransitionCompanion(screen, tab.items[4]);
+        tab.items[1].boolVal = screen.m_lockScreenEnabled;
+        tab.items[1].anim01 = screen.m_lockScreenEnabled ? 1.f : 0.f;
+        syncClockFontSelector(screen, tab.items[3]);
+        tab.items[4].boolVal = screen.m_themeLockClockFontOverride;
+        tab.items[4].anim01 = screen.m_themeLockClockFontOverride ? 1.f : 0.f;
+        tab.items[6].intVal = std::clamp(screen.m_lockScreenTransition, 0, 3);
+        LockScreenTab::syncTransitionCompanion(screen, tab.items[7]);
     };
 
     return t;

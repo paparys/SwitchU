@@ -1,4 +1,8 @@
 #include "QuickSettingsOverlay.hpp"
+#include "../ui/ChromeTokens.hpp"
+#include "../ui/DrawChrome.hpp"
+#include "../ui/FocusHighlight.hpp"
+#include "../ui/TextFit.hpp"
 #include "core/DebugLog.hpp"
 
 #include <nxui/core/Renderer.hpp>
@@ -86,11 +90,11 @@ static Result setAirplaneModeSetting(bool enableAirplaneMode) {
 #endif
 
 static constexpr float kPanelWidth  = 440.f;
-static constexpr float kPanelHeight = 652.f;
+static constexpr float kPanelHeight = 598.f;
 static constexpr float kPanelTop    = 16.f;
 static constexpr float kPanelMarginRight = 20.f;
 static constexpr float kPlaylistWidth = 300.f;
-static constexpr float kAnimDuration = 0.25f;
+static constexpr float kAnimDuration = switchu::ui::chrome::kDurPanel;
 
 // Uniform vertical rhythm: title breath, then the same gap between every widget.
 static constexpr float kTitleY = 14.f;
@@ -102,7 +106,7 @@ static constexpr float kSliderItemH = 54.f;
 static constexpr float kToggleH = 44.f;
 static constexpr float kPowerBtnH = 52.f;
 static constexpr float kPowerBtnGap = 8.f;
-static constexpr float kPowerTextScale = 0.84f;
+static constexpr float kPowerTextScale = switchu::ui::chrome::kTypeTitle;
 static constexpr float kPowerIconScale = 0.96f;
 static constexpr float kPowerMoonScale = 1.18f;
 static constexpr float kPowerIconGap = 7.f;
@@ -111,17 +115,15 @@ static constexpr float kPlaylistRowH = 40.f;
 static constexpr float kPlaylistThumbSize = 28.f;
 static constexpr float kPlaylistThumbGap = 8.f;
 static constexpr float kSliderTrackH = 14.f;
-static constexpr float kSliderLabelScale = 0.82f;
+static constexpr float kSliderLabelScale = switchu::ui::chrome::kTypeRow;
 // Player now-playing strip: a step up from playlist thumbs (28). Card height is
 // tuned so padding under the power row equals kWidgetGap.
 static constexpr float kMusicNowPlayingThumbSize = 36.f;
 static constexpr float kMusicNowPlayingThumbGap = 10.f;
 
 static constexpr float kStatusY = kTitleY + kTitleLineH + kTitleBreath;
-// Battery Saver sits under battery/thermals; Airplane + Wi-Fi share one row
-// so panel height stays even after the extra widget.
-static constexpr float kBatterySaverY = kStatusY + kStatusH + kWidgetGap;
-static constexpr float kMusicY = kBatterySaverY + kToggleH + kWidgetGap;
+// Status sits above the player; Airplane + Wi-Fi share one row.
+static constexpr float kMusicY = kStatusY + kStatusH + kWidgetGap;
 static constexpr float kMusicNowPlayingPadY = 5.f;
 static constexpr float kMusicNowPlayingH = 44.f;
 static constexpr float kMusicControlsY = kMusicNowPlayingPadY + kMusicNowPlayingH + 5.f;
@@ -143,7 +145,7 @@ static constexpr float kPowerBtnY = kNetRowY + kToggleH + kWidgetGap;
 static constexpr float kCoverFsCardW = 560.f;
 static constexpr float kCoverFsCardH = 168.f;
 static constexpr float kCoverFsCardBottomPad = 36.f;
-static constexpr float kCoverFsTitleScale = 1.22f;
+static constexpr float kCoverFsTitleScale = switchu::ui::chrome::kTypeHeader;
 static constexpr float kCoverFsControlsY = 46.f;
 static constexpr float kCoverFsControlsH = 48.f;
 static constexpr float kCoverFsProgressLabelY = 108.f;
@@ -209,38 +211,6 @@ static void drawWifiIcon(nxui::Renderer& ren, nxui::Vec2 center, const nxui::Col
     }
 }
 
-// Classic leaf silhouette (Battery Saver) — filled almond + midrib, sized like Wi-Fi.
-static void drawLeafIcon(nxui::Renderer& ren, nxui::Vec2 center, const nxui::Color& color, float scale = 1.0f) {
-    constexpr float kPi = 3.14159265358979323846f;
-    const float s = scale;
-    const float tipY = center.y - 11.5f * s;
-    const float baseY = center.y + 9.0f * s;
-    const float maxW = 8.5f * s;
-
-    // Filled leaf body via horizontal spans (reads clearly at QS toggle size).
-    const int y0 = static_cast<int>(std::floor(tipY));
-    const int y1 = static_cast<int>(std::ceil(baseY));
-    for (int yi = y0; yi <= y1; ++yi) {
-        const float y = static_cast<float>(yi);
-        const float t = std::clamp((y - tipY) / std::max(1.f, baseY - tipY), 0.f, 1.f);
-        const float w = std::sin(t * kPi) * maxW;
-        if (w < 0.6f * s) continue;
-        ren.drawLine({center.x - w, y}, {center.x + w, y}, color, 1.15f * s);
-    }
-
-    // Midrib + short side veins.
-    ren.drawLine({center.x, tipY + 1.5f * s}, {center.x, baseY - 1.0f * s},
-                 color.withAlpha(color.a * 0.55f), 1.4f * s);
-    for (float t : {0.32f, 0.50f, 0.68f}) {
-        const float y = tipY + (baseY - tipY) * t;
-        const float w = std::sin(t * kPi) * maxW * 0.72f;
-        ren.drawLine({center.x, y}, {center.x - w, y + 2.2f * s},
-                     color.withAlpha(color.a * 0.7f), 1.15f * s);
-        ren.drawLine({center.x, y}, {center.x + w, y + 2.2f * s},
-                     color.withAlpha(color.a * 0.7f), 1.15f * s);
-    }
-}
-
 // Compact airplane mark — same visual weight as drawWifiIcon at equal scale.
 static void drawAirplaneIcon(nxui::Renderer& ren, nxui::Vec2 center, const nxui::Color& color, float scale = 1.0f) {
     const float s = scale;
@@ -287,13 +257,7 @@ static void drawMoonIcon(nxui::Renderer& ren, nxui::Vec2 center, const nxui::Col
 }
 
 static std::string ellipsize(nxui::Font* font, const std::string& text, float maxWidth, float scale) {
-    if (!font || text.empty()) return text;
-    if (font->measure(text).x * scale <= maxWidth) return text;
-    const std::string ellipsis = "...";
-    std::string out = text;
-    while (!out.empty() && font->measure(out + ellipsis).x * scale > maxWidth)
-        out.pop_back();
-    return out + ellipsis;
+    return switchu::ui::text::ellipsize(font, text, maxWidth, scale);
 }
 
 static void drawFilledTriangle(nxui::Renderer& ren,
@@ -320,6 +284,90 @@ static void drawArcStroke(nxui::Renderer& ren, nxui::Vec2 center, float radius,
         if (i > 0)
             ren.drawLine(prev, pt, color, thickness);
         prev = pt;
+    }
+}
+
+static void drawIconPlate(nxui::Renderer& ren, const nxui::Rect& r,
+                          const nxui::Color& tint, float alpha) {
+    ren.drawRoundedRect(r, tint.withAlpha(0.13f * alpha),
+                        switchu::ui::chrome::kRadiusKeycap);
+    ren.drawRoundedRectOutline(r, tint.withAlpha(0.22f * alpha),
+                               switchu::ui::chrome::kRadiusKeycap, 1.f);
+}
+
+static void drawSpeakerGlyph(nxui::Renderer& ren, nxui::Vec2 center,
+                             const nxui::Color& color, float scale) {
+    const float s = scale;
+    const float x = center.x - 8.f * s;
+    ren.drawRoundedRect({x, center.y - 3.4f * s, 4.6f * s, 6.8f * s}, color, 1.2f * s);
+    drawFilledTriangle(ren,
+        {x + 4.2f * s, center.y - 3.4f * s},
+        {x + 8.4f * s, center.y - 8.f * s},
+        {x + 8.4f * s, center.y + 8.f * s}, color);
+    drawArcStroke(ren, {x + 8.2f * s, center.y}, 3.6f * s, -52.f, 52.f,
+                  color, 1.5f * s, 9);
+    drawArcStroke(ren, {x + 8.2f * s, center.y}, 6.2f * s, -52.f, 52.f,
+                  color, 1.5f * s, 11);
+}
+
+static void drawNoteGlyph(nxui::Renderer& ren, nxui::Vec2 center,
+                          const nxui::Color& color, float scale) {
+    const float s = scale;
+    const nxui::Vec2 stemA = {center.x - 1.5f * s, center.y + 3.5f * s};
+    const nxui::Vec2 stemB = {center.x + 5.5f * s, center.y + 2.0f * s};
+    ren.drawLine({stemA.x, center.y - 7.5f * s}, stemA, color, 1.8f * s);
+    ren.drawLine({stemB.x, center.y - 9.0f * s}, stemB, color, 1.8f * s);
+    ren.drawLine({stemA.x, center.y - 7.5f * s},
+                 {stemB.x, center.y - 9.0f * s}, color, 2.2f * s);
+    ren.drawCircle({stemA.x - 2.6f * s, stemA.y + 1.2f * s}, 3.1f * s, color);
+    ren.drawCircle({stemB.x - 2.6f * s, stemB.y + 1.2f * s}, 3.1f * s, color);
+}
+
+static void drawSunGlyph(nxui::Renderer& ren, nxui::Vec2 center,
+                         const nxui::Color& color, float scale) {
+    const float s = scale;
+    ren.drawCircle(center, 3.4f * s, color);
+    for (int i = 0; i < 8; ++i) {
+        const float a = static_cast<float>(i) * 0.78539816339f;
+        const nxui::Vec2 inner = {center.x + std::cos(a) * 6.2f * s,
+                                  center.y + std::sin(a) * 6.2f * s};
+        const nxui::Vec2 outer = {center.x + std::cos(a) * 9.2f * s,
+                                  center.y + std::sin(a) * 9.2f * s};
+        ren.drawLine(inner, outer, color, 1.6f * s);
+    }
+}
+
+static void drawBatteryGlyph(nxui::Renderer& ren, nxui::Vec2 center,
+                             const nxui::Color& color, float percent, float scale) {
+    const float s = scale;
+    const nxui::Rect body = {center.x - 9.f * s, center.y - 5.f * s, 17.f * s, 10.f * s};
+    ren.drawRoundedRectOutline(body, color, 2.5f * s, 1.4f * s);
+    ren.drawRoundedRect({body.right() + 0.8f * s, center.y - 2.4f * s,
+                         2.2f * s, 4.8f * s}, color, 1.1f * s);
+    const float fillW = std::max(0.f, (body.width - 4.f * s) *
+        std::clamp(percent, 0.f, 1.f));
+    if (fillW > 0.5f)
+        ren.drawRoundedRect({body.x + 2.f * s, body.y + 2.f * s,
+                             fillW, body.height - 4.f * s}, color, 1.2f * s);
+}
+
+static void drawThermoGlyph(nxui::Renderer& ren, nxui::Vec2 center,
+                            const nxui::Color& color, float scale) {
+    const float s = scale;
+    ren.drawRoundedRect({center.x - 1.6f * s, center.y - 8.f * s,
+                         3.2f * s, 11.f * s}, color.withAlpha(0.45f * color.a), 1.6f * s);
+    ren.drawCircle({center.x, center.y + 4.3f * s}, 3.2f * s, color);
+    ren.drawRoundedRect({center.x - 1.1f * s, center.y - 1.5f * s,
+                         2.2f * s, 6.2f * s}, color, 1.1f * s);
+}
+
+static void drawEqualizer(nxui::Renderer& ren, nxui::Vec2 anchor,
+                          const nxui::Color& color, float time) {
+    for (int i = 0; i < 3; ++i) {
+        const float h = 4.f + 5.f * (0.5f + 0.5f *
+            std::sin(time * 5.5f + static_cast<float>(i) * 1.4f));
+        ren.drawRoundedRect({anchor.x + static_cast<float>(i) * 4.f,
+                             anchor.y - h * 0.5f, 2.4f, h}, color, 1.2f);
     }
 }
 
@@ -446,7 +494,6 @@ void QuickSettingsOverlay::invalidateMusicControlIcons() {
     m_iconRepeat = nxui::Texture();
     m_iconShuffle = nxui::Texture();
     m_iconPlaylist = nxui::Texture();
-    m_iconLeaf = nxui::Texture();
     m_iconAirplane = nxui::Texture();
 }
 
@@ -492,18 +539,14 @@ void QuickSettingsOverlay::ensureToggleIcons(nxui::Renderer& ren) {
         tex.loadFromFile(ren.gpu(), ren,
                          std::string("sdmc:/switch/SwitchU/icons/default/") + file, 128);
     };
-    load(m_iconLeaf, "leaf.png");
     load(m_iconAirplane, "airplane.png");
 }
 
 bool QuickSettingsOverlay::drawToggleGlyph(nxui::Renderer& ren, ItemIndex idx,
                                            nxui::Vec2 center, const nxui::Color& color,
                                            float edge) const {
-    const nxui::Texture* tex = nullptr;
-    if (idx == ItemIndex::BatterySaver)
-        tex = m_iconLeaf.valid() ? &m_iconLeaf : nullptr;
-    else if (idx == ItemIndex::AirplaneMode)
-        tex = m_iconAirplane.valid() ? &m_iconAirplane : nullptr;
+    const nxui::Texture* tex = idx == ItemIndex::AirplaneMode && m_iconAirplane.valid()
+        ? &m_iconAirplane : nullptr;
     if (!tex)
         return false;
     ren.drawTexture(tex,
@@ -552,7 +595,7 @@ void QuickSettingsOverlay::drawMusicControlIcon(nxui::Renderer& ren,
     if (control == MusicControl::Repeat && music.repeat == MusicRepeatMode::One && m_smallFont) {
         const char* one = "1";
         const float scale = 0.78f;
-        nxui::Vec2 sz = m_smallFont->measure(one);
+        nxui::Vec2 sz = cachedTextSize(m_smallFont, one);
         const float tw = sz.x * scale;
         const float th = sz.y * scale;
         ren.drawText(one,
@@ -569,7 +612,7 @@ QuickSettingsOverlay::QuickSettingsOverlay() {
     setFocusable(true);
     setFrameworkTouchEnabled(false);
 
-    m_cursor.setBorderWidth(2.6f);
+    m_cursor.setBorderWidth(switchu::ui::chrome::kFocusRingWidth);
     m_cursor.setColor(nxui::Color(0.12f, 0.76f, 0.98f, 1.f));
 
     setupNavigationActions();
@@ -1193,7 +1236,7 @@ void QuickSettingsOverlay::updatePlaylistMarquee(float dt) {
         + kPlaylistThumbSize + kPlaylistThumbGap
         + (row.indented ? kPlaylistTreeIndent : 0.f) + 10.f;
     const float maxW = activePlaylistListRect().width - gutter;
-    const float textW = m_smallFont->measure(row.label).x * textScale;
+    const float textW = cachedTextSize(m_smallFont, row.label).x * textScale;
     if (textW <= maxW + 1.f) {
         m_playlistMarqueeOffset = 0.f;
         m_playlistMarqueeHold = kMarqueeStartDelay;
@@ -1252,7 +1295,7 @@ void QuickSettingsOverlay::updateNowPlayingMarquee(float dt) {
     nxui::Rect npRow = computeNowPlayingRect();
     const float textX = npRow.x + 2.f + kMusicNowPlayingThumbSize + kMusicNowPlayingThumbGap;
     const float textMaxW = npRow.x + npRow.width - textX - 6.f;
-    const float textW = m_smallFont->measure(np).x * textScale;
+    const float textW = cachedTextSize(m_smallFont, np).x * textScale;
     if (textW <= textMaxW + 1.f) {
         m_nowPlayingMarqueeOffset = 0.f;
         m_nowPlayingMarqueeHold = kMarqueeStartDelay;
@@ -1526,8 +1569,7 @@ void QuickSettingsOverlay::setupNavigationActions() {
             const bool hopFromPrev = m_selectedItem == ItemIndex::MusicTransport
                 && (m_nowPlayingFocused || m_selectedMusicControl == MusicControl::Prev);
             const bool hopFromToggle = m_selectedItem == ItemIndex::AirplaneMode
-                || m_selectedItem == ItemIndex::Wifi
-                || m_selectedItem == ItemIndex::BatterySaver;
+                || m_selectedItem == ItemIndex::Wifi;
             const bool hopFromSleep = m_selectedItem == ItemIndex::PowerActions
                 && powerButtonSlotIndex(m_selectedPower) == 0;
             if (hopFromPrev || hopFromToggle || hopFromSleep) {
@@ -1568,7 +1610,6 @@ void QuickSettingsOverlay::setupNavigationActions() {
                 if (m_callbacks.onNavigateSfx) m_callbacks.onNavigateSfx();
                 break;
             case ItemIndex::AirplaneMode:
-            case ItemIndex::BatterySaver:
                 // A / tap toggles; Left stays (or hops to playlist above).
                 break;
             case ItemIndex::PowerActions: {
@@ -1648,8 +1689,7 @@ void QuickSettingsOverlay::setupNavigationActions() {
                 if (m_callbacks.onNavigateSfx) m_callbacks.onNavigateSfx();
                 break;
             case ItemIndex::Wifi:
-            case ItemIndex::BatterySaver:
-                // A / tap toggles; Right stays on Wi-Fi / Battery Saver.
+                // A / tap toggles; Right stays on Wi-Fi.
                 break;
             case ItemIndex::PowerActions: {
                 int slot = powerButtonSlotIndex(m_selectedPower);
@@ -1698,9 +1738,6 @@ void QuickSettingsOverlay::setupNavigationActions() {
         switch (m_selectedItem) {
             case ItemIndex::MusicTransport:
                 activateMusicControl();
-                break;
-            case ItemIndex::BatterySaver:
-                toggleItem(ItemIndex::BatterySaver);
                 break;
             case ItemIndex::AirplaneMode:
                 toggleItem(ItemIndex::AirplaneMode);
@@ -1895,14 +1932,6 @@ void QuickSettingsOverlay::setInitialValues(float brightness, float bgmVolume, f
 void QuickSettingsOverlay::setBatteryStatus(int percent, bool charging) {
     m_batteryPercent = percent;
     m_batteryCharging = charging;
-}
-
-void QuickSettingsOverlay::setBatterySaver(bool enabled) {
-    m_batterySaver = enabled;
-}
-
-void QuickSettingsOverlay::setFrameTapLiteEngaged(bool engaged) {
-    m_frameTapLiteEngaged = engaged;
 }
 
 void QuickSettingsOverlay::show() {
@@ -2103,20 +2132,6 @@ void QuickSettingsOverlay::toggleItem(ItemIndex item) {
         } else {
             if (m_callbacks.onToggleOffSfx) m_callbacks.onToggleOffSfx();
         }
-    } else if (item == ItemIndex::BatterySaver) {
-        if (m_frameTapLiteEngaged) {
-            // FT viewer owns lite — deny toggle, keep preference as-is.
-            if (m_callbacks.onToggleOffSfx) m_callbacks.onToggleOffSfx();
-            return;
-        }
-        m_batterySaver = !m_batterySaver;
-        if (m_callbacks.onBatterySaverToggled)
-            m_callbacks.onBatterySaverToggled(m_batterySaver);
-        if (m_batterySaver) {
-            if (m_callbacks.onActivateSfx) m_callbacks.onActivateSfx();
-        } else {
-            if (m_callbacks.onToggleOffSfx) m_callbacks.onToggleOffSfx();
-        }
     }
 }
 
@@ -2163,8 +2178,6 @@ nxui::Rect QuickSettingsOverlay::computeItemRect(ItemIndex item) const {
     const float halfW = (rowW - kNetRowGap) * 0.5f;
 
     switch (item) {
-        case ItemIndex::BatterySaver:
-            return {rowLeft, panel.y + kBatterySaverY, rowW, kToggleH};
         case ItemIndex::Brightness:
             return {rowLeft, panel.y + kBrightnessY, rowW, kSliderItemH};
         case ItemIndex::MusicTransport:
@@ -2429,7 +2442,7 @@ void QuickSettingsOverlay::updateCursorTarget(bool instant) {
         m_cursor.setVisible(false);
         return;
     }
-    const float dur = instant ? 0.f : 0.15f;
+    const float dur = instant ? 0.f : switchu::ui::chrome::kDurFast;
     if (m_playlistOpen && !m_playlistFocusParked && m_playlistAnim > 0.01f) {
         if (m_playlistEyeFocused) {
             m_cursor.setVisible(true);
@@ -2454,7 +2467,7 @@ void QuickSettingsOverlay::updateCursorTarget(bool instant) {
             m_cursor.setVisible(true);
             // Instant snap while finger-scrolling — animated chase desyncs badly.
             const float rowDur = (instant || m_playlistScrolling || m_playlistDragging)
-                ? 0.f : 0.15f;
+                ? 0.f : switchu::ui::chrome::kDurFast;
             m_cursor.moveTo(r, 10.f, rowDur);
             return;
         }
@@ -2478,6 +2491,7 @@ void QuickSettingsOverlay::updateCursorTarget(bool instant) {
 void QuickSettingsOverlay::update(float dt) {
     if (!isVisible()) return;
 
+    m_uiTime += dt;
     setRect(computePanelRect());
 
     if (m_animating) {
@@ -2717,14 +2731,6 @@ void QuickSettingsOverlay::handleTouch(nxui::Input& input) {
             }
         }
 
-        nxui::Rect bsRect = computeItemRect(ItemIndex::BatterySaver);
-        if (bsRect.contains(tx, ty)) {
-            m_selectedItem = ItemIndex::BatterySaver;
-            toggleItem(ItemIndex::BatterySaver);
-            updateCursorTarget();
-            return;
-        }
-
         nxui::Rect apRect = computeItemRect(ItemIndex::AirplaneMode);
         if (apRect.contains(tx, ty)) {
             m_selectedItem = ItemIndex::AirplaneMode;
@@ -2833,6 +2839,54 @@ void QuickSettingsOverlay::handleTouch(nxui::Input& input) {
     }
 }
 
+nxui::Vec2 QuickSettingsOverlay::cachedTextSize(nxui::Font* font, const std::string& text) {
+    if (!font)
+        return {0.f, 0.f};
+    auto& cache = m_measureCache[font];
+    const auto it = cache.find(text);
+    if (it != cache.end())
+        return it->second;
+
+    if (m_measureCacheEntries >= 1024) {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+    }
+    auto& fresh = m_measureCache[font];
+    const auto inserted = fresh.emplace(text, font->measure(text));
+    if (inserted.second)
+        ++m_measureCacheEntries;
+    return inserted.first->second;
+}
+
+std::string QuickSettingsOverlay::fittedText(nxui::Font* font, const std::string& text,
+                                              float maxWidth, float scale) {
+    if (!font || text.empty())
+        return text;
+    const int widthKey = (int)std::lround(maxWidth * 4.f);
+    const int scaleKey = (int)std::lround(scale * 1000.f);
+    auto& byText = m_fitCache[font];
+    const auto it = byText.find(text);
+    if (it != byText.end()) {
+        for (const auto& entry : it->second) {
+            if (entry.widthKey == widthKey && entry.scaleKey == scaleKey)
+                return entry.text;
+        }
+    }
+
+    std::string fitted = ellipsize(font, text, maxWidth, scale);
+    if (m_fitCacheEntries >= 512) {
+        m_fitCache.clear();
+        m_fitCacheEntries = 0;
+    }
+    auto& fresh = m_fitCache[font];
+    auto& variants = fresh[text];
+    if (variants.size() >= 4)
+        variants.clear();
+    variants.push_back({widthKey, scaleKey, fitted});
+    ++m_fitCacheEntries;
+    return fitted;
+}
+
 void QuickSettingsOverlay::render(nxui::Renderer& ren) {
     if (!isVisible() || m_animProgress <= 0.001f) return;
 
@@ -2845,15 +2899,21 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                             m_theme->mode == nxui::ThemeMode::Dark ? 0.65f : 0.20f)
               .withAlpha((m_theme->mode == nxui::ThemeMode::Dark ? 0.25f : 0.14f) * alpha)
         : nxui::Color(0.f, 0.f, 0.f, 0.20f * alpha);
-    ren.drawRect(screen, scrim);
+    const bool darkScrim = !m_theme || m_theme->mode == nxui::ThemeMode::Dark;
+    // Keep the HOME art readable on the left while the panel side gets enough
+    // contrast for small status text and controls.
+    ren.drawGradientRectH(screen,
+        scrim.withAlpha((darkScrim ? 0.04f : 0.02f) * alpha),
+        scrim.withAlpha(switchu::ui::chrome::kScrimModal * alpha));
 
     nxui::Rect panel = computePanelRect();
     const bool lightMode = m_theme && m_theme->mode == nxui::ThemeMode::Light;
+    const float panelAlpha = switchu::ui::chrome::kModalAlpha * alpha;
     nxui::Color panelFill = lightMode
-        ? nxui::Color(0.96f, 0.97f, 0.99f, 0.97f * alpha)
+        ? nxui::Color(0.96f, 0.97f, 0.99f, panelAlpha)
         : (m_theme
-            ? m_theme->panelBase.withAlpha(0.92f * alpha)
-            : nxui::Color(0.10f, 0.13f, 0.18f, 0.90f * alpha));
+            ? m_theme->panelBase.withAlpha(panelAlpha)
+            : nxui::Color(0.10f, 0.13f, 0.18f, panelAlpha));
 
     const nxui::Color primaryText = lightMode
         ? nxui::Color(0.06f, 0.07f, 0.09f, alpha)
@@ -2870,6 +2930,16 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
     nxui::Color cursorColor = m_theme
         ? m_theme->cursorNormal.withAlpha(alpha)
         : nxui::Color(0.12f, 0.76f, 0.98f, alpha);
+    const bool panelFocused = !m_playlistOpen || m_playlistFocusParked;
+    const nxui::Color accentA =
+        (switchu::ui::highlight::gradientEnabled()
+            ? switchu::ui::highlight::style().a : cursorColor).withAlpha(alpha);
+    const nxui::Color accentB =
+        (switchu::ui::highlight::gradientEnabled()
+            ? switchu::ui::highlight::style().b : cursorColor).withAlpha(alpha);
+    const nxui::Color accentMid =
+        nxui::Color::lerp(accentA, accentB, 0.5f).withAlpha(alpha);
+    const nxui::Color dangerColor(0.98f, 0.42f, 0.39f, alpha);
 
     nxui::Color cardFill = lightMode
         ? nxui::Color(1.f, 1.f, 1.f, 0.86f * alpha)
@@ -2879,8 +2949,9 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
 
     if (m_playlistAnim > 0.001f) {
         nxui::Rect pl = computePlaylistRect();
-        ren.drawRoundedRect(pl, panelFill, 24.f);
-        ren.drawRoundedRectOutline(pl, neutralBorder, 24.f, 1.2f);
+        ren.drawRoundedRect(pl, panelFill, switchu::ui::chrome::kRadiusPanel);
+        ren.drawRoundedRectOutline(pl, neutralBorder,
+                                   switchu::ui::chrome::kRadiusPanel, 1.2f);
 
         refreshCoverTexture(ren);
         if (m_coverFullscreenPending && m_coverTex.valid()) {
@@ -2892,16 +2963,19 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         float plx = pl.x + 16.f;
         if (m_smallFont) {
             ren.drawText(i18n.tr("quicksettings.playlist", "Playlist"),
-                         {plx, pl.y + 14.f}, m_smallFont, primaryText, 0.72f);
+                         {plx, pl.y + 14.f}, m_smallFont, primaryText,
+                         switchu::ui::chrome::kTypeSection);
         }
 
         // Eye toggle stays visible even when cover art is hidden.
         if (m_coverTex.valid() || !m_coverBytes.empty()) {
             nxui::Rect eye = computePlaylistEyeRect();
-            ren.drawRoundedRect(eye, cardFill, 8.f);
+            ren.drawRoundedRect(eye, cardFill,
+                                switchu::ui::chrome::kRadiusControl);
             ren.drawRoundedRectOutline(eye,
                 m_playlistEyeFocused ? cursorColor.withAlpha(0.95f * alpha) : neutralBorder,
-                8.f, m_playlistEyeFocused ? 1.6f : 1.f);
+                switchu::ui::chrome::kRadiusControl,
+                m_playlistEyeFocused ? 1.6f : 1.f);
             const float ecx = eye.x + eye.width * 0.5f;
             const float ecy = eye.y + eye.height * 0.5f;
             const float er = 5.2f;
@@ -2921,21 +2995,26 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
             nxui::Rect art = computePlaylistArtRect();
             ren.drawRoundedRect(
                 {art.x + 2.f, art.y + 3.f, art.width, art.height},
-                nxui::Color(0.f, 0.f, 0.f, 0.28f * alpha), 14.f);
-            ren.drawTextureRounded(&m_coverTex, art, 14.f,
+                nxui::Color(0.f, 0.f, 0.f, 0.28f * alpha),
+                switchu::ui::chrome::kRadiusRow);
+            ren.drawTextureRounded(&m_coverTex, art,
+                                   switchu::ui::chrome::kRadiusRow,
                                    nxui::Color(1.f, 1.f, 1.f, alpha));
             const bool artFocused = m_playlistOpen && !m_playlistFocusParked
                 && m_playlistArtFocused;
             ren.drawRoundedRectOutline(art,
                 artFocused ? cursorColor.withAlpha(0.95f * alpha) : neutralBorder,
-                14.f, artFocused ? 1.6f : 1.f);
+                switchu::ui::chrome::kRadiusRow,
+                artFocused ? 1.6f : 1.f);
         }
 
         const int count = playlistVisibleCount();
         if (m_smallFont) {
             if (count == 0) {
                 ren.drawText(i18n.tr("quicksettings.playlist_empty", "No tracks"),
-                             {plx, pl.y + playlistHeaderHeight() + 8.f}, m_smallFont, mutedText, 0.78f);
+                             {plx, pl.y + playlistHeaderHeight() + 8.f},
+                             m_smallFont, mutedText,
+                             switchu::ui::chrome::kTypeRow);
             } else {
                 nxui::Rect list = computePlaylistListRect();
                 const bool showHandle = playlistReorderAllowed();
@@ -2963,14 +3042,21 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                         rowRect.y -= 2.f;
                         ren.drawRoundedRect(
                             {rowRect.x + 2.f, rowRect.y + 3.f, rowRect.width, rowRect.height},
-                            nxui::Color(0.f, 0.f, 0.f, 0.22f * alpha), 10.f);
-                        ren.drawRoundedRect(rowRect, cursorColor.withAlpha(0.32f * alpha), 10.f);
-                        ren.drawRoundedRectOutline(rowRect, cursorColor.withAlpha(0.85f * alpha), 10.f, 1.4f);
+                            nxui::Color(0.f, 0.f, 0.f, 0.22f * alpha),
+                            switchu::ui::chrome::kRadiusControl);
+                        ren.drawRoundedRect(rowRect,
+                                            cursorColor.withAlpha(0.32f * alpha),
+                                            switchu::ui::chrome::kRadiusControl);
+                        ren.drawRoundedRectOutline(rowRect,
+                                                   cursorColor.withAlpha(0.85f * alpha),
+                                                   switchu::ui::chrome::kRadiusControl,
+                                                   1.4f);
                     } else if (focused || current || folderHasCurrent) {
                         nxui::Color rowFill = focused
                             ? cursorColor.withAlpha(0.22f * alpha)
                             : cardFill;
-                        ren.drawRoundedRect(rowRect, rowFill, 10.f);
+                        ren.drawRoundedRect(rowRect, rowFill,
+                                            switchu::ui::chrome::kRadiusControl);
                     }
 
                     float contentX = rowRect.x + (prow.indented ? kPlaylistTreeIndent : 0.f);
@@ -3004,9 +3090,11 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                             artBytes = m_callbacks.onMusicQueryFolderCover(prow.folder);
                     }
                     const nxui::Texture* thumbTex = playlistThumbTexture(ren, artKey, artBytes);
-                    ren.drawRoundedRect(thumb, cardFill, 6.f);
+                    ren.drawRoundedRect(thumb, cardFill,
+                                        switchu::ui::chrome::kRadiusKeycap);
                     if (thumbTex)
-                        ren.drawTextureRounded(thumbTex, thumb, 6.f,
+                        ren.drawTextureRounded(thumbTex, thumb,
+                                               switchu::ui::chrome::kRadiusKeycap,
                                                nxui::Color(1.f, 1.f, 1.f, alpha));
                     else if (prow.kind == PlaylistRowKind::Folder) {
                         // Simple folder glyph fallback.
@@ -3024,10 +3112,10 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
 
                     nxui::Color textCol = (current || reordering || folderHasCurrent)
                         ? primaryText : secondaryText;
-                    const float textScale = 0.78f;
+                    const float textScale = switchu::ui::chrome::kTypeRow;
                     const float textX = thumb.x + thumb.width + kPlaylistThumbGap;
                     const float textMaxW = rowRect.x + rowRect.width - textX - 6.f;
-                    nxui::Vec2 fullSz = m_smallFont->measure(label);
+                    nxui::Vec2 fullSz = cachedTextSize(m_smallFont, label);
                     float ty = rowRect.y + (rowRect.height - fullSz.y * textScale) * 0.5f;
                     nxui::Rect textClip = {textX, rowRect.y, textMaxW, rowRect.height};
 
@@ -3045,7 +3133,7 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                                      m_smallFont, textCol, textScale);
                         ren.popClipRect();
                     } else {
-                        std::string title = ellipsize(m_smallFont, label, textMaxW, textScale);
+                        std::string title = fittedText(m_smallFont, label, textMaxW, textScale);
                         ren.drawText(title, {textX, ty}, m_smallFont, textCol, textScale);
                     }
                 }
@@ -3054,19 +3142,28 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         }
     }
 
-    ren.drawRoundedRect(panel, panelFill, 24.f);
+    switchu::ui::chrome::drawPanelShadow(
+        ren, panel, switchu::ui::chrome::kRadiusPanel, alpha);
+    ren.drawRoundedRect(panel, panelFill,
+                        switchu::ui::chrome::kRadiusPanel);
+    ren.drawRoundedRect(panel, cursorColor.withAlpha((lightMode ? 0.018f : 0.035f) * alpha),
+                        switchu::ui::chrome::kRadiusPanel);
 
     nxui::Color borderColor = m_theme
-        ? m_theme->panelBorder.withAlpha((lightMode ? 0.48f : 0.28f) * alpha)
-        : nxui::Color(1.f, 1.f, 1.f, 0.22f * alpha);
-    ren.drawRoundedRectOutline(panel, borderColor, 24.f, 1.2f);
+        ? m_theme->panelBorder.withAlpha((lightMode ? 0.52f : 0.34f) * alpha)
+        : nxui::Color(1.f, 1.f, 1.f, 0.24f * alpha);
+    ren.drawRoundedRectOutline(panel, borderColor,
+                               switchu::ui::chrome::kRadiusPanel, 1.3f);
 
     nxui::Color highlightColor = m_theme
-        ? m_theme->panelHighlight.withAlpha((lightMode ? 0.32f : 0.08f) * alpha)
-        : nxui::Color(1.f, 1.f, 1.f, 0.08f * alpha);
-    ren.drawRoundedRectOutline(panel.shrunk(1.f), highlightColor, 23.f, 1.0f);
+        ? m_theme->panelHighlight.withAlpha((lightMode ? 0.34f : 0.10f) * alpha)
+        : nxui::Color(1.f, 1.f, 1.f, 0.10f * alpha);
+    ren.drawRoundedRectOutline(
+        panel.shrunk(1.f), highlightColor,
+        switchu::ui::chrome::nested(switchu::ui::chrome::kRadiusPanel, 1.f),
+        1.0f);
 
-    float cx = panel.x + 22.f;
+    float cx = panel.x + 28.f;
     // Match slider / toggle / music card outer width (cx - 4, cw + 8).
     const float cardX = panel.x + 18.f;
     const float cardW = panel.width - 36.f;
@@ -3074,48 +3171,107 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
     // Current-track cover for the now-playing strip (and playlist art).
     refreshCoverTexture(ren);
 
+    ren.drawRoundedRect({panel.x + 18.f, panel.y + kTitleY + 3.f, 3.f, 20.f},
+                        cursorColor.withAlpha(0.92f * alpha), 1.5f);
     if (m_font || m_smallFont) {
         std::string title = i18n.tr("quicksettings.title", "Quick Settings");
         nxui::Font* titleFont = m_font ? m_font : m_smallFont;
-        ren.drawText(title, {cx, panel.y + kTitleY}, titleFont, primaryText, 0.95f);
+        ren.drawText(title, {cx, panel.y + kTitleY}, titleFont, primaryText,
+                     switchu::ui::chrome::kTypeTitle);
     }
+    ren.drawLine({panel.x + 18.f, panel.y + kTitleY + 30.f},
+                 {panel.right() - 18.f, panel.y + kTitleY + 30.f},
+                 neutralBorder.withAlpha(neutralBorder.a * 0.55f), 1.f);
 
     nxui::Rect statusCard = {cardX, panel.y + kStatusY, cardW, kStatusH};
-    ren.drawRoundedRect(statusCard, cardFill, 14.f);
-    ren.drawRoundedRectOutline(statusCard, neutralBorder, 14.f, 1.f);
+    ren.drawRoundedRect(statusCard, cardFill,
+                        switchu::ui::chrome::kRadiusCard);
+    ren.drawRoundedRect(statusCard, cursorColor.withAlpha(0.03f * alpha),
+                        switchu::ui::chrome::kRadiusCard);
+    ren.drawRoundedRectOutline(statusCard, neutralBorder,
+                               switchu::ui::chrome::kRadiusCard, 1.f);
 
-    ren.drawLine({statusCard.x + cardW * 0.5f, statusCard.y + 8.f},
-                 {statusCard.x + cardW * 0.5f, statusCard.y + kStatusH - 8.f},
-                 neutralBorder, 1.f);
+    ren.drawLine({statusCard.x + cardW * 0.5f, statusCard.y + 10.f},
+                 {statusCard.x + cardW * 0.5f, statusCard.y + kStatusH - 9.f},
+                 neutralBorder.withAlpha(neutralBorder.a * 0.75f), 1.f);
 
     if (m_smallFont) {
-        const float titleY = statusCard.y + 8.f;
-        const float infoY = statusCard.y + 32.f;
-        const float valueScale = 0.82f;
+        const float labelY = statusCard.y + 8.f;
+        const float valueY = statusCard.y + 23.f;
+        const float barY = statusCard.y + 47.f;
+        const float barH = 4.f;
+        const float halfW = cardW * 0.5f;
+        const float leftX = statusCard.x + 12.f;
+        const float leftRight = statusCard.x + halfW - 12.f;
+        const float rightX = statusCard.x + halfW + 12.f;
+        const float rightRight = statusCard.right() - 12.f;
+        const float labelScale = switchu::ui::chrome::kTypeSection;
+        const float valueScale = switchu::ui::chrome::kTypeTitle;
+        const float pillScale = switchu::ui::chrome::kTypeSection;
 
+        const auto drawPill = [&](float right, float y, const std::string& text,
+                                  const nxui::Color& tint) {
+            const nxui::Vec2 sz = cachedTextSize(m_smallFont, text);
+            const float w = sz.x * pillScale + 12.f;
+            const nxui::Rect pill = {right - w, y, w, 16.f};
+            ren.drawRoundedRect(pill, tint.withAlpha(0.14f * alpha),
+                                switchu::ui::chrome::kRadiusControl);
+            ren.drawRoundedRectOutline(pill, tint.withAlpha(0.20f * alpha),
+                                       switchu::ui::chrome::kRadiusControl, 1.f);
+            ren.drawText(text, {pill.x + 6.f, pill.y + (pill.height - sz.y * pillScale) * 0.5f},
+                         m_smallFont, tint.withAlpha(0.95f * alpha), pillScale);
+        };
+        const auto drawGauge = [&](float x, float width, float ratio, const nxui::Color& tint) {
+            const nxui::Rect track = {x, barY, width, barH};
+            ren.drawRoundedRect(track, lightMode
+                ? nxui::Color(0.12f, 0.14f, 0.18f, 0.12f * alpha)
+                : nxui::Color(0.f, 0.f, 0.f, 0.38f * alpha), barH * 0.5f);
+            const float fillW = width * std::clamp(ratio, 0.f, 1.f);
+            if (fillW > 0.5f)
+                ren.drawRoundedRect({x, barY, fillW, barH}, tint.withAlpha(0.92f * alpha),
+                                    barH * 0.5f);
+        };
+
+        const float batteryRatio = m_batteryPercent >= 0
+            ? static_cast<float>(m_batteryPercent) / 100.f : 0.f;
+        const nxui::Color batteryCol = m_batteryCharging
+            ? nxui::Color(0.25f, 0.90f, 0.45f, alpha)
+            : (batteryRatio <= 0.15f
+                ? nxui::Color(0.98f, 0.42f, 0.39f, alpha)
+                : (batteryRatio <= 0.30f
+                    ? nxui::Color(0.95f, 0.75f, 0.20f, alpha)
+                    : accentA));
+
+        drawBatteryGlyph(ren, {leftX + 7.f, labelY + 5.f}, mutedText,
+                         batteryRatio, 0.72f);
         ren.drawText(i18n.tr("quicksettings.battery", "BATTERY"),
-                     {statusCard.x + 12.f, titleY}, m_smallFont, mutedText, 0.68f);
+                     {leftX + 19.f, labelY}, m_smallFont, mutedText, labelScale);
 
         char bBuf[32];
         if (m_batteryPercent >= 0)
             std::snprintf(bBuf, sizeof(bBuf), "%d%%", m_batteryPercent);
         else
             std::snprintf(bBuf, sizeof(bBuf), "--%%");
-        ren.drawText(bBuf, {statusCard.x + 12.f, infoY}, m_smallFont, primaryText, valueScale);
+        ren.drawText(bBuf, {leftX, valueY}, m_smallFont, primaryText, valueScale);
 
-        nxui::Vec2 pctSz = m_smallFont->measure(bBuf);
-        std::string chgText = m_batteryCharging
+        const std::string chgText = m_batteryCharging
             ? i18n.tr("quicksettings.charging", "Charging")
             : i18n.tr("quicksettings.discharging", "Discharging");
-        nxui::Color chgCol = m_batteryCharging
-            ? nxui::Color(0.25f, 0.90f, 0.45f, alpha)
-            : mutedText;
-        ren.drawText(chgText, {statusCard.x + 12.f + pctSz.x * valueScale + 8.f, infoY},
-                     m_smallFont, chgCol, 0.72f);
+        drawPill(leftRight, labelY - 1.f, chgText,
+                 m_batteryCharging ? nxui::Color(0.25f, 0.90f, 0.45f, alpha) : mutedText);
+        drawGauge(leftX, halfW - 24.f, batteryRatio, batteryCol);
 
-        float rx = statusCard.x + cardW * 0.5f + 12.f;
+        float maxT = -1.f;
+        if (m_hasSocTemp) maxT = std::max(maxT, m_socTemp);
+        if (m_hasPcbTemp) maxT = std::max(maxT, m_pcbTemp);
+        const bool warm = maxT >= 0.f && maxT > 65.f;
+        const nxui::Color tempCol = warm
+            ? nxui::Color(0.95f, 0.75f, 0.20f, alpha)
+            : nxui::Color(0.20f, 0.85f, 0.50f, alpha);
+
+        drawThermoGlyph(ren, {rightX + 5.f, labelY + 5.f}, mutedText, 0.72f);
         ren.drawText(i18n.tr("quicksettings.hardware_temp", "THERMALS"),
-                     {rx, titleY}, m_smallFont, mutedText, 0.68f);
+                     {rightX + 17.f, labelY}, m_smallFont, mutedText, labelScale);
 
         char tBuf[64];
         if (m_hasSocTemp || m_hasPcbTemp) {
@@ -3128,57 +3284,105 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         } else {
             std::snprintf(tBuf, sizeof(tBuf), "-- \u00B0C");
         }
-        ren.drawText(tBuf, {rx, infoY}, m_smallFont, primaryText, valueScale);
+        ren.drawText(tBuf, {rightX, valueY}, m_smallFont, primaryText, valueScale);
 
-        float maxT = -1.f;
-        if (m_hasSocTemp) maxT = std::max(maxT, m_socTemp);
-        if (m_hasPcbTemp) maxT = std::max(maxT, m_pcbTemp);
-        nxui::Vec2 tempSz = m_smallFont->measure(tBuf);
-        std::string badgeText = (maxT >= 0.f && maxT > 65.f)
+        const std::string badgeText = warm
             ? i18n.tr("quicksettings.temp_warm", "Warm")
             : i18n.tr("quicksettings.temp_optimal", "Optimal");
-        nxui::Color badgeCol = (maxT >= 0.f && maxT > 65.f)
-            ? nxui::Color(0.95f, 0.75f, 0.20f, alpha)
-            : nxui::Color(0.20f, 0.85f, 0.50f, alpha);
-        ren.drawText(badgeText, {rx + tempSz.x * valueScale + 8.f, infoY},
-                     m_smallFont, badgeCol, 0.72f);
+        drawPill(rightRight, labelY - 1.f, badgeText, tempCol);
+        drawGauge(rightX, halfW - 24.f,
+                  maxT >= 0.f ? (maxT - 30.f) / 50.f : 0.f, tempCol);
     }
 
     auto drawSlider = [&](ItemIndex idx, const std::string& label, float value,
                           const nxui::Color& fillColor) {
         nxui::Rect card = computeItemRect(idx);
-        ren.drawRoundedRect(card, cardFill, 12.f);
-        ren.drawRoundedRectOutline(card, neutralBorder, 12.f, 1.f);
+        const bool focused = panelFocused && m_selectedItem == idx;
+        ren.drawRoundedRect(card, cardFill,
+                            switchu::ui::chrome::kRadiusCard);
+        if (focused)
+            ren.drawRoundedRect(card, cursorColor.withAlpha(0.05f * alpha),
+                                switchu::ui::chrome::kRadiusCard);
+        ren.drawRoundedRectOutline(card,
+            focused ? cursorColor.withAlpha(0.55f * alpha) : neutralBorder,
+            switchu::ui::chrome::kRadiusCard, focused ? 1.2f : 1.f);
 
         if (m_smallFont) {
-            ren.drawText(label, {card.x + 12.f, card.y + 8.f}, m_smallFont,
-                         primaryText, kSliderLabelScale);
+            const nxui::Rect badge = {card.x + 10.f, card.y + 6.f, 22.f, 22.f};
+            drawIconPlate(ren, badge, fillColor, alpha);
+            const nxui::Vec2 iconCenter = {badge.x + badge.width * 0.5f,
+                                           badge.y + badge.height * 0.5f};
+            if (idx == ItemIndex::BgmVolume)
+                drawNoteGlyph(ren, iconCenter, fillColor.withAlpha(alpha), 0.72f);
+            else if (idx == ItemIndex::SfxVolume)
+                drawSpeakerGlyph(ren, iconCenter, fillColor.withAlpha(alpha), 0.66f);
+            else
+                drawSunGlyph(ren, iconCenter, fillColor.withAlpha(alpha), 0.66f);
 
             char pBuf[16];
-            std::snprintf(pBuf, sizeof(pBuf), "%d%%", static_cast<int>(std::round(value * 100.f)));
-            nxui::Vec2 psz = m_smallFont->measure(pBuf);
-            ren.drawText(pBuf, {card.x + card.width - 12.f - psz.x * kSliderLabelScale, card.y + 8.f},
-                         m_smallFont, secondaryText, kSliderLabelScale);
+            std::snprintf(pBuf, sizeof(pBuf), "%d%%",
+                          static_cast<int>(std::round(value * 100.f)));
+            const float valueScale = switchu::ui::chrome::kTypeSection;
+            const nxui::Vec2 psz = cachedTextSize(m_smallFont, pBuf);
+            const float pillW = psz.x * valueScale + 14.f;
+            const nxui::Rect pill = {card.right() - 10.f - pillW, card.y + 5.f,
+                                     pillW, 20.f};
+            ren.drawRoundedRect(pill, fillColor.withAlpha(0.16f * alpha),
+                                switchu::ui::chrome::kRadiusControl);
+            ren.drawRoundedRectOutline(pill, fillColor.withAlpha(0.24f * alpha),
+                                       10.f, 1.f);
+            ren.drawText(pBuf,
+                         {pill.x + 7.f, pill.y + (pill.height - psz.y * valueScale) * 0.5f},
+                         m_smallFont, primaryText, valueScale);
+
+            const float labelX = badge.right() + 8.f;
+            const float textMaxW = std::max(8.f, pill.x - labelX - 6.f);
+            const std::string shown = fittedText(m_smallFont, label, textMaxW, 0.80f);
+            ren.drawText(shown, {labelX, card.y + 8.f}, m_smallFont,
+                         primaryText, 0.80f);
         }
 
         nxui::Rect track = computeSliderTrackRect(idx);
         ren.drawRoundedRect(track, lightMode
             ? nxui::Color(0.12f, 0.14f, 0.18f, 0.18f * alpha)
-            : nxui::Color(0.05f, 0.08f, 0.12f, 0.75f * alpha), 7.f);
+            : nxui::Color(0.04f, 0.06f, 0.09f, 0.78f * alpha), 7.f);
+        ren.drawRoundedRectOutline(track,
+            lightMode ? nxui::Color(0.f, 0.f, 0.f, 0.06f * alpha)
+                      : nxui::Color(1.f, 1.f, 1.f, 0.05f * alpha), 7.f, 1.f);
 
         float fillW = std::clamp(track.width * value, 10.f, track.width);
         nxui::Rect fillRect = {track.x, track.y, fillW, track.height};
-        ren.drawRoundedRect(fillRect, fillColor.withAlpha(alpha), 7.f);
+        ren.drawRoundedRect(fillRect, fillColor.withAlpha(0.95f * alpha),
+                            switchu::ui::chrome::kRadiusPill);
 
-        float knobX = track.x + fillW;
-        ren.drawCircle({knobX, track.y + track.height * 0.5f}, 9.5f,
-                       nxui::Color(1.f, 1.f, 1.f, alpha));
+        const float knobX = track.x + fillW;
+        const float knobY = track.y + track.height * 0.5f;
+        ren.drawCircle({knobX, knobY + 1.f}, 10.5f,
+                       nxui::Color(0.f, 0.f, 0.f, (lightMode ? 0.12f : 0.24f) * alpha));
+        ren.drawCircle({knobX, knobY}, 13.5f, fillColor.withAlpha(0.14f * alpha));
+        ren.drawCircle({knobX, knobY}, 9.5f, nxui::Color(1.f, 1.f, 1.f, alpha));
     };
 
     {
         nxui::Rect musicCard = computeMusicCardRect();
-        ren.drawRoundedRect(musicCard, cardFill, 12.f);
-        ren.drawRoundedRectOutline(musicCard, neutralBorder, 12.f, 1.f);
+        ren.drawRoundedRect(musicCard, cardFill,
+                            switchu::ui::chrome::kRadiusCard);
+        ren.drawRoundedRect(musicCard, cursorColor.withAlpha(0.035f * alpha),
+                            switchu::ui::chrome::kRadiusCard);
+        ren.drawRoundedRectOutline(musicCard, neutralBorder,
+                                   switchu::ui::chrome::kRadiusCard, 1.f);
+
+        const nxui::Rect transportRail = {
+            musicCard.x + 8.f, musicCard.y + kMusicControlsY,
+            musicCard.width - 16.f, kMusicControlsH
+        };
+        ren.drawRoundedRect(transportRail, lightMode
+            ? nxui::Color(0.08f, 0.10f, 0.14f, 0.05f * alpha)
+            : nxui::Color(0.f, 0.f, 0.f, 0.18f * alpha),
+            switchu::ui::chrome::kRadiusRow);
+        ren.drawRoundedRectOutline(transportRail,
+            neutralBorder.withAlpha(neutralBorder.a * 0.70f),
+            switchu::ui::chrome::kRadiusRow, 1.f);
 
         // Now-playing strip: playlist-row layout; highlight only when focused.
         {
@@ -3189,7 +3393,10 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
             const bool hasTrack = m_music.currentIndex >= 0
                 && !m_music.nowPlaying.empty();
             if (npFocused) {
-                ren.drawRoundedRect(npRow, cursorColor.withAlpha(0.22f * alpha), 10.f);
+                ren.drawRoundedRect(npRow, cursorColor.withAlpha(0.18f * alpha),
+                                    switchu::ui::chrome::kRadiusControl);
+                ren.drawRoundedRectOutline(npRow,
+                    cursorColor.withAlpha(0.48f * alpha), 10.f, 1.f);
             }
 
             nxui::Rect thumb = {
@@ -3222,10 +3429,15 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
             }
             if (!thumbTex && m_coverTex.valid())
                 thumbTex = &m_coverTex;
-            ren.drawRoundedRect(thumb, cardFill, 8.f);
+            ren.drawRoundedRect({thumb.x + 1.f, thumb.y + 2.f, thumb.width, thumb.height},
+                                nxui::Color(0.f, 0.f, 0.f, 0.18f * alpha), 10.f);
+            ren.drawRoundedRect(thumb, cardFill, 10.f);
             if (thumbTex)
-                ren.drawTextureRounded(thumbTex, thumb, 8.f,
+                ren.drawTextureRounded(thumbTex, thumb, 10.f,
                                        nxui::Color(1.f, 1.f, 1.f, alpha));
+            ren.drawRoundedRectOutline(thumb,
+                npFocused ? cursorColor.withAlpha(0.55f * alpha) : neutralBorder,
+                10.f, 1.f);
 
             if (m_smallFont) {
                 std::string np = m_music.nowPlaying.empty()
@@ -3233,8 +3445,9 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                     : m_music.nowPlaying;
                 const float textScale = 0.78f;
                 const float textX = thumb.x + thumb.width + kMusicNowPlayingThumbGap;
-                const float textMaxW = npRow.x + npRow.width - textX - 6.f;
-                nxui::Vec2 fullSz = m_smallFont->measure(np);
+                const float textMaxW = npRow.x + npRow.width - textX
+                    - (m_music.playing && hasTrack ? 26.f : 6.f);
+                nxui::Vec2 fullSz = cachedTextSize(m_smallFont, np);
                 float ty = npRow.y + (npRow.height - fullSz.y * textScale) * 0.5f;
                 nxui::Rect textClip = {textX, npRow.y, textMaxW, npRow.height};
                 const bool marquee = npFocused
@@ -3250,9 +3463,14 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                                  m_smallFont, primaryText, textScale);
                     ren.popClipRect();
                 } else {
-                    std::string title = ellipsize(m_smallFont, np, textMaxW, textScale);
+                    std::string title = fittedText(m_smallFont, np, textMaxW, textScale);
                     ren.drawText(title, {textX, ty}, m_smallFont, primaryText, textScale);
                 }
+            }
+            if (m_music.playing && hasTrack) {
+                drawEqualizer(ren, {npRow.x + npRow.width - 20.f,
+                                    npRow.y + npRow.height * 0.5f},
+                              accentA, m_uiTime);
             }
         }
 
@@ -3269,39 +3487,20 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                 || (ctrl == MusicControl::Playlist && m_playlistOpen)
                 || (ctrl == MusicControl::PlayPause && m_music.playing);
 
-            nxui::Color glassBase = lightMode
-                ? nxui::Color(0.98f, 0.99f, 1.f, 0.78f)
-                : (m_theme
-                    ? m_theme->panelHighlight.withAlpha(0.14f)
-                    : nxui::Color(1.f, 1.f, 1.f, 0.12f));
-            if (activeMode && !focused) {
-                glassBase = cursorColor.withAlpha((lightMode ? 0.18f : 0.22f));
-            }
-            nxui::Color glassBorder = focused
-                ? cursorColor.withAlpha(0.95f * alpha)
-                : (lightMode
-                    ? nxui::Color(0.08f, 0.10f, 0.14f, 0.16f * alpha)
-                    : nxui::Color(1.f, 1.f, 1.f, 0.22f * alpha));
-            nxui::Color glassHighlight = lightMode
-                ? nxui::Color(1.f, 1.f, 1.f, 0.55f * alpha)
-                : (m_theme
-                    ? m_theme->panelHighlight.withAlpha(0.18f * alpha)
-                    : nxui::Color(1.f, 1.f, 1.f, 0.16f * alpha));
+            const nxui::Rect shape = btn.shrunk(3.f);
+            const nxui::Color buttonFill = focused
+                ? cursorColor.withAlpha(0.18f * alpha)
+                : (activeMode ? accentA.withAlpha(0.10f * alpha)
+                              : nxui::Color(0.f, 0.f, 0.f, 0.f));
+            if (buttonFill.a > 0.001f)
+                ren.drawRoundedRect(shape, buttonFill, 11.f);
+            if (focused)
+                ren.drawRoundedRectOutline(shape,
+                    cursorColor.withAlpha(0.80f * alpha), 11.f, 1.4f);
 
-            ren.drawFrostedInset(btn, glassBase.withAlpha(glassBase.a * alpha),
-                                 glassBorder, glassHighlight, 12.f, 1.f);
-
-            if (focused) {
-                ren.drawRoundedRectOutline(btn, cursorColor.withAlpha(0.9f * alpha), 12.f, 1.6f);
-            }
-
-            nxui::Color iconCol = focused ? primaryText
-                : (activeMode ? primaryText : mutedText);
-            if (ctrl == MusicControl::Shuffle && m_music.shuffle)
-                iconCol = cursorColor;
-            if (ctrl == MusicControl::Repeat && m_music.repeat != MusicRepeatMode::Off)
-                iconCol = cursorColor;
-            drawMusicControlIcon(ren, ctrl, m_music, btn, iconCol.withAlpha(alpha));
+            nxui::Color iconCol = activeMode ? accentA.withAlpha(alpha)
+                : (focused ? primaryText : mutedText);
+            drawMusicControlIcon(ren, ctrl, m_music, btn, iconCol);
         }
 
         // Progress / scrub bar between transport and volume.
@@ -3320,7 +3519,7 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                 const float labelY = musicCard.y + kMusicProgressLabelY;
                 const float leftX = musicCard.x + kMusicCardLabelSidePad;
                 ren.drawText(left, {leftX, labelY}, m_smallFont, secondaryText, kSliderLabelScale);
-                nxui::Vec2 rsz = m_smallFont->measure(right);
+                nxui::Vec2 rsz = cachedTextSize(m_smallFont, right);
                 ren.drawText(right,
                              {musicCard.x + musicCard.width - kMusicCardLabelSidePad
                                   - rsz.x * kSliderLabelScale,
@@ -3337,11 +3536,17 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
             float fillW = std::max(progress > 0.f ? 8.f : 0.f, track.width * progress);
             if (fillW > 0.f) {
                 ren.drawRoundedRect({track.x, track.y, fillW, track.height},
-                                   cursorColor.withAlpha(0.85f * alpha), radius);
+                                   accentA.withAlpha(0.92f * alpha), radius);
             }
             if (m_music.durationSeconds > 0.05f) {
-                ren.drawCircle({track.x + fillW, track.y + track.height * 0.5f},
-                               focused ? 10.5f : 9.5f,
+                const float knobX = track.x + fillW;
+                const float knobY = track.y + track.height * 0.5f;
+                ren.drawCircle({knobX, knobY + 1.f}, focused ? 10.5f : 9.5f,
+                               nxui::Color(0.f, 0.f, 0.f,
+                                           (lightMode ? 0.12f : 0.24f) * alpha));
+                ren.drawCircle({knobX, knobY}, focused ? 14.f : 13.f,
+                               accentA.withAlpha(0.14f * alpha));
+                ren.drawCircle({knobX, knobY}, focused ? 10.5f : 9.5f,
                                nxui::Color(1.f, 1.f, 1.f, alpha));
             }
             if (focused)
@@ -3352,21 +3557,28 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
     }
 
     drawSlider(ItemIndex::BgmVolume, i18n.tr("quicksettings.bgm_volume", "Music (BGM)"),
-               m_bgmVolume, nxui::Color(0.68f, 0.45f, 0.95f, 1.f));
+               m_bgmVolume, accentA);
 
     drawSlider(ItemIndex::SfxVolume, i18n.tr("quicksettings.sfx_volume", "Sound Effects"),
-               m_sfxVolume, nxui::Color(0.18f, 0.82f, 0.55f, 1.f));
+               m_sfxVolume, accentB);
 
     drawSlider(ItemIndex::Brightness, i18n.tr("quicksettings.brightness", "Brightness"),
-               m_brightness, nxui::Color(0.15f, 0.75f, 0.98f, 1.f));
+               m_brightness, accentMid);
 
     auto drawToggle = [&](ItemIndex idx, const std::string& label, bool enabled,
                           bool compact = false, bool locked = false) {
         nxui::Rect card = computeItemRect(idx);
+        const bool focused = panelFocused && m_selectedItem == idx;
         const float cardAlpha = locked ? 0.72f : 1.f;
-        ren.drawRoundedRect(card, cardFill.withAlpha(cardFill.a * cardAlpha), 12.f);
-        ren.drawRoundedRectOutline(card, neutralBorder.withAlpha(neutralBorder.a * cardAlpha),
-                                   12.f, 1.f);
+        ren.drawRoundedRect(card, cardFill.withAlpha(cardFill.a * cardAlpha), 16.f);
+        if (enabled)
+            ren.drawRoundedRect(card, accentA.withAlpha(0.04f * alpha), 16.f);
+        if (focused)
+            ren.drawRoundedRect(card, cursorColor.withAlpha(0.05f * alpha), 16.f);
+        ren.drawRoundedRectOutline(card,
+            focused ? cursorColor.withAlpha(0.55f * alpha)
+                    : neutralBorder.withAlpha(neutralBorder.a * cardAlpha),
+            16.f, focused ? 1.2f : 1.f);
 
         // Compact pills need room for "OFF" + knob (48 clipped the label).
         const float pillW = compact ? 58.f : 56.f;
@@ -3375,55 +3587,51 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         nxui::Rect pill = {card.x + card.width - pillW - pillPad,
                            card.y + (card.height - pillH) * 0.5f, pillW, pillH};
 
-        const nxui::Color labelCol = locked
-            ? mutedText
-            : primaryText;
+        const nxui::Color labelCol = locked ? mutedText : primaryText;
+        const nxui::Color tint = enabled ? accentA.withAlpha(alpha) : mutedText;
+        const nxui::Rect badge = {card.x + 10.f,
+                                  card.y + (card.height - 24.f) * 0.5f, 24.f, 24.f};
+        drawIconPlate(ren, badge, tint, alpha);
 
-        float textX = card.x + (compact ? 10.f : 14.f);
-        if (idx == ItemIndex::Wifi
-            || idx == ItemIndex::AirplaneMode
-            || idx == ItemIndex::BatterySaver) {
+        float textX = badge.right() + 8.f;
+        if (idx == ItemIndex::Wifi || idx == ItemIndex::AirplaneMode) {
             ensureToggleIcons(ren);
-            // Match Wi-Fi / Sleep-Reboot-Power glyph weight (~18–22px).
-            const float edge = compact ? 20.f : 22.f;
-            const float iconX = card.x + (compact ? 16.f : 22.f);
-            const float iconY = card.y + card.height * 0.5f
-                + (idx == ItemIndex::Wifi ? 3.f : 0.f);
-            const nxui::Color iconCol = (idx == ItemIndex::BatterySaver)
-                ? labelCol : primaryText;
+            const nxui::Vec2 iconCenter = {badge.x + badge.width * 0.5f,
+                                           badge.y + badge.height * 0.5f};
             bool drew = false;
-            if (idx == ItemIndex::AirplaneMode || idx == ItemIndex::BatterySaver)
-                drew = drawToggleGlyph(ren, idx, {iconX, iconY}, iconCol, edge);
+            if (idx == ItemIndex::AirplaneMode)
+                drew = drawToggleGlyph(ren, idx, iconCenter, tint, 17.f);
             if (!drew) {
                 if (idx == ItemIndex::Wifi) {
-                    drawWifiIcon(ren, {iconX, iconY}, primaryText,
-                                 compact ? 0.82f : 0.95f);
-                } else if (idx == ItemIndex::AirplaneMode) {
-                    drawAirplaneIcon(ren, {iconX, iconY}, primaryText,
-                                     compact ? 0.72f : 0.85f);
+                    drawWifiIcon(ren, iconCenter, tint, 0.64f);
                 } else {
-                    drawLeafIcon(ren, {iconX, iconY}, labelCol, 0.95f);
+                    drawAirplaneIcon(ren, iconCenter, tint, 0.64f);
                 }
             }
-            // Icon right edge + pad — Airplane PNG fills the slot so the old
-            // shared compact textX sat flush against the glyph.
-            textX = iconX + edge * 0.5f + (compact ? 8.f : 10.f);
         }
         if (m_smallFont) {
-            const float textScale = compact ? 0.74f : (locked ? 0.76f : 0.82f);
+            const float textScale = switchu::ui::chrome::kTypeRow;
             const float textMaxW = std::max(8.f, pill.x - textX - 6.f);
-            std::string shown = ellipsize(m_smallFont, label, textMaxW, textScale);
-            float ty = card.y + (card.height - m_smallFont->measure(shown).y * textScale) * 0.5f;
+            std::string shown = fittedText(m_smallFont, label, textMaxW, textScale);
+            float ty = card.y + (card.height
+                - cachedTextSize(m_smallFont, shown).y * textScale) * 0.5f;
             ren.drawText(shown, {textX, ty}, m_smallFont, labelCol, textScale);
         }
 
-        nxui::Color pillBg = enabled
-            ? nxui::Color(0.20f, 0.82f, 0.45f, (locked ? 0.70f : 0.90f) * alpha)
-            : nxui::Color(0.35f, 0.38f, 0.45f, 0.75f * alpha);
-
+        if (enabled)
+            ren.drawRoundedRect(pill.expanded(2.f),
+                                cursorColor.withAlpha(0.10f * alpha), pillH * 0.5f + 2.f);
+        const nxui::Color pillBg = enabled
+            ? cursorColor.withAlpha((locked ? 0.70f : 0.90f) * alpha)
+            : (lightMode
+                ? nxui::Color(0.32f, 0.35f, 0.41f, 0.18f * alpha)
+                : nxui::Color(1.f, 1.f, 1.f, 0.16f * alpha));
         ren.drawRoundedRect(pill, pillBg, pillH * 0.5f);
 
-        float knobX = enabled ? (pill.x + pill.width - pillH * 0.5f) : (pill.x + pillH * 0.5f);
+        const float knobX = enabled
+            ? (pill.x + pill.width - pillH * 0.5f) : (pill.x + pillH * 0.5f);
+        ren.drawCircle({knobX, pill.y + pillH * 0.5f + 1.f}, pillH * 0.40f,
+                       nxui::Color(0.f, 0.f, 0.f, 0.16f * alpha));
         ren.drawCircle({knobX, pill.y + pillH * 0.5f}, pillH * 0.40f,
                        nxui::Color(1.f, 1.f, 1.f, alpha));
 
@@ -3431,26 +3639,21 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
             std::string stateStr = enabled
                 ? i18n.tr("quicksettings.on", "ON")
                 : i18n.tr("quicksettings.off", "OFF");
-            nxui::Vec2 ssz = m_smallFont->measure(stateStr);
-            float stx = enabled ? (pill.x + 6.f) : (pill.x + pill.width - ssz.x * 0.62f - 6.f);
-            ren.drawText(stateStr, {stx, pill.y + (pillH - ssz.y * 0.62f) * 0.5f}, m_smallFont,
-                         lightMode
-                            ? nxui::Color(0.04f, 0.05f, 0.07f, 0.95f * alpha)
-                            : nxui::Color(1.f, 1.f, 1.f, 0.95f * alpha),
-                         0.62f);
+            nxui::Vec2 ssz = cachedTextSize(m_smallFont, stateStr);
+            const float stateScale = switchu::ui::chrome::kTypeSection;
+            float stx = enabled ? (pill.x + 7.f)
+                                : (pill.x + pill.width - ssz.x * stateScale - 7.f);
+            ren.drawText(stateStr,
+                         {stx, pill.y + (pillH - ssz.y * stateScale) * 0.5f},
+                         m_smallFont,
+                         enabled
+                            ? nxui::Color(1.f, 1.f, 1.f, 0.95f * alpha)
+                            : (lightMode
+                                ? nxui::Color(0.06f, 0.07f, 0.09f, 0.82f * alpha)
+                                : nxui::Color(0.92f, 0.94f, 0.98f, 0.82f * alpha)),
+                         stateScale);
         }
     };
-
-    {
-        const bool ftEngaged = m_frameTapLiteEngaged;
-        drawToggle(ItemIndex::BatterySaver,
-                   ftEngaged
-                       ? i18n.tr("quicksettings.frame_tap_engaged", "Frame Tap Engaged")
-                       : i18n.tr("quicksettings.battery_saver", "Battery Saver"),
-                   m_batterySaver || ftEngaged,
-                   false,
-                   ftEngaged);
-    }
 
     drawToggle(ItemIndex::AirplaneMode,
                i18n.tr("quicksettings.airplane_mode_short", "Airplane"),
@@ -3459,30 +3662,48 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
     drawToggle(ItemIndex::Wifi, i18n.tr("quicksettings.wifi", "Wi-Fi"),
                m_wifiEnabled, true);
 
+    const int powerCount = powerButtonSlotCount();
+    if (powerCount > 0) {
+        const nxui::Rect group = {panel.x + 18.f, panel.y + kPowerBtnY,
+                                 panel.width - 36.f, kPowerBtnH};
+        ren.drawRoundedRect(group, cardFill.withAlpha(cardFill.a * 0.62f),
+                            switchu::ui::chrome::kRadiusCard);
+        ren.drawRoundedRectOutline(group,
+            neutralBorder.withAlpha(neutralBorder.a * 0.80f),
+            switchu::ui::chrome::kRadiusCard, 1.f);
+        ren.drawLine({group.x + 12.f, group.y + 1.f},
+                     {group.right() - 12.f, group.y + 1.f},
+                     lightMode
+                        ? nxui::Color(1.f, 1.f, 1.f, 0.52f * alpha)
+                        : nxui::Color(1.f, 1.f, 1.f, 0.16f * alpha), 1.f);
+        for (int i = 1; i < powerCount; ++i) {
+            const nxui::Rect next = computePowerButtonRect(powerButtonAtSlot(i));
+            ren.drawLine({next.x - kPowerBtnGap * 0.5f, group.y + 10.f},
+                         {next.x - kPowerBtnGap * 0.5f, group.bottom() - 10.f},
+                         neutralBorder.withAlpha(neutralBorder.a * 0.55f), 1.f);
+        }
+    }
+
     auto drawPowerBtn = [&](PowerAction pa, const std::string& label) {
         nxui::Rect btn = computePowerButtonRect(pa);
-        bool focused = (m_selectedItem == ItemIndex::PowerActions && m_selectedPower == pa);
+        const bool focused = panelFocused
+            && m_selectedItem == ItemIndex::PowerActions && m_selectedPower == pa;
+        const bool danger = pa == PowerAction::Shutdown;
+        const nxui::Color actionColor = danger ? dangerColor : cursorColor;
+        const nxui::Rect shape = btn.shrunk(2.f);
 
-        nxui::Color fill = focused
-            ? (lightMode
-                ? nxui::Color(0.08f, 0.10f, 0.14f, 0.08f * alpha)
-                : nxui::Color(1.f, 1.f, 1.f, 0.15f * alpha))
-            : cardFill;
-        nxui::Color border = focused
-            ? cursorColor.withAlpha(0.95f * alpha)
-            : neutralBorder;
-
-        ren.drawRoundedRect(btn, fill, 14.f);
-        ren.drawRoundedRectOutline(btn, border, 14.f, focused ? 1.4f : 1.0f);
-
-        ren.drawLine({btn.x + 10.f, btn.y + 1.f}, {btn.x + btn.width - 10.f, btn.y + 1.f},
-                     lightMode
-                        ? nxui::Color(1.f, 1.f, 1.f, 0.58f * alpha)
-                        : nxui::Color(1.f, 1.f, 1.f, 0.16f * alpha), 1.f);
+        if (focused) {
+            ren.drawRoundedRect(shape, actionColor.withAlpha((danger ? 0.10f : 0.12f) * alpha),
+                                12.f);
+            ren.drawRoundedRectOutline(shape,
+                actionColor.withAlpha(0.90f * alpha), 12.f, 1.4f);
+        }
 
         if (m_smallFont) {
-            nxui::Vec2 lsz = m_smallFont->measure(label);
-            nxui::Color textColor = focused ? primaryText : secondaryText;
+            nxui::Vec2 lsz = cachedTextSize(m_smallFont, label);
+            nxui::Color textColor = focused
+                ? primaryText
+                : (danger ? dangerColor.withAlpha(0.95f * alpha) : secondaryText);
             // Shared metrics so Sleep / Reboot / Power Off read as one family.
             const float textScale = kPowerTextScale;
             const float iconGap = kPowerIconGap;
@@ -3512,7 +3733,8 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                 std::string iconGlyph = (pa == PowerAction::Reboot)
                     ? utf8Codepoint(0xE08F) : utf8Codepoint(0xE0B8);
                 nxui::Font* fIcon = m_iconFont ? m_iconFont : m_smallFont;
-                nxui::Vec2 isz = fIcon ? fIcon->measure(iconGlyph) : nxui::Vec2{18.f, 18.f};
+                nxui::Vec2 isz = fIcon
+                    ? cachedTextSize(fIcon, iconGlyph) : nxui::Vec2{18.f, 18.f};
                 float actualIconW = isz.x * kPowerIconScale;
                 float totalW = actualIconW + iconGap + lsz.x * textScale;
                 float curXBtn = btn.x + (btn.width - totalW) * 0.5f;
@@ -3675,9 +3897,11 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                             artBytes = m_callbacks.onMusicQueryFolderCover(prow.folder);
                     }
                     const nxui::Texture* thumbTex = playlistThumbTexture(ren, artKey, artBytes);
-                    ren.drawRoundedRect(thumb, cardFill, 6.f);
+                    ren.drawRoundedRect(thumb, cardFill,
+                                        switchu::ui::chrome::kRadiusKeycap);
                     if (thumbTex)
-                        ren.drawTextureRounded(thumbTex, thumb, 6.f,
+                        ren.drawTextureRounded(thumbTex, thumb,
+                                               switchu::ui::chrome::kRadiusKeycap,
                                                nxui::Color(1.f, 1.f, 1.f, alpha));
 
                     std::string label = prow.label;
@@ -3689,13 +3913,13 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
 
                     nxui::Color textCol = (current || focused || folderHasCurrent)
                         ? primaryText : secondaryText;
-                    const float textScale = 0.78f;
+                    const float textScale = switchu::ui::chrome::kTypeRow;
                     const float textX = thumb.x + thumb.width + kPlaylistThumbGap;
                     const float textMaxW = rowRect.x + rowRect.width - textX - 8.f;
                     if (m_smallFont) {
-                        nxui::Vec2 fullSz = m_smallFont->measure(label);
+                        nxui::Vec2 fullSz = cachedTextSize(m_smallFont, label);
                         float ty = rowRect.y + (rowRect.height - fullSz.y * textScale) * 0.5f;
-                        std::string shown = ellipsize(m_smallFont, label, textMaxW, textScale);
+                        std::string shown = fittedText(m_smallFont, label, textMaxW, textScale);
                         if (focused && fullSz.x * textScale > textMaxW + 1.f
                             && m_playlistMarqueeHold <= 0.f) {
                             ren.pushClipRect({textX, rowRect.y, textMaxW, rowRect.height});
@@ -3745,8 +3969,8 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
             std::string np = m_music.nowPlaying.empty()
                 ? i18n.tr("quicksettings.music_idle", "Not playing")
                 : m_music.nowPlaying;
-            np = ellipsize(titleFont, np, fsCard.width - 36.f, titleScale);
-            nxui::Vec2 tsz = titleFont->measure(np);
+            np = fittedText(titleFont, np, fsCard.width - 36.f, titleScale);
+            nxui::Vec2 tsz = cachedTextSize(titleFont, np);
             ren.drawText(np,
                          {fsCard.x + (fsCard.width - tsz.x * titleScale) * 0.5f,
                           fsCard.y + 11.f},
@@ -3803,7 +4027,7 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                 const float labelY = fsCard.y + kCoverFsProgressLabelY;
                 ren.drawText(left, {fsCard.x + 18.f, labelY},
                              m_smallFont, secondaryText, kSliderLabelScale);
-                nxui::Vec2 rsz = m_smallFont->measure(right);
+                nxui::Vec2 rsz = cachedTextSize(m_smallFont, right);
                 ren.drawText(right,
                              {fsCard.x + fsCard.width - 18.f - rsz.x * kSliderLabelScale, labelY},
                              m_smallFont, secondaryText, kSliderLabelScale);

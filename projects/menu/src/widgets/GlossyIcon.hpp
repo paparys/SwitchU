@@ -23,7 +23,11 @@ public:
     GlossyIcon();
     ~GlossyIcon() override;
 
-    void setTitle(const std::string& t) { m_title = t; }
+    void setTitle(const std::string& t) {
+        if (t == m_title) return;
+        m_title = t;
+        m_titleOverlayValid = false;
+    }
     const std::string& title() const    { return m_title; }
 
     void setTexture(nxui::Texture* tex) { m_tex = tex; }
@@ -34,15 +38,28 @@ public:
     void setPosterFrame(bool enabled) { m_posterFrame = enabled; }
     bool usesPosterFrame() const { return m_posterFrame; }
 
+    // Shape of this tile's icon face. Width / height; 1 = square.
+    void setAspectRatio(float ratio) {
+        m_aspectRatio = std::clamp(ratio, 0.2f, 4.f);
+    }
+    float aspectRatio() const { return m_aspectRatio; }
+
     void setGameCardTexture(nxui::Texture* tex) { m_gameCardTex = tex; }
     nxui::Texture* gameCardTexture() const      { return m_gameCardTex; }
 
-    void setTitleId(uint64_t id)  { m_titleId = id; }
+    void setTitleId(uint64_t id) {
+        if (id == m_titleId) return;
+        m_titleId = id;
+        m_playtimeSourceValid = false;
+    }
     uint64_t titleId() const      { return m_titleId; }
 
     void setSuspended(bool s)     { m_suspended = s; }
     bool isSuspended() const      { return m_suspended; }
     void setMotionPaused(bool paused) { m_motionPaused = paused; }
+    // Motion-only LOD: neighbours skip their captions and extra shadow passes
+    // while the carousel crosses tiles quickly. Resting frames keep full detail.
+    void setScrollLowDetail(bool low) { m_scrollLowDetail = low; }
     // Drop shadow under the tile: offset in px, strength 0-1.
     void setShadow(float offsetY, float alpha) {
         m_shadowOffsetY = offsetY;
@@ -56,14 +73,10 @@ public:
     void setHighlight(float strength) {
         m_highlightStrength = std::clamp(strength, 0.f, 1.f);
     }
-    // Directional bevel: light along the top/left inner edge, shadow along the
-    // bottom/right. Reads as a raised plate rather than a flat decal, 0..1.
-    void setDepth(float depth) { m_depth = std::clamp(depth, 0.f, 1.f); }
     float m_shadowOffsetY = 6.f;
     float m_shadowAlpha = 0.20f;
     float m_vignetteStrength = 0.f;
     float m_highlightStrength = 0.f;
-    float m_depth = 0.f;
     bool motionPaused() const { return m_motionPaused; }
 
     void setIsGameCard(bool gc)     { m_isGameCard = gc; }
@@ -72,6 +85,18 @@ public:
     void setNotLaunchable(bool nl)  { m_notLaunchable = nl; }
     bool isNotLaunchable() const    { return m_notLaunchable; }
     void setLoadingColor(const nxui::Color& color) { m_loadingColor = color; }
+    // Scales the bottom-right playtime badge for denser grids.
+    void setPlaytimePillScale(float scale) {
+        m_playtimePillScale = std::clamp(scale, 0.3f, 1.5f);
+    }
+    // All Apps shows playtime in the metadata strip instead of over the art.
+    void setShowPlaytimeBadge(bool show) { m_showPlaytimeBadge = show; }
+    // All Apps: draw the artwork edge-to-edge instead of inside an 8px glass rim.
+    void setArtworkFullBleed(bool full) { m_artworkFullBleed = full; }
+    // All Apps: caption the artwork with a small bottom-left title.
+    void setTitleOverlay(bool show) { m_titleOverlay = show; }
+    // All Apps: thin inner edge so bright art does not merge with the backdrop.
+    void setInnerHairline(bool show) { m_innerHairline = show; }
     void setEntryKind(GridEntryKind kind) { m_entryKind = kind; }
     GridEntryKind entryKind() const { return m_entryKind; }
     void setFolderPreviewCount(int count) { m_folderPreviewCount = count; }
@@ -97,7 +122,12 @@ public:
         m_folderPeekCount = 0;
     }
     void setThemeMode(nxui::ThemeMode mode) { m_themeMode = mode; }
-    void setFont(nxui::Font* font) { m_font = font; }  // folder tiles carry their name
+    void setFont(nxui::Font* font) {
+        if (font == m_font) return;
+        m_font = font;
+        m_playtimeMeasureValid = false;
+        m_titleOverlayValid = false;
+    }  // folder tiles carry their name
     void setWidgetData(switchu::widgets::WidgetType type, int columns, int rows,
                        std::string primary, std::string secondary,
                        const std::string& assetPath,
@@ -181,6 +211,9 @@ protected:
     void onContentRender(nxui::Renderer& ren) override;
     // Vignette / highlight pass over a tile face, clamped to its rounded shape.
     void drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r, float radius);
+    // Bottom-left caption used by the full-bleed All Apps grid.
+    void drawTitleOverlay(nxui::Renderer& ren, const nxui::Rect& r, float radius,
+                          bool reservePill);
     // One-shot light sweep across the tile face, fired when the tile takes
     // focus. Empty/continuation tiles have no face to light up, so they skip it.
     void drawShine(nxui::Renderer& ren, const nxui::Rect& r, float radius);
@@ -199,7 +232,13 @@ private:
     bool        m_isGameCard = false;
     bool        m_notLaunchable = false;
     bool        m_posterFrame = false;
+    float       m_aspectRatio = 1.f;
     nxui::Color m_loadingColor = nxui::Color::white();
+    float       m_playtimePillScale = 1.f;
+    bool        m_showPlaytimeBadge = true;
+    bool        m_artworkFullBleed = false;
+    bool        m_titleOverlay = false;
+    bool        m_innerHairline = false;
     float       m_suspendPulse = 0.f;
     // Seconds spent without artwork; drives the short loading shimmer.
     float       m_skeletonT = 0.f;
@@ -237,6 +276,27 @@ private:
     std::uint64_t m_folderCoverTitleId = 0;
     nxui::ThemeMode m_themeMode = nxui::ThemeMode::Dark;
     nxui::Font*   m_font = nullptr;
+    // Playtime label is rebuilt only when the value changes: it was an
+    // allocation and a text measure for every visible tile, every frame.
+    std::string m_playtimeLabel;
+    std::uint64_t m_playtimeSeconds = 0;
+    std::uint64_t m_playtimeSourceSeconds = 0;
+    float m_playtimeRefresh = 0.f;
+    bool m_playtimeSourceValid = false;
+    float m_playtimeTextWidth = 0.f;
+    float m_playtimeTextHeight = 0.f;
+    bool m_playtimeMeasureValid = false;
+    // The All Apps caption is ellipsized against the tile width. Keep the
+    // finished label so a wall of captions does not re-measure every frame.
+    std::string m_titleOverlayLabel;
+    float m_titleOverlayMaxW = -1.f;
+    float m_titleOverlayScale = -1.f;
+    float m_titleOverlayTextH = 0.f;
+    bool m_titleOverlayValid = false;
+    // Set for small or faded tiles, which skip the soft shadow and the fine
+    // edge detail. The silhouette is unchanged; only those extra passes are.
+    bool m_lowDetail = false;
+    bool m_scrollLowDetail = false;
     switchu::widgets::WidgetType m_widgetType = switchu::widgets::WidgetType::Clock;
     int m_widgetColumns = 1;
     int m_widgetRows = 1;

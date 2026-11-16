@@ -23,8 +23,7 @@ class Renderer;
 class QuickSettingsOverlay : public nxui::Widget {
 public:
     enum class ItemIndex {
-        BatterySaver = 0,
-        MusicTransport,
+        MusicTransport = 0,
         MusicProgress,
         BgmVolume,
         SfxVolume,
@@ -75,7 +74,6 @@ public:
         std::function<void(float)> onSfxVolumeChanged;
         std::function<void(bool)>  onAirplaneModeToggled;
         std::function<void(bool)>  onWifiToggled;
-        std::function<void(bool)>  onBatterySaverToggled;
         std::function<void()>      onSleepRequested;
         std::function<void()>      onLockRequested;
         std::function<void()>      onRebootRequested;
@@ -104,9 +102,9 @@ public:
     QuickSettingsOverlay();
     ~QuickSettingsOverlay() override;
 
-    void setFont(nxui::Font* f)      { m_font = f; }
-    void setSmallFont(nxui::Font* f) { m_smallFont = f; }
-    void setIconFont(nxui::Font* f)  { m_iconFont = f; }
+    void setFont(nxui::Font* f)      { m_font = f; clearMeasureCache(); }
+    void setSmallFont(nxui::Font* f) { m_smallFont = f; clearMeasureCache(); }
+    void setIconFont(nxui::Font* f)  { m_iconFont = f; clearMeasureCache(); }
     void setTheme(const nxui::Theme* t);
     void setInstantCursorMotion(bool instant) { m_cursor.setInstantMotion(instant); }
     void setInput(nxui::Input* input) { m_input = input; }
@@ -128,12 +126,6 @@ public:
     bool hasAlbumFolders() const { return m_music.hasAlbumFolders; }
 
     void setBatteryStatus(int percent, bool charging);
-    void setBatterySaver(bool enabled);
-    bool batterySaver() const { return m_batterySaver; }
-    // When Frame Tap's viewer holds lite, lock the Battery Saver row ON and
-    // relabel it — preference underneath is unchanged.
-    void setFrameTapLiteEngaged(bool engaged);
-    bool frameTapLiteEngaged() const { return m_frameTapLiteEngaged; }
     void setLockScreenEnabled(bool enabled);
     bool lockScreenEnabled() const { return m_lockScreenEnabled; }
     void hideCursorInstant();
@@ -224,10 +216,35 @@ private:
                               const nxui::Color& color);
     bool drawToggleGlyph(nxui::Renderer& ren, ItemIndex idx, nxui::Vec2 center,
                          const nxui::Color& color, float edge) const;
+    nxui::Vec2 cachedTextSize(nxui::Font* font, const std::string& text);
+    std::string fittedText(nxui::Font* font, const std::string& text,
+                           float maxWidth, float scale);
+    void clearMeasureCache() {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+        m_fitCache.clear();
+        m_fitCacheEntries = 0;
+    }
 
     nxui::Font*        m_font = nullptr;
     nxui::Font*        m_smallFont = nullptr;
     nxui::Font*        m_iconFont = nullptr;
+    // Text metrics are constant per font and string. Labels, times, percentages
+    // and track titles repeat every frame, so re-measuring them is pure cost.
+    // Bounded so walking a long playlist cannot grow the cache forever.
+    std::unordered_map<const nxui::Font*,
+                       std::unordered_map<std::string, nxui::Vec2>> m_measureCache;
+    std::size_t m_measureCacheEntries = 0;
+    struct FittedText {
+        int widthKey = 0;
+        int scaleKey = 0;
+        std::string text;
+    };
+    // Overflowing labels are truncated every frame otherwise. Cache the fitted
+    // string per width/scale variant; four variants cover the live layouts.
+    std::unordered_map<const nxui::Font*,
+                       std::unordered_map<std::string, std::vector<FittedText>>> m_fitCache;
+    std::size_t m_fitCacheEntries = 0;
     const nxui::Theme* m_theme = nullptr;
     nxui::Input*       m_input = nullptr;
     Callbacks          m_callbacks;
@@ -235,6 +252,7 @@ private:
     bool  m_active = false;
     bool  m_animating = false;
     float m_animProgress = 0.f;
+    float m_uiTime = 0.f;
 
     ItemIndex   m_selectedItem = ItemIndex::MusicTransport;
     MusicControl m_selectedMusicControl = MusicControl::PlayPause;
@@ -250,8 +268,6 @@ private:
     float m_sfxVolume = 0.5f;
     bool  m_airplaneMode = false;
     bool  m_wifiEnabled = true;
-    bool  m_batterySaver = false;
-    bool  m_frameTapLiteEngaged = false;
     bool  m_lockScreenEnabled = false;
 
     MusicUiState m_music;
@@ -322,7 +338,6 @@ private:
     nxui::Texture m_iconRepeat;
     nxui::Texture m_iconShuffle;
     nxui::Texture m_iconPlaylist;
-    nxui::Texture m_iconLeaf;
     nxui::Texture m_iconAirplane;
     bool  m_musicIconsLoadAttempted = false;
     bool  m_toggleIconsLoadAttempted = false;

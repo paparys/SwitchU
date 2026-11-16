@@ -1,5 +1,4 @@
 #include "TabBuilders.hpp"
-#include "screen_fit.hpp"
 #include <nxui/core/I18n.hpp>
 #include <switch.h>
 #include <algorithm>
@@ -11,6 +10,13 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
     auto& i18n = nxui::I18n::instance();
     Tab t;
     t.name = i18n.tr("settings.tabs.display", "Display");
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.display.section_screen", "Screen");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
 
     {
         SettingItem it; it.label = i18n.tr("settings.display.brightness", "Brightness"); it.type = ItemType::Slider;
@@ -59,6 +65,13 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
                 setsysSetBacklightSettings(&bl);
             }
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.display.section_tv", "TV output");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
@@ -127,10 +140,14 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
                 tv.underscan = percent;
                 setsysSetTvSettings(&tv);
             }
-            // Resize the managed layer now so the result is visible immediately,
-            // without waiting for a re-dock (like qlaunch's live preview).
-            switchu::menu::applyScreenUnderscan();
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.display.section_album", "Screenshots");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
@@ -154,6 +171,13 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
     }
 
     {
+        SettingItem it;
+        it.label = i18n.tr("settings.display.section_advanced", "Advanced");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
         SettingItem it; it.label = i18n.tr("settings.display.ui_wireframe", "UI Wireframe"); it.type = ItemType::Toggle;
         it.description = i18n.tr("settings.display.ui_wireframe_desc", "Show outlines of all Box widgets for layout debugging.");
         it.boolVal = screen.m_wireframeEnabled;
@@ -164,6 +188,10 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
         };
         t.items.push_back(std::move(it));
     }
+
+    // Dock detection changes the same output path this tab configures, so the
+    // docked size and carousel rows belong here instead of a separate tab.
+    DockedTab::appendTo(screen, t);
 
     return t;
 }

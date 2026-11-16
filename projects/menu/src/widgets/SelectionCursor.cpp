@@ -1,8 +1,9 @@
 #include "SelectionCursor.hpp"
+#include "../ui/ChromeTokens.hpp"
+#include "../ui/FocusHighlight.hpp"
 #include <nxui/core/Renderer.hpp>
 #include <algorithm>
 #include <cmath>
-
 
 SelectionCursor::SelectionCursor() {
     m_x.setImmediate(0); m_y.setImmediate(0);
@@ -72,13 +73,16 @@ float SelectionCursor::computeAdaptiveDuration(const nxui::Rect& target,
     float radiusNorm = std::max(4.f, std::max(std::abs(sr), std::abs(targetCornerRadius)));
     float radiusDelta = std::abs(targetCornerRadius - sr) / radiusNorm;
 
-    float distFactor = std::clamp(distance / 320.f, 0.f, 2.4f);
-    float deformFactor = std::clamp(sizeDelta + aspectDelta + radiusDelta, 0.f, 1.8f);
+    // A tile-to-tile step should stay close to the base duration; only long
+    // jumps (page corners, grid -> wide poster) earn extra time. The old 2.8x
+    // cap let the ring trail more than half a second behind focus.
+    float distFactor = std::clamp(distance / 420.f, 0.f, 1.5f);
+    float deformFactor = std::clamp(sizeDelta + aspectDelta + radiusDelta, 0.f, 1.2f);
 
-    float scale = 1.f + distFactor * 0.50f + deformFactor * 0.35f;
+    float scale = 1.f + distFactor * 0.35f + deformFactor * 0.22f;
     float adaptive = baseDuration * scale;
 
-    return std::clamp(adaptive, baseDuration * 0.95f, baseDuration * 2.8f);
+    return std::clamp(adaptive, baseDuration, baseDuration * 1.85f);
 }
 
 void SelectionCursor::moveTo(const nxui::Rect& target, float duration) {
@@ -182,7 +186,15 @@ void SelectionCursor::onRender(nxui::Renderer& ren) {
         cr += 4.f * arrival;
     }
 
-    const nxui::Color ringColor = m_color;
+    const bool gradient = m_gradient || switchu::ui::highlight::gradientEnabled();
+    const bool sharedGradient = switchu::ui::highlight::gradientEnabled();
+    const nxui::Color gradientA = sharedGradient
+        ? switchu::ui::highlight::style().a : m_gradientA;
+    const nxui::Color gradientB = sharedGradient
+        ? switchu::ui::highlight::style().b : m_gradientB;
+    const float stroke = sharedGradient
+        ? switchu::ui::highlight::thicknessPx() : m_borderWidth;
+    const nxui::Color ringColor = gradient ? gradientA : m_color;
 
     float wave = std::sin(m_time * m_waveSpeed) * 0.5f + 0.5f;
     const float outerAlpha = (0.28f + 0.22f * wave) * m_opacity;
@@ -194,10 +206,22 @@ void SelectionCursor::onRender(nxui::Renderer& ren) {
             ringColor.withAlpha(0.28f * arrival * m_opacity),
             cr + 7.f * arrival, 2.f);
     }
-    ren.drawRoundedRectOutline(r.expanded(5.f),
-                               ringColor.withAlpha(outerAlpha * 0.55f),
-                               cr + 5.f, m_borderWidth + 1.5f);
-    ren.drawRoundedRectOutline(r.expanded(2.f),
-                               ringColor.withAlpha(innerAlpha),
-                               cr + 2.f, m_borderWidth);
+    ren.drawRoundedRectOutline(r.expanded(switchu::ui::chrome::kFocusGlowSpread),
+                               ringColor.withAlpha(switchu::ui::chrome::kFocusGlowAlpha
+                                                  * (0.55f + 0.45f * wave) * m_opacity),
+                               cr + switchu::ui::chrome::kFocusGlowSpread,
+                               stroke + 2.f);
+    const nxui::Rect ringRect = r.expanded(switchu::ui::chrome::kFocusExpansion);
+    const float ringRadius = cr + switchu::ui::chrome::kFocusExpansion;
+    if (!gradient) {
+        ren.drawRoundedRectOutline(ringRect, ringColor.withAlpha(innerAlpha),
+                                   ringRadius, stroke);
+        return;
+    }
+
+    // One continuous ribbon around the rounded silhouette. Shared vertices
+    // close every corner instead of leaving the butt-capped seams that the old
+    // per-segment line ring showed at larger stroke widths.
+    switchu::ui::highlight::drawGradientRing(
+        ren, ringRect, ringRadius, innerAlpha, stroke, gradientA, gradientB, m_time);
 }

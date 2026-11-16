@@ -41,15 +41,6 @@ void FrameTapStatus::pollNeedHeadroomFile() {
 }
 
 bool FrameTapStatus::refresh() {
-    m_forceLight = false;
-    {
-        FILE* f = std::fopen(kForceLightPath, "rb");
-        if (f) {
-            std::fclose(f);
-            m_forceLight = true;
-        }
-    }
-
     if (!m_serviceOpen) {
         m_retryAccumMs = 0.f;
         Service svc{};
@@ -57,7 +48,7 @@ bool FrameTapStatus::refresh() {
                                             : MAKERESULT(Module_Libnx, LibnxError_NotFound);
         if (R_FAILED(rc)) {
             m_available = false;
-            m_viewerConnected = m_forceLight;
+            m_viewerConnected = false;
             m_needsHeadroom = false;
             m_headroomNeedMb = 0;
             m_status = {};
@@ -75,7 +66,7 @@ bool FrameTapStatus::refresh() {
         m_service = {};
         m_serviceOpen = false;
         m_available = false;
-        m_viewerConnected = m_forceLight;
+        m_viewerConnected = false;
         m_needsHeadroom = false;
         m_headroomNeedMb = 0;
         m_status = {};
@@ -89,7 +80,7 @@ bool FrameTapStatus::refresh() {
     const bool streaming = st.state == LiveState_Streaming;
     // Net viewer bit is durable; Streaming covers USB / older FT. Also treat
     // WaitViewer with the net bit as connected (viewer present, not yet live).
-    m_viewerConnected = m_forceLight || netViewer || streaming;
+    m_viewerConnected = netViewer || streaming;
     m_needsHeadroom = (st.reserved3 & kReserved3NeedHeadroom) != 0;
     m_headroomNeedMb = 0;
     if (m_needsHeadroom) {

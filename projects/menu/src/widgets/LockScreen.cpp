@@ -11,7 +11,7 @@
 namespace {
 constexpr float kScreenW = 1280.f;
 constexpr float kScreenH = 720.f;
-constexpr float kMargin = 56.f;
+constexpr float kMargin = 64.f;
 constexpr float kCurtainTravel = 740.f;
 constexpr float kInputGuard = 0.35f;
 constexpr int kTimeFontPt = 88;
@@ -20,14 +20,16 @@ constexpr float kDateSettleDelay = 0.35f;
 constexpr float kDissolveEnterScale = 1.035f;
 // Unlock durations — AnimatedFloat is driven by AnimationManager only
 // (do not also call .update here or motions run ~2×).
-constexpr float kCurtainEnterSec = 0.70f;
-constexpr float kCurtainUnlockSec = 0.78f;
-constexpr float kDissolveEnterSec = 1.15f;
-constexpr float kDissolveExitSec = 1.15f;
-constexpr float kZoomEnterSec = 0.78f;
-constexpr float kZoomExitSec = 0.78f;
-constexpr float kWipeEnterSec = 0.72f;
-constexpr float kWipeExitSec = 0.72f;
+// Faster than the first pass: a lock is a gate, not a title sequence. Enter
+// settles out, unlock accelerates away.
+constexpr float kCurtainEnterSec = 0.52f;
+constexpr float kCurtainUnlockSec = 0.42f;
+constexpr float kDissolveEnterSec = 0.55f;
+constexpr float kDissolveExitSec = 0.45f;
+constexpr float kZoomEnterSec = 0.55f;
+constexpr float kZoomExitSec = 0.42f;
+constexpr float kWipeEnterSec = 0.52f;
+constexpr float kWipeExitSec = 0.42f;
 constexpr float kEnterAnimDelay = 0.05f;  // hitch after hiding HOME / focusing Lock
 constexpr float kUnlockAnimDelay = 0.05f; // hitch after restoring HOME under Lock
 // Zoom scale endpoints (Out grows away / In shrinks in).
@@ -193,9 +195,6 @@ LockScreen::LockScreen() {
     setRect({0.f, 0.f, kScreenW, kScreenH});
     setVisible(false);
     setFocusable(true);
-    setLiquidGlassEnabled(false);
-    setForceLiquidGlass(false);
-    setLiquidGlassShaderEnabled(false);
     setBlurEnabled(false);
     setFrameworkTouchEnabled(false);
     wireActions();
@@ -255,9 +254,29 @@ void LockScreen::loadPendingHero() {
         m_heroTex = nxui::Texture();
         m_hasHero = false;
     }
+    m_heroLum = -1.f;
     if (!m_gpu || !m_ren || m_pendingHero.empty() ||
         m_pendingHero.size() != 1280u * 720u * 4u)
         return;
+
+    // Average luma of the upper third: it decides whether the clock is drawn in
+    // white or in the theme's dark ink, instead of assuming every hero is dark.
+    {
+        std::uint64_t sum = 0;
+        std::uint32_t count = 0;
+        for (unsigned y = 0; y < 240u; y += 8u) {
+            const std::uint8_t* row =
+                m_pendingHero.data() + static_cast<std::size_t>(y) * 1280u * 4u;
+            for (unsigned x = 0; x < 1280u; x += 8u) {
+                const std::uint8_t* p = row + static_cast<std::size_t>(x) * 4u;
+                sum += static_cast<std::uint64_t>(54u * p[0] + 183u * p[1] + 19u * p[2]);
+                ++count;
+            }
+        }
+        if (count)
+            m_heroLum = static_cast<float>(sum) /
+                        (static_cast<float>(count) * 65280.f);
+    }
     constexpr std::uint64_t kTextReserve = 6u * 1024u * 1024u;
     constexpr std::uint64_t kFullBytes = 1280ull * 720ull * 4ull;
     if (m_gpu->imageMemoryAvailable() <= kTextReserve + kFullBytes) {
@@ -356,24 +375,24 @@ void LockScreen::show(bool instant) {
             m_dateReveal.setImmediate(1.f);
             m_dateRevealStarted = true;
             m_curtain.setImmediate(1.f);
-            m_curtain.set(0.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
+            m_curtain.set(0.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
         } else if (m_transition == Transition::Zoom) {
             m_fade.setImmediate(0.f);
             m_dateReveal.setImmediate(0.f);
             m_dateRevealStarted = true;
             const float z0 = (m_zoomDir == 1) ? kZoomInEnter : kZoomOutEnter;
             m_zoom.setImmediate(z0);
-            m_fade.set(1.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
-            m_dateReveal.set(1.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
-            m_zoom.set(1.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
+            m_fade.set(1.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
+            m_dateReveal.set(1.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
+            m_zoom.set(1.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
         } else { // Dissolve
             m_fade.setImmediate(0.f);
             m_dateReveal.setImmediate(0.f);
             m_dateRevealStarted = true;
             m_zoom.setImmediate(kDissolveEnterScale);
-            m_fade.set(1.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
-            m_dateReveal.set(1.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
-            m_zoom.set(1.f, enterDur, nxui::Easing::inOutCubic, kEnterAnimDelay);
+            m_fade.set(1.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
+            m_dateReveal.set(1.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
+            m_zoom.set(1.f, enterDur, nxui::Easing::outCubic, kEnterAnimDelay);
         }
     }
     refreshClock();
@@ -394,6 +413,7 @@ void LockScreen::releaseArt() {
     if (m_hasHero)
         m_heroTex = nxui::Texture();
     m_hasHero = false;
+    m_heroLum = -1.f;
     if (m_hasIcon)
         m_iconTex = nxui::Texture();
     m_hasIcon = false;
@@ -434,18 +454,18 @@ void LockScreen::beginCurtainUnlock() {
     // Brief delay so the HOME restore hitch doesn't eat the first frames.
     if (m_transition == Transition::Dissolve) {
         m_curtain.setImmediate(0.f);
-        m_fade.set(0.f, kDissolveExitSec, nxui::Easing::inOutCubic, kUnlockAnimDelay);
-        m_dateReveal.set(0.f, kDissolveExitSec, nxui::Easing::inOutCubic, kUnlockAnimDelay);
-        m_zoom.set(kDissolveEnterScale, kDissolveExitSec, nxui::Easing::inOutCubic,
+        m_fade.set(0.f, kDissolveExitSec, nxui::Easing::inCubic, kUnlockAnimDelay);
+        m_dateReveal.set(0.f, kDissolveExitSec, nxui::Easing::inCubic, kUnlockAnimDelay);
+        m_zoom.set(kDissolveEnterScale, kDissolveExitSec, nxui::Easing::inCubic,
                    kUnlockAnimDelay);
         return;
     }
 
     if (m_transition == Transition::Zoom) {
         const float z1 = (m_zoomDir == 1) ? kZoomInExit : kZoomOutExit;
-        m_fade.set(0.f, kZoomExitSec, nxui::Easing::inOutCubic, kUnlockAnimDelay);
-        m_dateReveal.set(0.f, kZoomExitSec, nxui::Easing::inOutCubic, kUnlockAnimDelay);
-        m_zoom.set(z1, kZoomExitSec, nxui::Easing::inOutCubic, kUnlockAnimDelay);
+        m_fade.set(0.f, kZoomExitSec, nxui::Easing::inCubic, kUnlockAnimDelay);
+        m_dateReveal.set(0.f, kZoomExitSec, nxui::Easing::inCubic, kUnlockAnimDelay);
+        m_zoom.set(z1, kZoomExitSec, nxui::Easing::inCubic, kUnlockAnimDelay);
         m_curtain.set(1.f, kZoomExitSec, nxui::Easing::linear, kUnlockAnimDelay);
         return;
     }
@@ -453,13 +473,13 @@ void LockScreen::beginCurtainUnlock() {
     if (m_transition == Transition::Wipe) {
         m_fade.setImmediate(1.f);
         const float remaining = std::clamp(1.f - m_curtain.value(), 0.05f, 1.f);
-        m_curtain.set(1.f, kWipeExitSec * remaining, nxui::Easing::inOutCubic, kUnlockAnimDelay);
+        m_curtain.set(1.f, kWipeExitSec * remaining, nxui::Easing::inCubic, kUnlockAnimDelay);
         return;
     }
 
     m_fade.setImmediate(1.f);
     const float remaining = std::clamp(1.f - m_curtain.value(), 0.05f, 1.f);
-    m_curtain.set(1.f, kCurtainUnlockSec * remaining, nxui::Easing::inOutCubic, kUnlockAnimDelay);
+    m_curtain.set(1.f, kCurtainUnlockSec * remaining, nxui::Easing::inCubic, kUnlockAnimDelay);
 }
 
 void LockScreen::unlock() {
@@ -724,9 +744,9 @@ void LockScreen::drawAtmosphere(nxui::Renderer& ren, float dx, float dy, float z
         const nxui::Vec2 br = mapLockPt(r.x + r.width, r.y + r.height, dx, dy, zoom);
         return nxui::Rect{tl.x, tl.y, br.x - tl.x, br.y - tl.y};
     };
-    // Breathe gently: a 0.10 pulse reads as a flicker next to a clock face.
-    const float breath = 0.5f + 0.5f * std::sin(m_atmosPhase * 0.55f);
-    const float vig = (m_hasHero ? 0.32f : 0.26f) + 0.045f * breath;
+    // Static frame. The old 0.55 rad/s breath was a third independent pulse on a
+    // screen that already had a moving sweep, a pulsing colon and a ring pulse.
+    const float vig = m_hasHero ? 0.30f : 0.22f;
     const nxui::Color edge(0.f, 0.f, 0.f, vig * fade);
     const nxui::Color clear(0.f, 0.f, 0.f, 0.f);
 
@@ -740,41 +760,12 @@ void LockScreen::drawAtmosphere(nxui::Renderer& ren, float dx, float dy, float z
     ren.drawGradientRectH(at({kScreenW - 190.f, 0.f, 190.f, kScreenH}), clear,
                           nxui::Color(0.f, 0.f, 0.f, vig * 0.58f * fade));
 
-    if (m_theme) {
-        // Accent haze at the foot ties the still to the UI accent.
-        const nxui::Color accent = m_theme->cursorNormal;
-        ren.drawGradientRect(at({0.f, kScreenH - 300.f, kScreenW, 300.f}),
-                             accent.withAlpha(0.f), accent.withAlpha(0.055f * fade));
-    }
-
-    if (m_hasHero) {
-        // Cinematic bottom wash so Resume sits in the poster.
-        ren.drawGradientRect(at({0.f, 300.f, kScreenW, 420.f}), clear,
-                             nxui::Color(0.f, 0.f, 0.f, 0.55f * fade));
-    }
 }
 
 void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, float fade,
                            const nxui::Color& ink, const nxui::Color& inkSoft) const {
-    // Date: tracked uppercase caption, small enough to sit under the clock in
-    // the hierarchy instead of competing with it.
-    nxui::Font* dateFont = m_smallFont ? m_smallFont : m_font;
-    const float dateT = std::clamp(m_dateReveal.value(), 0.f, 1.f);
-    const float dateDrop = (1.f - dateT) * 14.f;
-    const float dateY = 64.f + dateDrop;
-    const std::string date = asciiUpper(m_dateStr);
     const bool overImage = m_hasHero || static_cast<bool>(m_onDrawBackdrop);
-    // A still behind the clock needs contrast protection; a flat theme
-    // background does not, and a black shadow would only dirty a light theme.
-    if (overImage) {
-        drawCenteredTracked(ren, date, dateY + 2.5f, dateFont,
-                            nxui::Color(0.f, 0.f, 0.f, 0.20f * dateT), 1.f, 2.4f, dx, dy, zoom);
-    }
-    drawCenteredTracked(ren, date, dateY, dateFont, inkSoft.withAlpha(inkSoft.a * dateT * 0.9f),
-                        1.f, 2.4f, dx, dy, zoom);
-
     const float colonPulse = 0.74f + 0.26f * (0.5f + 0.5f * std::sin(m_atmosPhase * 1.9f));
-    const float baseY = 118.f;
 
     // Glyph layout, shared by the shadow pass and the lit pass.
     struct Glyph {
@@ -785,6 +776,9 @@ void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, 
     std::vector<Glyph> glyphs;
     float totalW = 0.f;
     float glyphH = 0.f;
+    // 12 h ("9:41") and 24 h ("23:41") must fill the same optical block, or the
+    // composition changes mass with the clock setting. Measure, then fit.
+    float timeFit = 1.f;
     if (m_timeFont) {
         const auto colon = m_timeStr.find(':');
         if (colon != std::string::npos) {
@@ -793,17 +787,20 @@ void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, 
             const nxui::Vec2 ls = m_timeFont->measure(left);
             const nxui::Vec2 cs = m_timeFont->measure(":");
             const nxui::Vec2 rs = m_timeFont->measure(right);
-            glyphH = ls.y;
-            totalW = ls.x + cs.x + rs.x;
+            const float rawW = ls.x + cs.x + rs.x;
+            timeFit = std::clamp(560.f / std::max(1.f, rawW), 0.86f, 1.18f);
+            glyphH = ls.y * timeFit;
+            totalW = rawW * timeFit;
             const float x0 = (kScreenW - totalW) * 0.5f;
-            glyphs.push_back({left, x0, ls.x});
-            glyphs.push_back({":", x0 + ls.x, cs.x});
-            glyphs.push_back({right, x0 + ls.x + cs.x, rs.x});
+            glyphs.push_back({left, x0, ls.x * timeFit});
+            glyphs.push_back({":", x0 + ls.x * timeFit, cs.x * timeFit});
+            glyphs.push_back({right, x0 + (ls.x + cs.x) * timeFit, rs.x * timeFit});
         } else {
             const nxui::Vec2 ts = m_timeFont->measure(m_timeStr);
-            glyphH = ts.y;
-            totalW = ts.x;
-            glyphs.push_back({m_timeStr, (kScreenW - totalW) * 0.5f, ts.x});
+            timeFit = std::clamp(560.f / std::max(1.f, ts.x), 0.86f, 1.18f);
+            glyphH = ts.y * timeFit;
+            totalW = ts.x * timeFit;
+            glyphs.push_back({m_timeStr, (kScreenW - totalW) * 0.5f, totalW});
         }
     } else if (m_font) {
         const nxui::Vec2 ts = m_font->measure(m_timeStr);
@@ -815,30 +812,68 @@ void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, 
     nxui::Font* timeFont = m_timeFont ? m_timeFont.get() : m_font;
     if (!timeFont || totalW <= 0.f)
         return;
-    const float glyphScale = m_timeFont ? zoom : 2.35f * zoom;
+    const float glyphScale = (m_timeFont ? timeFit : 2.35f) * zoom;
+    // Fixed optical centre rather than a fixed top edge: the width clamp can then
+    // change the size without moving the clock off its line.
+    constexpr float kTimeCenterY = 170.f;
     auto glyphOrigin = [&](const Glyph& g, float lift) {
         const nxui::Vec2 c =
-            mapLockPt(g.x + g.w * 0.5f, baseY + glyphH * 0.5f + lift, dx, dy, zoom);
+            mapLockPt(g.x + g.w * 0.5f, kTimeCenterY + lift, dx, dy, zoom);
         return nxui::Vec2{c.x - g.w * zoom * 0.5f, c.y - glyphH * zoom * 0.5f};
     };
 
+    // Date caption under the clock, in the hierarchy instead of above it.
+    nxui::Font* dateFont = m_smallFont ? m_smallFont : m_font;
+    const float dateT = std::clamp(m_dateReveal.value(), 0.f, 1.f);
+    const float dateDrop = (1.f - dateT) * 14.f;
+    const float dateY = kTimeCenterY + glyphH * 0.5f + 18.f + dateDrop;
+    const std::string date = asciiUpper(m_dateStr);
+    const bool latinDate = isAscii(date);
+    // Non-ASCII dates skip tracking, so draw them a touch larger to keep the same
+    // optical weight as the Latin caption.
+    const float dateScale = latinDate ? 1.f : 1.08f;
+    const float dateTracking = latinDate ? 2.4f : 0.f;
+    // A still needs contrast protection; a flat theme background does not, and a
+    // black shadow there would only dirty a light theme.
     if (overImage) {
+        drawCenteredTracked(ren, date, dateY + 1.0f, dateFont,
+                            nxui::Color(0.f, 0.f, 0.f, 0.28f * dateT), dateScale,
+                            dateTracking, dx, dy, zoom);
+        drawCenteredTracked(ren, date, dateY + 2.5f, dateFont,
+                            nxui::Color(0.f, 0.f, 0.f, 0.10f * dateT), dateScale,
+                            dateTracking, dx, dy, zoom);
+    }
+    drawCenteredTracked(ren, date, dateY, dateFont,
+                        inkSoft.withAlpha(inkSoft.a * dateT * 0.94f), dateScale,
+                        dateTracking, dx, dy, zoom);
+
+    if (overImage) {
+        // Two passes: a tight contact shadow plus a wider, weaker one. One 2.4 px
+        // offset reads as a drop shadow, not as lifted type.
         for (const auto& g : glyphs)
-            ren.drawText(g.text, glyphOrigin(g, 2.4f), timeFont,
-                         nxui::Color(0.f, 0.f, 0.f, 0.20f * fade), glyphScale);
+            ren.drawText(g.text, glyphOrigin(g, 1.0f), timeFont,
+                         nxui::Color(0.f, 0.f, 0.f, 0.30f * fade), glyphScale);
+        for (const auto& g : glyphs)
+            ren.drawText(g.text, glyphOrigin(g, 3.0f), timeFont,
+                         nxui::Color(0.f, 0.f, 0.f, 0.12f * fade), glyphScale);
     }
 
-    // Light travelling across the digits. Every glyph mixes toward white by its
-    // own distance from the sweep centre, so there is no clipping edge to see.
-    const float band = std::max(52.f, totalW * 0.26f);
-    const float sweep = (0.5f + 0.5f * std::sin(m_atmosPhase * 0.75f)) * totalW;
+    // A slow highlight rather than a travelling spotlight: one 6 s pass every
+    // 22 s at 15% white. The old continuous 50% sweep was the loudest ambient
+    // motion on the screen and read as a demo.
+    const float cycle = std::fmod(m_atmosPhase, 22.f) / 22.f;
+    const float travel = cycle < 0.30f ? std::clamp(cycle / 0.30f, 0.f, 1.f) : -1.f;
+    const float band = std::max(70.f, totalW * 0.30f);
     for (const auto& g : glyphs) {
         nxui::Color c = (g.text == ":") ? ink.withAlpha(ink.a * colonPulse) : ink;
-        const float gc = g.x + g.w * 0.5f;
-        float a = std::clamp(1.f - std::fabs(gc - sweep) / band, 0.f, 1.f);
-        a = a * a * (3.f - 2.f * a);
-        if (a > 0.001f)
-            c = nxui::Color::lerp(c, nxui::Color::white(), 0.5f * a).withAlpha(c.a);
+        if (travel >= 0.f) {
+            const float gc = g.x + g.w * 0.5f;
+            const float sweep = travel * (totalW + band * 2.f) - band;
+            float a = std::clamp(1.f - std::fabs(gc - sweep) / band, 0.f, 1.f);
+            a = a * a * (3.f - 2.f * a);
+            if (a > 0.001f)
+                c = nxui::Color::lerp(c, nxui::Color::white(), 0.15f * a).withAlpha(c.a);
+        }
         ren.drawText(g.text, glyphOrigin(g, 0.f), timeFont, c, glyphScale);
     }
 }
@@ -905,28 +940,41 @@ void LockScreen::render(nxui::Renderer& ren) {
         clipped = true;
     }
 
-    const bool paintPlane = m_hasHero || curtainMoving || wipeMoving || dissolveZoomPlane;
+    // Paint whenever locked: a plane that is transparent at rest reads as an
+    // overlay on HOME, not as a lock screen.
+    const bool paintPlane = m_hasHero || curtainMoving || wipeMoving
+                         || dissolveZoomPlane || m_active;
     if (paintPlane && fade > 0.01f) {
         if (m_hasHero) {
             const nxui::Rect full = atZoom({0.f, 0.f, kScreenW, kScreenH}, bgZoom);
             ren.drawTexture(&m_heroTex, full, nxui::Color::white().withAlpha(fade));
-            // Grade the still into the theme palette before the contrast scrim.
-            ren.drawRect(full, th.backgroundAccent.withAlpha(0.10f * fade));
-            ren.drawGradientRect(full, nxui::Color::white().withAlpha(0.f),
-                                 th.cursorNormal.withAlpha(0.10f * fade));
-            ren.drawRect(full, nxui::Color(0.f, 0.f, 0.f, (m_unlocking ? 0.52f : 0.40f) * fade));
+            // One grade, not four stacked ones: accent + gradient + 40% black +
+            // a 55% bottom wash reached ~70% and buried the poster.
+            ren.drawRect(full, th.backgroundAccent.withAlpha(0.06f * fade));
+            ren.drawGradientRect(full, nxui::Color(0.f, 0.f, 0.f, 0.06f * fade),
+                                 nxui::Color(0.f, 0.f, 0.f, 0.45f * fade));
         } else if (m_onDrawBackdrop) {
             m_onDrawBackdrop(ren, dy, fade, bgZoom);
+            // The lock gets its own plate; the wallpaper still slides under the
+            // curtain, six percent visible.
+            ren.drawRect(atZoom({0.f, 0.f, kScreenW, kScreenH}, bgZoom),
+                         th.background.withAlpha(0.90f * fade));
         } else {
             ren.drawRect(atZoom({0.f, 0.f, kScreenW, kScreenH}, bgZoom),
-                         th.background.withAlpha(fade));
+                         th.background.withAlpha(0.94f * fade));
         }
     }
+
+    // Soft key light from the top edge, so the plate is not a flat fill.
+    ren.drawGradientRect(atZoom({0.f, 0.f, kScreenW, 260.f}, bgZoom),
+                         nxui::Color::white().withAlpha(0.045f * fade),
+                         nxui::Color::white().withAlpha(0.f));
 
     // Vignette is part of the BG wash — keep it fullscreen on Zoom In.
     drawAtmosphere(ren, dx, dy, bgZoom, fade);
 
-    const bool lightInk = m_hasHero;
+    // Ink follows the artwork, not its presence: a daylight hero needs dark text.
+    const bool lightInk = m_hasHero && (m_heroLum < 0.f || m_heroLum < 0.45f);
     const nxui::Color ink = (lightInk ? nxui::Color(1.f, 1.f, 1.f, 1.f) : th.textPrimary)
                                 .withAlpha(fade);
     const nxui::Color inkSoft = (lightInk ? nxui::Color(1.f, 1.f, 1.f, 1.f) : th.textSecondary)
@@ -937,27 +985,49 @@ void LockScreen::render(nxui::Renderer& ren) {
         const std::string pct = std::to_string(m_battery) + "%";
         const nxui::Vec2 psz = small->measure(pct);
         const float right = kScreenW - kMargin;
-        const nxui::Vec2 pctC = mapLockPt(right - psz.x * 0.5f, 74.f, dx, dy, zoom);
+        const float rowY = 48.f;
+        const nxui::Vec2 pctC = mapLockPt(right - psz.x * 0.5f, rowY + psz.y * 0.5f,
+                                          dx, dy, zoom);
         ren.drawText(pct, {pctC.x - psz.x * zoom * 0.5f, pctC.y - psz.y * zoom * 0.5f},
-                     small, inkSoft, zoom);
-        // Sits on the date's optical line instead of floating in the corner.
-        const nxui::Rect body = at({right - psz.x - 52.f, 64.f, 40.f, 20.f});
-        ren.drawRoundedRectOutline(body, inkSoft, 4.f * zoom, 1.6f * zoom);
-        ren.drawRect({body.right() + 2.f * zoom, body.y + 5.f * zoom, 3.f * zoom, 10.f * zoom}, inkSoft);
+                     small, inkSoft.withAlpha(fade * 0.86f), zoom);
+        // Compact chrome: a hairline shell and a contained bolt read as an icon at
+        // this size. The old 40 px shell with a bolt spilling past it was noisy,
+        // and the accent-coloured fill made it a sixth accent moment.
+        const float shellW = 28.f, shellH = 14.f;
+        const nxui::Rect body = at({right - psz.x - 10.f - shellW, rowY - 2.f,
+                                    shellW, shellH});
+        ren.drawRoundedRectOutline(body, inkSoft.withAlpha(fade * 0.80f),
+                                   2.5f * zoom, 1.25f * zoom);
+        ren.drawRect({body.right() + 1.5f * zoom, body.y + 4.f * zoom,
+                      2.f * zoom, 6.f * zoom},
+                     inkSoft.withAlpha(fade * 0.72f));
         const float fill = std::clamp(m_battery / 100.f, 0.f, 1.f);
-        ren.drawRoundedRect({body.x + 2.5f * zoom, body.y + 2.5f * zoom,
-                             (body.width - 5.f * zoom) * fill, body.height - 5.f * zoom},
-                            th.cursorNormal.withAlpha(fade * 0.92f), 2.5f * zoom);
+        ren.drawRoundedRect({body.x + 1.5f * zoom, body.y + 1.5f * zoom,
+                             (body.width - 3.f * zoom) * fill,
+                             body.height - 3.f * zoom},
+                            ink.withAlpha(fade * 0.85f), 1.5f * zoom);
         if (m_charging) {
-            // Overlaps the shell and spills past its edges, mirroring the HUD.
-            const float boltH = body.height * 1.24f;
+            const float boltH = body.height * 0.96f;
             const float boltW = boltH * 0.56f;
+            const nxui::Rect bolt{
+                body.x + (body.width - boltW) * 0.5f,
+                body.y + (body.height - boltH) * 0.5f,
+                boltW, boltH};
+            // Knock the bolt out of the fill instead of painting ink onto ink:
+            // the plane colour shows through it and the ink edge keeps the shape
+            // readable over both the filled and empty halves of the icon.
             switchu::battery_drawing::drawLightningBolt(
-                ren, {body.x + (body.width - boltW) * 0.5f,
-                      body.y + (body.height - boltH) * 0.5f,
-                      boltW, boltH},
-                ink, th.background.withAlpha(fade), 1.f);
+                ren, bolt, th.background.withAlpha(fade * 0.96f), ink,
+                std::max(1.f, 1.25f * zoom));
         }
+    }
+
+    // Local contrast plate behind the clock: full width and soft-ended, so it
+    // has no visible edge and the still keeps its colour.
+    if ((m_hasHero || static_cast<bool>(m_onDrawBackdrop)) && fade > 0.01f) {
+        ren.drawGradientRect(atZoom({0.f, 0.f, kScreenW, 320.f}, zoom),
+                             nxui::Color(0.f, 0.f, 0.f, 0.30f * fade),
+                             nxui::Color(0.f, 0.f, 0.f, 0.f));
     }
 
     drawClock(ren, dx, dy, zoom, fade, ink, inkSoft);
@@ -981,15 +1051,21 @@ void LockScreen::render(nxui::Renderer& ren) {
             const nxui::Rect cell = at({x0 + static_cast<float>(i) * (cellW + cellGap) + shake,
                                         y0, cellW, cellH});
             const bool filled = i < entered;
-            ren.drawRoundedRect(cell, tick.withAlpha(fade * (filled ? 0.22f : 0.09f)),
+            const bool current = filled && i == entered - 1;
+            ren.drawRoundedRect(cell, tick.withAlpha(fade * (filled ? 0.24f : 0.12f)),
                                 12.f * zoom);
-            ren.drawRoundedRectOutline(cell, tick.withAlpha(fade * (filled ? 0.95f : 0.42f)),
-                                       12.f * zoom, 2.f * zoom);
-            if (filled) {
-                // Arrow, not a letter: the code is directional.
+            ren.drawRoundedRectOutline(cell,
+                                       tick.withAlpha(fade * (filled ? 0.95f : 0.28f)),
+                                       12.f * zoom, (filled ? 2.f : 1.5f) * zoom);
+            if (current) {
+                // Only the step just entered shows its direction; earlier cells
+                // stay filled dots, so the row reads as progress, not a key map.
                 drawDirGlyph(ren, m_padInput[static_cast<std::size_t>(i)],
                              {cell.x + cell.width * 0.5f, cell.y + cell.height * 0.5f},
                              15.f * zoom, tick.withAlpha(fade));
+            } else if (filled) {
+                ren.drawCircle({cell.x + cell.width * 0.5f, cell.y + cell.height * 0.5f},
+                               3.f * zoom, tick.withAlpha(fade * 0.70f), 12);
             }
             // Underline the step being entered.
             if (!error && entered < 4 && i == entered) {
@@ -1000,10 +1076,15 @@ void LockScreen::render(nxui::Renderer& ren) {
         }
         const std::string hint = error
             ? nxui::I18n::instance().tr("lock.code_wrong", "Wrong code")
-            : nxui::I18n::instance().tr("lock.code_hint",
-                                        "Press Up / Down / Left / Right. B clears.");
-        drawCentered(ren, hint, y0 + cellH + 34.f, m_smallFont ? m_smallFont : m_font,
+            : nxui::I18n::instance().tr("lock.code_hint", "Enter code");
+        nxui::Font* hintFont = m_smallFont ? m_smallFont : m_font;
+        drawCentered(ren, hint, y0 + cellH + 34.f, hintFont,
                      error ? bad.withAlpha(fade) : inkSoft, 0.92f, dx, dy, zoom);
+        if (!error && !m_padInput.empty()) {
+            drawCentered(ren, nxui::I18n::instance().tr("lock.code_clear", "B clears"),
+                         y0 + cellH + 56.f, hintFont,
+                         inkSoft.withAlpha(inkSoft.a * 0.55f), 0.86f, dx, dy, zoom);
+        }
     }
 
     if (m_canResume && !m_padCodeEnabled) {
@@ -1042,9 +1123,11 @@ void LockScreen::render(nxui::Renderer& ren) {
         }
 
         const nxui::Rect btn = at(resumeButtonRect(0.f));
-        ren.drawRoundedRect(btn, th.cursorNormal.withAlpha(fade * 0.22f), 12.f * zoom);
-        ren.drawRoundedRectOutline(btn, th.cursorNormal.withAlpha(fade * 0.62f), 12.f * zoom,
-                                   1.5f);
+        // Hairline, not a filled pill: the accent belongs to the ring, and a 22%
+        // wash was the fifth accent moment on the screen.
+        ren.drawRoundedRect(btn, ink.withAlpha(fade * 0.05f), 12.f * zoom);
+        ren.drawRoundedRectOutline(btn, th.cursorNormal.withAlpha(fade * 0.55f),
+                                   12.f * zoom, 1.5f * zoom);
         const nxui::Vec2 rsz = m_font->measure(m_resumeText);
         ren.drawText(m_resumeText,
                      {btn.x + (btn.width - rsz.x * zoom) * 0.5f,
@@ -1053,7 +1136,9 @@ void LockScreen::render(nxui::Renderer& ren) {
         drawKeyHintRow(ren, {{'A', m_resumeText}, {'B', m_unlockText}}, 596.f, small,
                        ink, inkSoft, fade, dx, dy, zoom);
     } else if (!m_padCodeEnabled) {
-        drawKeyHintRow(ren, {{'A', m_unlockText}}, 352.f, small, ink, inkSoft, fade, dx, dy, zoom);
+        // Same slot as the Resume state, so the primary action never jumps 244 px
+        // depending on whether a game happens to be suspended.
+        drawKeyHintRow(ren, {{'A', m_unlockText}}, 596.f, small, ink, inkSoft, fade, dx, dy, zoom);
     }
 
     if (clipped) {

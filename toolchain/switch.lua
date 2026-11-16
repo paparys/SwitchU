@@ -2,6 +2,12 @@
 local function dkp_tool(name)
     local DEVKITPRO = os.getenv("DEVKITPRO") or "/opt/devkitpro"
     local full = path.join(DEVKITPRO, "tools", "bin", name)
+    -- Windows needs the real .exe path: CreateProcess does not append the
+    -- extension when it is handed an explicit executable path.
+    if os.host() == "windows" then
+        local exe = full .. ".exe"
+        if os.isfile(exe) then return exe end
+    end
     if os.isfile(full) then return full end
     -- fall back to PATH (distro packages put tools in /usr/bin)
     return name

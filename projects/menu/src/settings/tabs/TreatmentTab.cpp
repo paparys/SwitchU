@@ -149,25 +149,6 @@ SettingsScreen::Tab settings::tabs::TreatmentTab::build(SettingsScreen& screen) 
     };
     tab.items.push_back(std::move(shadowAlpha));
 
-    SettingItem motionRow;
-    motionRow.type = ItemType::Selector;
-    motionRow.label = i18n.tr("settings.appearance.motion", "Motion preset");
-    motionRow.description = i18n.tr("settings.appearance.motion_desc",
-        "Crisp snaps and stops, Smooth glides, Springy overshoots then settles. "
-        "Drives the carousel, page slides, edge bump and the focus ring.");
-    motionRow.options = {
-        i18n.tr("settings.appearance.motion_crisp", "Crisp"),
-        i18n.tr("settings.appearance.motion_smooth", "Smooth"),
-        i18n.tr("settings.appearance.motion_springy", "Springy"),
-    };
-    motionRow.intVal = std::clamp(screen.m_motionStyle, 0, 2);
-    motionRow.onChange = [&screen](SettingItem& self) {
-        screen.m_motionStyle = std::clamp(self.intVal, 0, 2);
-        if (screen.m_motionStyleCb)
-            screen.m_motionStyleCb(screen.m_motionStyle);
-    };
-    tab.items.push_back(std::move(motionRow));
-
     SettingItem hudSection;
     hudSection.type = ItemType::Section;
     hudSection.label = i18n.tr("settings.treatment.hud_section", "Top bar and hints");
@@ -303,6 +284,13 @@ SettingsScreen::Tab settings::tabs::TreatmentTab::build(SettingsScreen& screen) 
             screen.m_titlePillNudgeYCb(screen.m_titlePillNudgeY);
     };
     tab.items.push_back(std::move(titlePosY));
+
+    // The opacity layer is part of the same visual treatment, so keep it in
+    // this list rather than making users hunt through the rail for a four-row
+    // tab.
+    SettingsScreen::Tab opacity = OpacityTab::build(screen);
+    for (auto& item : opacity.items)
+        tab.items.push_back(std::move(item));
 
     return tab;
 }

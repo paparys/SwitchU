@@ -23,7 +23,12 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
     auto& i18n = nxui::I18n::instance();
 
     SettingsScreen::Tab tab;
-    tab.name = i18n.tr("settings.tabs.appearance", "Icons");
+    tab.name = i18n.tr("settings.tabs.appearance", "Icons & Wallpaper");
+
+    SettingItem librarySection;
+    librarySection.type = ItemType::Section;
+    librarySection.label = i18n.tr("settings.appearance.section_library", "Library");
+    tab.items.push_back(std::move(librarySection));
 
     SettingItem order;
     order.type = ItemType::Selector;
@@ -49,19 +54,29 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
     iconSection.label = i18n.tr("settings.appearance.icons_section", "Home icons");
     tab.items.push_back(std::move(iconSection));
 
-    SettingItem aspect;
-    aspect.type = ItemType::Selector;
-    aspect.label = i18n.tr("settings.appearance.aspect", "Icon aspect ratio");
-    aspect.description = i18n.tr("settings.appearance.aspect_desc",
-        "Shapes every tile in the single-row carousel.");
-    aspect.options = {"1:1", "16:9", "4:3"};
-    aspect.intVal = std::clamp(screen.m_iconAspect, 0, 2);
-    aspect.onChange = [&screen](SettingItem& self) {
-        screen.m_iconAspect = std::clamp(self.intVal, 0, 2);
-        if (screen.m_iconAspectCb)
-            screen.m_iconAspectCb(screen.m_iconAspect);
+    SettingItem homeLayout;
+    homeLayout.type = ItemType::Selector;
+    homeLayout.label = i18n.tr("settings.appearance.home_layout", "Home layout");
+    homeLayout.description = i18n.tr("settings.appearance.home_layout_desc",
+        "Carousel is the single row. Shelf is a 5x2 grid, Showcase a 3x2 grid of "
+        "large square tiles, and Poster Wall a 6x2 grid of portrait posters.");
+    homeLayout.options = {
+        i18n.tr("settings.appearance.home_layout_carousel", "Carousel"),
+        i18n.tr("settings.appearance.home_layout_shelf", "Shelf (5x2)"),
+        i18n.tr("settings.appearance.home_layout_showcase", "Showcase (3x2)"),
+        i18n.tr("settings.appearance.home_layout_poster", "Poster Wall (6x2)"),
     };
-    tab.items.push_back(std::move(aspect));
+    homeLayout.intVal = std::clamp(static_cast<int>(screen.m_homeLayout), 0, 3);
+    homeLayout.onChange = [&screen](SettingItem& self) {
+        const auto preset = static_cast<HomeLayoutPreset>(
+            std::clamp(self.intVal, 0, 3));
+        if (screen.m_homeLayout == preset)
+            return;
+        screen.m_homeLayout = preset;
+        if (screen.m_homeLayoutCb)
+            screen.m_homeLayoutCb(preset);
+    };
+    tab.items.push_back(std::move(homeLayout));
 
     SettingItem corners;
     corners.type = ItemType::Selector;
@@ -162,29 +177,6 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
     };
     tab.items.push_back(std::move(highlight));
 
-    SettingItem depth3d;
-    depth3d.type = ItemType::Slider;
-    depth3d.label = i18n.tr("settings.appearance.icon_depth", "Icon 3D depth");
-    depth3d.description = i18n.tr("settings.appearance.icon_depth_desc",
-        "Bevels every tile: a light edge along the top and left, a shadow along "
-        "the bottom and right, so icons read as raised plates instead of flat "
-        "decals. Works with the vignette and the highlight. 0% is flat.");
-    depth3d.sliderSteps = 100;
-    depth3d.valueSpan = 100;
-    depth3d.hasReset = true;
-    depth3d.resetValue = 0.35f;
-    depth3d.floatVal = std::clamp(screen.m_iconDepth, 0, 100) / 100.f;
-    depth3d.anim01 = depth3d.floatVal;
-    depth3d.infoText = std::to_string(std::clamp(screen.m_iconDepth, 0, 100)) + "%";
-    depth3d.onChange = [&screen](SettingItem& self) {
-        screen.m_iconDepth = static_cast<int>(
-            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 100.f));
-        self.infoText = std::to_string(screen.m_iconDepth) + "%";
-        if (screen.m_iconOverlayCb)
-            screen.m_iconOverlayCb();
-    };
-    tab.items.push_back(std::move(depth3d));
-
     SettingItem spacing;
     spacing.type = ItemType::Slider;
     spacing.label = i18n.tr("settings.appearance.icon_spacing", "Icon spacing");
@@ -207,50 +199,6 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
     };
     tab.items.push_back(std::move(spacing));
 
-    SettingItem depth;
-    depth.type = ItemType::Slider;
-    depth.label = i18n.tr("settings.appearance.carousel_depth", "Carousel icon depth");
-    depth.description = i18n.tr("settings.appearance.carousel_depth_desc",
-        "Back makes the tiles smaller so more of them are visible; forward makes "
-        "them larger and fewer fit.");
-    depth.sliderSteps = 40;
-    depth.valueBase = -100;
-    depth.valueSpan = 200;
-    depth.valueSigned = true;
-    depth.hasReset = true;
-    depth.resetValue = 0.5f;
-    depth.floatVal = (std::clamp(screen.m_carouselDepth, -100, 100) + 100) / 200.f;
-    depth.anim01 = depth.floatVal;
-    depth.onChange = [&screen](SettingItem& self) {
-        const int pct = -100 + static_cast<int>(
-            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 200.f));
-        screen.m_carouselDepth = pct;
-        if (screen.m_carouselDepthCb)
-            screen.m_carouselDepthCb(pct);
-    };
-    tab.items.push_back(std::move(depth));
-
-    SettingItem fade;
-    fade.type = ItemType::Slider;
-    fade.label = i18n.tr("settings.appearance.carousel_fade", "Carousel fade-out");
-    fade.description = i18n.tr("settings.appearance.carousel_fade_desc",
-        "How quickly the tiles beside the focused one fade away. Low keeps the "
-        "whole row lit, high leaves just a glow at the edges.");
-    fade.sliderSteps = 100;
-    fade.valueSpan = 100;
-    fade.hasReset = true;
-    fade.resetValue = 0.5f;
-    fade.floatVal = std::clamp(screen.m_carouselFade, 0, 100) / 100.f;
-    fade.anim01 = fade.floatVal;
-    fade.onChange = [&screen](SettingItem& self) {
-        const int pct = static_cast<int>(
-            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 100.f));
-        screen.m_carouselFade = pct;
-        if (screen.m_carouselFadeCb)
-            screen.m_carouselFadeCb(pct);
-    };
-    tab.items.push_back(std::move(fade));
-
     SettingItem gridNudge;
     gridNudge.type = ItemType::Slider;
     gridNudge.label = i18n.tr("settings.appearance.grid_nudge", "Move icons left / right");
@@ -271,27 +219,6 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
             screen.m_gridNudgeCb(screen.m_gridNudgeX);
     };
     tab.items.push_back(std::move(gridNudge));
-
-    SettingItem lineNudge;
-    lineNudge.type = ItemType::Slider;
-    lineNudge.label = i18n.tr("settings.appearance.line_nudge", "Move carousel up / down");
-    lineNudge.description = i18n.tr("settings.appearance.line_nudge_desc",
-        "Raises or lowers the single-row icon strip.");
-    lineNudge.sliderSteps = 50;
-    lineNudge.valueBase = -25;
-    lineNudge.valueSpan = 50;
-    lineNudge.valueSigned = true;
-    lineNudge.valueSuffix = " px";
-    lineNudge.hasReset = true;
-    lineNudge.resetValue = 0.5f;
-    lineNudge.floatVal = sliderFromNudge(screen.m_lineNudgeY);
-    lineNudge.anim01 = lineNudge.floatVal;
-    lineNudge.onChange = [&screen](SettingItem& self) {
-        screen.m_lineNudgeY = nudgeFromSlider(self.floatVal);
-        if (screen.m_lineNudgeCb)
-            screen.m_lineNudgeCb(screen.m_lineNudgeY);
-    };
-    tab.items.push_back(std::move(lineNudge));
 
     SettingItem lineNudgeX;
     lineNudgeX.type = ItemType::Slider;
@@ -314,6 +241,18 @@ SettingsScreen::Tab settings::tabs::AppearanceTab::build(SettingsScreen& screen)
             screen.m_lineNudgeXCb(screen.m_lineNudgeX);
     };
     tab.items.push_back(std::move(lineNudgeX));
+
+    // Presets cover every value in this tab, so they sit at the bottom instead
+    // of taking a separate rail entry that showed only nine rows.
+    SettingsScreen::Tab presets = LayoutTab::build(screen);
+    for (auto& item : presets.items)
+        tab.items.push_back(std::move(item));
+
+    // The All Apps grid uses the same tiles, so its two layout sliders belong
+    // with the HOME icon controls instead of a rail entry of their own.
+    SettingsScreen::Tab allApps = AllAppsTab::build(screen);
+    for (auto& item : allApps.items)
+        tab.items.push_back(std::move(item));
 
     return tab;
 }

@@ -70,7 +70,6 @@ public:
     void onGridRowsChange(IntCb cb)      { m_gridRowsCb = std::move(cb); }
     void onActionHintStyleChange(IntCb cb) { m_actionHintStyleCb = std::move(cb); }
     void onSortLargeTilesChange(BoolCb cb) { m_sortLargeTilesCb = std::move(cb); }
-    void onBatterySaverChange(BoolCb cb) { m_batterySaverCb = std::move(cb); }
     void onLockScreenChange(BoolCb cb) { m_lockScreenCb = std::move(cb); }
     void onPowerButtonActionChange(IntCb cb) { m_powerButtonActionCb = std::move(cb); }
     void onLockScreenClockFontChange(StringCb cb) { m_lockScreenClockFontCb = std::move(cb); }
@@ -132,7 +131,15 @@ public:
         m_gridRows = std::clamp(rows, 1, 5);
     }
     void setSortLargeTilesState(bool enabled) { m_sortLargeTiles = enabled; }
-    void setBatterySaverState(bool enabled) { m_batterySaver = enabled; }
+    void setSortLargeTilesAvailable(bool available) {
+        if (m_sortLargeTilesAvailable == available)
+            return;
+        m_sortLargeTilesAvailable = available;
+        // InterfaceTab is built up front; refresh it on the next open instead of
+        // leaving a stale toggle after the HOME preset changed.
+        if (!m_tabs.empty())
+            m_sortLargeTilesTabDirty = true;
+    }
     void setLockScreenState(bool enabled) { m_lockScreenEnabled = enabled; }
     void setPowerButtonAction(int action) { m_powerButtonAction = action; }
     void setLockScreenClockFontState(std::string id) { m_lockScreenClockFont = std::move(id); }
@@ -146,7 +153,6 @@ public:
         m_lockClockFontEntries = std::move(entries);
     }
     nxui::Font* ensureLockClockPreviewFont(const std::string& id);
-    void setFrameTapLiteEngaged(bool engaged) { m_frameTapLiteEngaged = engaged; }
     void setIconContrastAdaptState(bool enabled) { m_iconContrastAdapt = enabled; }
     void setLockScreenTransitionState(int mode) {
         m_lockScreenTransition = std::clamp(mode, 0, 3);
@@ -201,10 +207,6 @@ public:
     void setRenderContext(nxui::GpuDevice* gpu, nxui::Renderer* renderer);
     void show() override;
     void refreshCommunityCatalog(bool forceNetwork = false);
-    void requestRenderDiagnostics(int frames = 6) {
-        if (frames > m_renderDebugFrames)
-            m_renderDebugFrames = frames;
-    }
     enum class ShelfMode {
         Installed = 0,
         Shop = 1,
@@ -235,6 +237,13 @@ public:
 protected:
     void buildTabs() override;
     bool usesCustomContentLayout() const override { return m_tabIndex < 2; }
+    // Same shell as Settings: a persistent header that names the section and
+    // explains the focused row, flat single-line rows, and a hint footer.
+    float overlayHeaderHeight() const override { return 116.f; }
+    void drawOverlayHeader(nxui::Renderer&, const nxui::Rect&, float) override;
+    float overlayFooterHeight() const override { return 34.f; }
+    void drawOverlayFooter(nxui::Renderer&, const nxui::Rect&, float) override;
+    bool showsRowDescriptions() const override { return false; }
     void drawCustomContent(nxui::Renderer& ren, const nxui::Rect& panel, const nxui::Rect& content, float opacity) override;
     void updateCustomContent(float dt) override;
     bool handleCustomPressA() override;
@@ -339,6 +348,9 @@ private:
     void ensureCommunityCatalogWarm();
     // First shelf + last Community scroll neighborhood (±1 page).
     void prefetchCommunityShelfNeighborhood();
+    // Shelf tabs draw their title in the shared header instead of inside the
+    // content, so the overlay does not print two headings in a row.
+    void shelfHeaderText(std::string& title, std::string& subtitle) const;
     bool isThemesTab() const;
     bool isCommunityTab() const; // Themes tab + Shop shelf
     bool isIconsTab() const;
@@ -450,7 +462,6 @@ private:
     IntCb m_gridRowsCb;
     IntCb m_actionHintStyleCb;
     BoolCb m_sortLargeTilesCb;
-    BoolCb m_batterySaverCb;
     BoolCb m_lockScreenCb;
     IntCb m_powerButtonActionCb;
     StringCb m_lockScreenClockFontCb;
@@ -486,8 +497,13 @@ private:
     int m_gridColumns = 5;
     int m_gridRows = 3;
     int m_actionHintStyle = 1;
+    // Footer hints are rebuilt only when the focused control type changes.
+    std::string m_footerHintsText;
+    int m_footerHintsKey = -1;
     bool m_sortLargeTiles = true;
-    bool m_batterySaver = false;
+    // Only Shelf and Showcase can pack tiles larger than 1x1.
+    bool m_sortLargeTilesAvailable = true;
+    bool m_sortLargeTilesTabDirty = false;
     bool m_lockScreenEnabled = false;
     int m_powerButtonAction = 0;
     std::string m_lockScreenClockFont;
@@ -495,7 +511,6 @@ private:
     std::string m_lockClockThemeFontPath;
     std::vector<switchu::lockfonts::Entry> m_lockClockFontEntries;
     std::unordered_map<std::string, std::unique_ptr<nxui::Font>> m_lockClockPreviewFonts;
-    bool m_frameTapLiteEngaged = false;
     bool m_iconContrastAdapt = true;
     int m_lockScreenTransition = 0;
     int m_lockScreenZoomDir = 0;
@@ -579,5 +594,4 @@ private:
     int m_themeTouchIndex = -1;
     float m_themeTouchStartX = 0.f;
     float m_themeTouchStartY = 0.f;
-    int m_renderDebugFrames = 0;
 };

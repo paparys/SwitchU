@@ -6,8 +6,10 @@
 #include <nxui/core/Input.hpp>
 #include <nxui/Theme.hpp>
 
+#include <cstddef>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // On-screen keyboard.
@@ -35,14 +37,12 @@ public:
 
     TextEntryScreen();
 
-    void setFont(nxui::Font* font) { m_font = font; }
-    void setSmallFont(nxui::Font* font) { m_smallFont = font; }
+    void setFont(nxui::Font* font) { m_font = font; clearMeasureCache(); }
+    void setSmallFont(nxui::Font* font) { m_smallFont = font; clearMeasureCache(); }
     void setTheme(const nxui::Theme* theme);
 
     void setFullLayout(bool full);
     bool fullLayout() const { return m_fullLayout; }
-    void setGlassStyle(bool glass);
-    bool glassStyle() const { return m_glassStyle; }
 
     void onAccept(AcceptCallback cb) { m_acceptCb = std::move(cb); }
     void onCancel(VoidCallback cb) { m_cancelCb = std::move(cb); }
@@ -51,7 +51,6 @@ public:
     void onCloseSfx(VoidCallback cb) { m_closeSfxCb = std::move(cb); }
     void onAccessibilityAnnouncement(StringCallback cb) { m_accessibilityCb = std::move(cb); }
     void onLayoutModeChanged(LayoutCallback cb) { m_layoutCb = std::move(cb); }
-    void onGlassStyleChanged(LayoutCallback cb) { m_styleCb = std::move(cb); }
 
     void show(const Request& request);
     void hide(bool accepted);
@@ -95,7 +94,6 @@ private:
     Metrics metrics() const;
     const std::vector<std::vector<Key>>& rows() const;
     nxui::Rect keyRect(int row, int column) const;
-    nxui::Rect styleToggleRect() const;
     nxui::Rect sizeToggleRect() const;
     nxui::Rect cancelChipRect() const;
     nxui::Rect keyboardBoardRect() const;
@@ -103,13 +101,17 @@ private:
     nxui::Rect clearButtonRect() const;
     nxui::Rect revealButtonRect() const;
     float fieldTrailingReserve() const;
+    nxui::Vec2 cachedTextSize(nxui::Font* font, const std::string& text) const;
+    void clearMeasureCache() const {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+    }
     float counterScale() const;
     float hintScale() const;
     float guideScale() const;
     void moveSelection(int dx, int dy);
     void togglePage();
     void toggleSizeMode();
-    void toggleGlassStyle();
     void togglePasswordReveal();
     void pressSelected();
     void pressKey(const Key& key);
@@ -138,13 +140,17 @@ private:
     nxui::Font* m_font = nullptr;
     nxui::Font* m_smallFont = nullptr;
     const nxui::Theme* m_theme = nullptr;
+    // The keyboard redraws key labels, the caret prefix, the counter and the
+    // hint every frame. Their metrics only change with the text or font, so
+    // cache them rather than re-laying out the same strings continuously.
+    mutable std::unordered_map<const nxui::Font*,
+                               std::unordered_map<std::string, nxui::Vec2>> m_measureCache;
+    mutable std::size_t m_measureCacheEntries = 0;
 
     bool m_active = false;
     bool m_animatingOut = false;
-    bool m_backdropReady = false;
     bool m_accepted = false;
     bool m_fullLayout = true;
-    bool m_glassStyle = true;
     nxui::AnimatedFloat m_alpha;
 
     Request m_request;
@@ -162,7 +168,6 @@ private:
     int m_touchRow = -1;
     int m_touchColumn = -1;
     bool m_waitingForTouchRelease = false;
-    bool m_touchOnStyleToggle = false;
     bool m_touchOnSizeToggle = false;
     bool m_touchOnCancelChip = false;
     bool m_touchOnClear = false;
@@ -183,7 +188,6 @@ private:
     VoidCallback m_closeSfxCb;
     StringCallback m_accessibilityCb;
     LayoutCallback m_layoutCb;
-    LayoutCallback m_styleCb;
 
     static constexpr int kColumns = 10;
 };

@@ -59,9 +59,6 @@ public:
     // sftap cmd 15 — tell FT the hard reclaim finished (free_kb from svcGetInfo).
     bool ackHeadroom(std::uint32_t freeKb);
 
-    // Soak/debug: treat viewer as connected while this file exists.
-    static constexpr const char* kForceLightPath =
-        "sdmc:/config/SwitchU/ft_light_force";
     static constexpr const char* kNeedHeadroomFile =
         "sdmc:/config/switch-frame-tap/need_headroom";
     static constexpr const char* kHeadroomReadyFile =
@@ -75,7 +72,6 @@ private:
     bool m_serviceOpen = false;
     bool m_available = false;
     bool m_viewerConnected = false;
-    bool m_forceLight = false;
     bool m_needsHeadroom = false;
     std::uint32_t m_headroomNeedMb = 0;
     StreamStatus m_status{};

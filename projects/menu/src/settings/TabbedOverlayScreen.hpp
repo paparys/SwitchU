@@ -6,6 +6,7 @@
 #include <nxui/core/Animation.hpp>
 #include <nxui/widgets/GlassWidget.hpp>
 #include "widgets/SelectionCursor.hpp"
+#include "ui/ChromeTokens.hpp"
 #include <string>
 #include <deque>
 #include <utility>
@@ -39,7 +40,8 @@ public:
         FolderOptions,
     };
 
-    explicit TabbedOverlayScreen(ScreenMode mode = ScreenMode::Settings);
+    explicit TabbedOverlayScreen(ScreenMode mode = ScreenMode::Settings,
+                                 bool fullscreen = false);
     virtual ~TabbedOverlayScreen();
 
     void setFont(nxui::Font* f)      { m_font = f; }
@@ -51,6 +53,10 @@ public:
     void hide();
     bool isActive() const { return m_active || m_animating; }
     bool isFullyVisible() const { return m_active && !m_animating; }
+    bool fullscreenPanel() const { return m_fullscreenPanel; }
+    // A frozen HOME frame is stored in offscreen target 2 while this fullscreen
+    // overlay is open, so HOME can stop rendering underneath it.
+    bool hasBackdropSnapshot() const { return m_backdropCacheValid; }
 
     void rebuildCurrentTab();
     void refreshCurrentTabWidgets(); // place: keeps the other tabs loaded and the in-flight loaders untouched.
@@ -214,11 +220,20 @@ public:
         std::string              name;
         std::vector<SettingItem> items;
         std::function<void(Tab&, TabbedOverlayScreen&)> onUpdate;
+        // Optional rail group heading drawn above this tab. Only the first tab
+        // of a group carries one.
+        std::string              group;
+        int                      groupIcon = 0; // 0 grid, 1 home, 2 person
+        // Stable identifier for saved settings pins. Never rebuilt from the
+        // localized tab name.
+        std::string              key;
     };
 
 protected:
     virtual void buildTabs() = 0;
     virtual void ensureTabLoaded(int tabIndex) { (void)tabIndex; }
+    // Where the rail starts when the overlay opens.
+    virtual int initialTabIndex() const { return 0; }
     virtual bool usesCustomContentLayout() const { return false; }
     virtual void drawCustomContent(nxui::Renderer&, const nxui::Rect&, const nxui::Rect&, float) {}
     virtual void updateCustomContent(float) {}
@@ -230,9 +245,17 @@ protected:
     virtual bool handleCustomNavLeft() { return false; }
     virtual bool handleCustomNavRight() { return false; }
     virtual bool handleCustomTouch(nxui::Input&, const nxui::Rect&, const nxui::Rect&, const nxui::Rect&) { return false; }
+    // A held row. Returning true consumes the gesture so release does not also
+    // activate the row. Settings uses this to pin/unpin without a controller.
+    virtual bool onSettingLongPress(int rawIndex) { (void)rawIndex; return false; }
     virtual float overlayHeaderHeight() const { return 0.f; }
     virtual float overlayTabWidth() const { return kTabWidth; }
     virtual void drawOverlayHeader(nxui::Renderer&, const nxui::Rect&, float) {}
+    virtual float overlayFooterHeight() const { return 0.f; }
+    virtual void drawOverlayFooter(nxui::Renderer&, const nxui::Rect&, float) {}
+    // Screens that repeat each row's description in the header hide the second
+    // line in the list itself, keeping rows single-line and the list scannable.
+    virtual bool showsRowDescriptions() const { return true; }
 
     // Optional nested row under a tab (e.g. Theme Shop "Shop" under Themes/Icons).
     virtual float tabBranchExtraHeight(int tabIndex) const { (void)tabIndex; return 0.f; }
@@ -247,6 +270,10 @@ protected:
         return false;
     }
     float tabRailContentHeight() const;
+    float tabGroupExtra(int tabIndex) const;
+    void drawTabGroupHeader(nxui::Renderer&, const nxui::Rect&, int iconKind,
+                            const std::string& label, float y, float opacity);
+    const SettingItem* focusedSettingItem() const;
 
     void onRender(nxui::Renderer& ren) override;
     void onContentRender(nxui::Renderer& ren) override;
@@ -257,6 +284,7 @@ protected:
     void onPressB();
     void onPressA();
     void onPressX();
+    virtual void onPressY() {}
     void onNavUp();
     void onNavDown();
     void onNavLeft();
@@ -274,6 +302,10 @@ protected:
     std::shared_ptr<nxui::Box> m_tabBar;
     std::shared_ptr<nxui::Box> m_tabContent;
     std::vector<std::vector<std::shared_ptr<nxui::Box>>> m_cachedTabContentWidgets;
+    // Row heights for the tab whose widgets were built. itemHeight() can lay
+    // out wrapped text (and its cache key allocates a string), so measuring
+    // every row on every frame was the settings panel's biggest steady cost.
+    std::vector<std::vector<float>> m_cachedItemHeights;
 
     void rebuildTabBar();
     void rebuildContentItems();
@@ -284,7 +316,7 @@ protected:
     bool  m_showing   = false;
     float m_animT     = 0.f;
 
-    static constexpr float kAnimDuration = 0.22f;
+    static constexpr float kAnimDuration = switchu::ui::chrome::kDurPanel;
 
     enum class FocusArea { Tabs, Content };
     FocusArea m_focusArea   = FocusArea::Tabs;
@@ -292,7 +324,16 @@ protected:
     int       m_contentIdx  = 0;
     float     m_scrollY     = 0.f;
     float     m_scrollTarget = 0.f;
+    // Chase velocity. Kept across a retarget so a held direction glides at a
+    // steady 60 Hz instead of pulsing once per repeat step.
+    float     m_scrollVel   = 0.f;
+    // Touch fling velocity (px/s). A drag writes value == target directly, so
+    // this is separate from the chase velocity above and is consumed by
+    // stepScrollMomentum() in onContentUpdate().
+    float     m_scrollMomentum = 0.f;
     float     m_tabScrollY = 0.f;
+    float     m_tabScrollVel = 0.f;
+    float     m_tabScrollMomentum = 0.f;
     float     m_tabScrollTarget = 0.f;
     bool      m_backdropCacheValid = false;
     float     m_cachedPreBlurRadius = -1.f;
@@ -310,14 +351,18 @@ protected:
     static constexpr float kPanelMargin   = 32.f;
     static constexpr float kTabWidth      = 260.f;
     float itemHeight(const SettingItem& item, float contentWidth) const;
-    static constexpr float kRowHeight     = 68.f;
-    static constexpr float kSectionHeight = 48.f;
-    static constexpr float kTabRowHeight  = 58.f;
-    static constexpr float kPanelRadius   = 26.f;
+    // Single-line screens use the compact row; screens that still print a
+    // description under the label keep the two-line row.
+    float rowBaseHeight() const;
+    static constexpr float kRowHeight     = 56.f;
+    static constexpr float kSectionHeight = 44.f;
+    static constexpr float kTabRowHeight  = 52.f;
+    static constexpr float kTabGroupHeight = 32.f;
+    static constexpr float kPanelRadius   = switchu::ui::chrome::kRadiusPanel;
     static constexpr float kInnerPad      = 30.f;
 
     // Staggered reveal of the content rows after a tab switch.
-    static constexpr float kRowStaggerDelay = 0.035f;   // between two rows
+    static constexpr float kRowStaggerDelay = 0.02f;    // between two rows
     static constexpr float kRowRevealDur    = 0.24f;    // per row
     static constexpr float kContentStaggerDone = 99.f;
 
@@ -340,6 +385,7 @@ protected:
 
     std::vector<Tab> m_tabs;
     ScreenMode m_mode = ScreenMode::Settings;
+    bool m_fullscreenPanel = false;
     nxui::Font*       m_font      = nullptr;
     nxui::Font*       m_smallFont = nullptr;
     const nxui::Theme* m_theme    = nullptr;
@@ -398,6 +444,11 @@ protected:
     float m_touchStartX = 0.f;
     float m_touchStartY = 0.f;
     float m_touchStartScroll = 0.f;
+    float m_touchDownTime = 0.f;
+    bool  m_touchLongPressHandled = false;
+    float m_touchLastY = 0.f;
+    float m_touchLastMoveTime = 0.f;
+    float m_touchScrollVel = 0.f;
     bool  m_touchScrolling = false;
     bool  m_touchDraggingSlider = false;
     bool  m_ignoreInitialTouchRelease = false;

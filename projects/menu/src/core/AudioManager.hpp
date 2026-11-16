@@ -129,6 +129,9 @@ public:
     void playSfx(Sfx id);
     void loadNamedSfx(const std::string& id, const std::string& path, float volumeScale = 1.f);
     void playNamedSfx(const std::string& id);
+    // Unload clips that have not been played for a while. Registration is kept,
+    // so a trimmed clip simply reloads on its next play.
+    void trimSfx(float idleSeconds = 30.f);
     void setSfxVolume(float vol);
     float sfxVolume() const { return m_sfxVolume; }
 
@@ -176,8 +179,16 @@ private:
     bool  m_suppressFinishedHook = false;
 
     std::mutex m_sfxMutex;
+    // Registered path per clip; the PCM is decoded on first play (Mix_LoadWAV)
+    // rather than at startup, then trimmed once idle.
+    std::unordered_map<int, std::string> m_sfxPaths;
+    std::unordered_map<std::string, std::string> m_namedSfxPaths;
     std::unordered_map<int, Mix_Chunk*> m_sfx;
     std::unordered_map<std::string, Mix_Chunk*> m_namedSfx;
     std::unordered_map<std::string, float> m_namedSfxVolumeScales;
+    std::unordered_map<int, float> m_sfxLastUse;
+    std::unordered_map<std::string, float> m_namedSfxLastUse;
+    float m_sfxClock = 0.f;
+    float m_sfxTrimTimer = 0.f;
     float m_sfxVolume = 0.7f;
 };

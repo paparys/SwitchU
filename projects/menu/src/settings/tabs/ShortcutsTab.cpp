@@ -3,8 +3,11 @@
 
 #include <nxui/core/I18n.hpp>
 
+#include <ui/AccentPalette.hpp>
+
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -22,6 +25,13 @@ SettingsScreen::Tab settings::tabs::ShortcutsTab::build(SettingsScreen& screen) 
     using ItemType = SettingsScreen::ItemType;
     using SettingItem = SettingsScreen::SettingItem;
     auto& i18n = nxui::I18n::instance();
+
+    std::vector<std::string> gradientNames;
+    std::vector<nxui::Color> gradientSwatches;
+    for (const auto& entry : switchu::ui::accent::palette()) {
+        gradientNames.push_back(i18n.tr(entry.key, entry.fallback));
+        gradientSwatches.push_back(entry.color);
+    }
 
     SettingsScreen::Tab tab;
     tab.name = i18n.tr("settings.tabs.shortcuts", "Shortcuts");
@@ -87,6 +97,70 @@ SettingsScreen::Tab settings::tabs::ShortcutsTab::build(SettingsScreen& screen) 
     };
     tab.items.push_back(std::move(strip));
 
+    SettingItem gradient;
+    gradient.type = ItemType::Toggle;
+    gradient.label = i18n.tr("settings.shortcuts.gradient", "Moving gradient");
+    gradient.description = i18n.tr("settings.shortcuts.gradient_desc",
+        "Animates a two-color gradient across the single strip background. "
+        "Turn it off for a flat plate.");
+    gradient.boolVal = screen.m_shortcutGradient;
+    gradient.anim01 = gradient.boolVal ? 1.f : 0.f;
+    gradient.onChange = [&screen](SettingItem& self) {
+        screen.m_shortcutGradient = self.boolVal;
+        if (screen.m_shortcutGradientCb)
+            screen.m_shortcutGradientCb(screen.m_shortcutGradient);
+    };
+    tab.items.push_back(std::move(gradient));
+
+    SettingItem gradientA;
+    gradientA.type = ItemType::Selector;
+    gradientA.label = i18n.tr("settings.shortcuts.gradient_a", "Gradient color 1");
+    gradientA.description = i18n.tr("settings.shortcuts.gradient_a_desc",
+        "First color of the moving gradient on the shortcut strip.");
+    gradientA.options = gradientNames;
+    gradientA.swatches = gradientSwatches;
+    gradientA.intVal = std::clamp(screen.m_shortcutGradientA, 1, 9) - 1;
+    gradientA.onChange = [&screen](SettingItem& self) {
+        const int value = std::clamp(self.intVal, 0, 8) + 1;
+        screen.m_shortcutGradientA = value;
+        if (screen.m_shortcutGradientACb)
+            screen.m_shortcutGradientACb(value);
+    };
+    tab.items.push_back(std::move(gradientA));
+
+    SettingItem gradientB;
+    gradientB.type = ItemType::Selector;
+    gradientB.label = i18n.tr("settings.shortcuts.gradient_b", "Gradient color 2");
+    gradientB.description = i18n.tr("settings.shortcuts.gradient_b_desc",
+        "Second color of the moving gradient. Pick a different color for the "
+        "full sweep.");
+    gradientB.options = gradientNames;
+    gradientB.swatches = gradientSwatches;
+    gradientB.intVal = std::clamp(screen.m_shortcutGradientB, 1, 9) - 1;
+    gradientB.onChange = [&screen](SettingItem& self) {
+        const int value = std::clamp(self.intVal, 0, 8) + 1;
+        screen.m_shortcutGradientB = value;
+        if (screen.m_shortcutGradientBCb)
+            screen.m_shortcutGradientBCb(value);
+    };
+    tab.items.push_back(std::move(gradientB));
+
+    SettingItem flushEdge;
+    flushEdge.type = ItemType::Toggle;
+    flushEdge.label = i18n.tr("settings.shortcuts.flush_edge",
+                              "Connect to top/bottom edge");
+    flushEdge.description = i18n.tr("settings.shortcuts.flush_edge_desc",
+        "Stretches the bar to the screen edge it sits on and squares off that "
+        "edge, while the opposite edge keeps its rounded corners.");
+    flushEdge.boolVal = screen.m_shortcutFlushTop;
+    flushEdge.anim01 = flushEdge.boolVal ? 1.f : 0.f;
+    flushEdge.onChange = [&screen](SettingItem& self) {
+        screen.m_shortcutFlushTop = self.boolVal;
+        if (screen.m_shortcutFlushTopCb)
+            screen.m_shortcutFlushTopCb(screen.m_shortcutFlushTop);
+    };
+    tab.items.push_back(std::move(flushEdge));
+
     SettingItem vertical;
     vertical.type = ItemType::Slider;
     vertical.label = i18n.tr("settings.shortcuts.nudge_y",
@@ -113,29 +187,6 @@ SettingsScreen::Tab settings::tabs::ShortcutsTab::build(SettingsScreen& screen) 
             screen.m_shortcutNudgeYCb(screen.m_shortcutNudgeY);
     };
     tab.items.push_back(std::move(vertical));
-
-    SettingItem pinnedSection;
-    pinnedSection.type = ItemType::Section;
-    pinnedSection.label = i18n.tr("settings.shortcuts.pinned_section", "Pinned games");
-    tab.items.push_back(std::move(pinnedSection));
-
-    SettingItem pinSide;
-    pinSide.type = ItemType::Selector;
-    pinSide.label = i18n.tr("settings.shortcuts.pin_side", "Pinned shortcut side");
-    pinSide.description = i18n.tr("settings.shortcuts.pin_side_desc",
-        "Keeps the pinned game icons next to the applet shortcuts on the left or "
-        "right.");
-    pinSide.options = {
-        i18n.tr("settings.shortcuts.side_left", "Left"),
-        i18n.tr("settings.shortcuts.side_right", "Right"),
-    };
-    pinSide.intVal = std::clamp(screen.m_pinSide, 0, 1);
-    pinSide.onChange = [&screen](SettingItem& self) {
-        screen.m_pinSide = std::clamp(self.intVal, 0, 1);
-        if (screen.m_pinSideCb)
-            screen.m_pinSideCb(screen.m_pinSide);
-    };
-    tab.items.push_back(std::move(pinSide));
 
     return tab;
 }

@@ -1,13 +1,20 @@
 #include "SettingsScreen.hpp"
+#include <cctype>
+#include <nxui/core/Renderer.hpp>
 #include "tabs/TabBuilders.hpp"
 #include "core/DebugLog.hpp"
 #include "bluetooth/BluetoothManager.hpp"
 #include "smi_commands.hpp"
 #include "themeshop/ThemeHttp.hpp"
+#include "ui/ChromeTokens.hpp"
+#include "ui/ScreenShell.hpp"
 #include <nxui/core/I18n.hpp>
 #include <switch.h>
 #include <chrono>
 #include <cstdio>
+
+namespace chrome = switchu::ui::chrome;
+namespace shell = switchu::ui::shell;
 
 namespace {
 
@@ -17,48 +24,278 @@ bool isRetriableClockSyncError(const std::string& error) {
         || error.find("nifmInitialize") != std::string::npos;
 }
 
+std::string normalizeLockCode(const std::string& code) {
+    std::string clean;
+    for (char c : code) {
+        if ((c == 'U' || c == 'D' || c == 'L' || c == 'R') && clean.size() < 4)
+            clean.push_back(c);
+    }
+    while (clean.size() < 4)
+        clean.push_back('U');
+    return clean;
+}
+
 } // namespace
+
+void SettingsScreen::setLockProfilesState(std::vector<LockProfileState> profiles) {
+    std::string selectedUid;
+    if (const auto* current = selectedLockProfile())
+        selectedUid = current->uid;
+
+    m_lockProfiles = std::move(profiles);
+    for (auto& profile : m_lockProfiles)
+        profile.code = normalizeLockCode(profile.code);
+
+    if (m_lockProfiles.empty()) {
+        m_lockPadProfileIndex = 0;
+        refreshLockProfilesTab();
+        return;
+    }
+
+    int index = -1;
+    if (!selectedUid.empty()) {
+        for (int i = 0; i < static_cast<int>(m_lockProfiles.size()); ++i) {
+            if (m_lockProfiles[static_cast<std::size_t>(i)].uid == selectedUid) {
+                index = i;
+                break;
+            }
+        }
+    } else if (!m_lockPadUserChoseProfile && !m_lockPadPreferredUid.empty()) {
+        // Until the User row is touched, the editor follows the account that
+        // owns this session instead of the first console user.
+        for (int i = 0; i < static_cast<int>(m_lockProfiles.size()); ++i) {
+            if (m_lockProfiles[static_cast<std::size_t>(i)].uid == m_lockPadPreferredUid) {
+                index = i;
+                break;
+            }
+        }
+    }
+    m_lockPadProfileIndex = index >= 0
+        ? index
+        : std::clamp(m_lockPadProfileIndex, 0,
+                     static_cast<int>(m_lockProfiles.size()) - 1);
+    refreshLockProfilesTab();
+}
+
+void SettingsScreen::refreshLockProfilesTab() {
+    constexpr int kLockTab = 17;
+    if (kLockTab >= static_cast<int>(m_tabs.size()))
+        return;
+    if (kLockTab < static_cast<int>(m_loadingTabs.size()) &&
+        m_loadingTabs[kLockTab]) {
+        m_lockProfilesTabDirty = true;
+        return;
+    }
+
+    // If the section is already cached, rebuild its rows so the toggle and
+    // four step selectors describe the newly selected profile. A tab that has
+    // not been opened yet will read the current state when it is built.
+    const bool loaded = kLockTab < static_cast<int>(m_loadedTabs.size()) &&
+                        m_loadedTabs[kLockTab];
+    if (!loaded && m_tabIndex != kLockTab)
+        return;
+
+    Tab refreshed = buildTabNow(kLockTab);
+    refreshed.key = m_tabs[kLockTab].key;
+    m_tabs[kLockTab] = std::move(refreshed);
+    if (kLockTab < static_cast<int>(m_loadedTabs.size()))
+        m_loadedTabs[kLockTab] = true;
+    if (kLockTab < static_cast<int>(m_cachedTabContentWidgets.size()))
+        m_cachedTabContentWidgets[kLockTab].clear();
+    if (m_tabIndex == kLockTab) {
+        clampContentIdx();
+        rebuildContentItems();
+    }
+}
+
+void SettingsScreen::setLockPadProfileIndex(int index) {
+    if (m_lockProfiles.empty()) {
+        m_lockPadProfileIndex = 0;
+        return;
+    }
+    m_lockPadProfileIndex = std::clamp(index, 0,
+                                       static_cast<int>(m_lockProfiles.size()) - 1);
+    m_lockPadUserChoseProfile = true;
+}
+
+SettingsScreen::LockProfileState* SettingsScreen::selectedLockProfile() {
+    if (m_lockProfiles.empty() || m_lockPadProfileIndex < 0 ||
+        m_lockPadProfileIndex >= static_cast<int>(m_lockProfiles.size()))
+        return nullptr;
+    return &m_lockProfiles[static_cast<std::size_t>(m_lockPadProfileIndex)];
+}
+
+const SettingsScreen::LockProfileState* SettingsScreen::selectedLockProfile() const {
+    if (m_lockProfiles.empty() || m_lockPadProfileIndex < 0 ||
+        m_lockPadProfileIndex >= static_cast<int>(m_lockProfiles.size()))
+        return nullptr;
+    return &m_lockProfiles[static_cast<std::size_t>(m_lockPadProfileIndex)];
+}
 
 void SettingsScreen::buildTabs() {
     auto& i18n = nxui::I18n::instance();
+    // A language switch lands here; the shell text and its measurements are
+    // rebuilt on the next frame rather than re-measured on every frame.
+    m_headerTitleText.clear();
+    m_footerHintsText.clear();
+    m_footerHintsKey = -1;
+    m_footerAutoSaveText.clear();
     // Grouped rather than chronological: system and hardware first, then the
-    // HOME look (tiles, layout, treatment, glass, shortcuts, docked), then the
-    // personal screens. Keep this order and buildTabNow() in step.
+    // HOME look, and the personal screens. Related screens are
+    // folded together (presets under Icons & Wallpaper, opacity under Screen
+    // treatment, docked rows under Display) so the rail stays short. The stable
+    // key survives tab reordering and localisation.
     m_tabs = {
         // --- System ---
-        {.name = i18n.tr("settings.tabs.system", "System")},
-        {.name = i18n.tr("settings.tabs.display", "Display")},
-        {.name = i18n.tr("settings.tabs.audio", "Audio")},
-        {.name = i18n.tr("settings.tabs.internet", "Internet")},
-        {.name = i18n.tr("settings.tabs.controllers", "Controllers")},
-        {.name = i18n.tr("settings.tabs.bluetooth", "Bluetooth")},
-        {.name = i18n.tr("settings.tabs.sleep", "Sleep")},
-        {.name = i18n.tr("settings.tabs.storage", "Storage")},
-        {.name = i18n.tr("settings.tabs.steamgriddb", "SteamGridDB")},
-        {.name = i18n.tr("settings.tabs.about", "About")},
+        {.name = i18n.tr("settings.tabs.system", "System"),
+         .group = i18n.tr("settings.groups.system", "System"), .groupIcon = 0,
+         .key = "system"},
+        {.name = i18n.tr("settings.tabs.display", "Display"), .key = "display"},
+        {.name = i18n.tr("settings.tabs.audio", "Audio"), .key = "audio"},
+        {.name = i18n.tr("settings.tabs.internet", "Internet"), .key = "internet"},
+        {.name = i18n.tr("settings.tabs.controllers", "Controllers"), .key = "controllers"},
+        {.name = i18n.tr("settings.tabs.bluetooth", "Bluetooth"), .key = "bluetooth"},
+        {.name = i18n.tr("settings.tabs.sleep", "Sleep"), .key = "sleep"},
+        {.name = i18n.tr("settings.tabs.storage", "Storage"), .key = "storage"},
+        {.name = i18n.tr("settings.tabs.about", "About"), .key = "about"},
         // --- HOME look ---
-        {.name = i18n.tr("settings.tabs.backgrounds", "Backgrounds")},
-        {.name = i18n.tr("settings.tabs.appearance", "Icons & Wallpaper")},
-        {.name = i18n.tr("settings.tabs.layout", "Layout presets")},
-        {.name = i18n.tr("settings.tabs.treatment", "Screen treatment")},
-        {.name = i18n.tr("settings.tabs.glass", "Liquid Glass")},
-        {.name = i18n.tr("settings.tabs.shortcuts", "Shortcuts")},
-        {.name = i18n.tr("settings.tabs.docked", "Docked mode")},
+        {.name = i18n.tr("settings.tabs.backgrounds", "Backgrounds"),
+         .group = i18n.tr("settings.groups.home", "Home Menu"), .groupIcon = 1,
+         .key = "backgrounds"},
+        {.name = i18n.tr("settings.tabs.appearance", "Icons & Wallpaper"), .key = "appearance"},
+        {.name = i18n.tr("settings.tabs.steamgriddb", "SteamGridDB"), .key = "steamgriddb"},
+        {.name = i18n.tr("settings.tabs.carousel", "Carousel settings"), .key = "carousel"},
+        {.name = i18n.tr("settings.tabs.treatment", "Screen treatment"), .key = "treatment"},
+        {.name = i18n.tr("settings.tabs.style", "Style"), .key = "style"},
+        {.name = i18n.tr("settings.tabs.shortcuts", "Shortcuts"), .key = "shortcuts"},
         // --- Personal ---
-        {.name = i18n.tr("settings.tabs.hidden", "Hidden Games")},
-        {.name = i18n.tr("settings.tabs.lockscreen", "Lock Screen")},
-        {.name = i18n.tr("settings.tabs.accessibility", "Accessibility")},
+        {.name = i18n.tr("settings.tabs.hidden", "Hidden Games"),
+         .group = i18n.tr("settings.groups.personal", "Personal"), .groupIcon = 2,
+         .key = "hidden"},
+        {.name = i18n.tr("settings.tabs.lockscreen", "Lock Screen"), .key = "lockscreen"},
+        {.name = i18n.tr("settings.tabs.accessibility", "Accessibility"), .key = "accessibility"},
     };
     m_loadedTabs.assign(m_tabs.size(), false);
     m_loadingTabs.assign(m_tabs.size(), false);
     m_tabTasks.clear();
     m_tabTasks.resize(m_tabs.size());
-    m_nextPrefetchTab = 0;
+    m_nextPrefetchTab = 1;
 
     m_cachedTabContentWidgets.clear();
     m_cachedTabContentWidgets.resize(m_tabs.size());
 
     DebugLog::log("[settings] registered %d lazy tabs", (int)m_tabs.size());
+}
+
+void SettingsScreen::drawOverlayHeader(nxui::Renderer& ren, const nxui::Rect& panel,
+                                       float opacity) {
+    if (!m_theme || !m_font || !m_smallFont)
+        return;
+    auto& i18n = nxui::I18n::instance();
+    if (m_headerTitleText.empty())
+        m_headerTitleText = i18n.tr("settings.title", "Settings");
+
+    // Product name as a quiet eyebrow; the active section is the headline.
+    // The row descriptions live up here, so the list itself stays one line per
+    // setting. Focused row first, otherwise the tab's opening description.
+    const SettingItem* focused = focusedSettingItem();
+    std::string description;
+    if (focused && !focused->description.empty()) {
+        description = focused->description;
+    } else if (m_tabIndex >= 0 && m_tabIndex < (int)m_tabs.size()) {
+        for (const auto& item : m_tabs[(std::size_t)m_tabIndex].items) {
+            if (!item.description.empty()) {
+                description = item.description;
+                break;
+            }
+        }
+    }
+
+    shell::drawOverlayHeader(ren, {
+        .panel = panel,
+        .theme = m_theme,
+        .font = m_font,
+        .smallFont = m_smallFont,
+        .eyebrow = m_headerTitleText,
+        .headline = (m_tabIndex >= 0 && m_tabIndex < (int)m_tabs.size())
+            ? m_tabs[(std::size_t)m_tabIndex].name : std::string(),
+        .description = description,
+        .height = overlayHeaderHeight(),
+        .opacity = opacity,
+    });
+}
+
+void SettingsScreen::drawOverlayFooter(nxui::Renderer& ren, const nxui::Rect& panel,
+                                       float opacity) {
+    if (!m_theme || !m_smallFont)
+        return;
+    auto& i18n = nxui::I18n::instance();
+
+    int hintsKey = 0;
+    if (m_dropdownOpen) {
+        hintsKey = 1;
+    } else if (m_focusArea == FocusArea::Content) {
+        const SettingItem* item = focusedSettingItem();
+        if (item) {
+            hintsKey = 10 + (int)item->type * 4
+                + (item->hasSecondaryAction() ? 1 : 0)
+                + (item->hasReset ? 2 : 0);
+        }
+    }
+    if (m_footerHintsKey != hintsKey || m_footerHintsText.empty()) {
+        m_footerHintsKey = hintsKey;
+        switch (hintsKey) {
+            case 0:
+                m_footerHintsText = i18n.tr("settings.footer_tabs",
+                    "A  Open     D-pad  Navigate     B  Close");
+                break;
+            case 1:
+                m_footerHintsText = i18n.tr("settings.footer_list",
+                    "A  Choose     B  Close list");
+                break;
+            default: {
+                const SettingItem* item = focusedSettingItem();
+                if (!item) {
+                    m_footerHintsText = i18n.tr("settings.footer_tabs",
+                        "A  Open     D-pad  Navigate     B  Close");
+                } else if (item->type == ItemType::Toggle) {
+                    m_footerHintsText = i18n.tr("settings.footer_toggle",
+                        "A  Toggle     B  Tabs");
+                } else if (item->type == ItemType::Slider) {
+                    m_footerHintsText = item->hasReset
+                        ? i18n.tr("settings.footer_slider_reset",
+                            "Left/Right  Adjust     X  Reset     B  Tabs")
+                        : i18n.tr("settings.footer_slider",
+                            "Left/Right  Adjust     B  Tabs");
+                } else if (item->type == ItemType::Selector) {
+                    m_footerHintsText = i18n.tr("settings.footer_selector",
+                        "A  Choose     Left/Right  Change     B  Tabs");
+                } else if (item->type == ItemType::Action) {
+                    m_footerHintsText = item->hasSecondaryAction()
+                        ? i18n.tr("settings.footer_action_secondary",
+                            "A  Select     X  Clear     B  Tabs")
+                        : i18n.tr("settings.footer_action",
+                            "A  Activate     B  Tabs");
+                } else {
+                    m_footerHintsText = i18n.tr("settings.footer_info", "B  Tabs");
+                }
+                break;
+            }
+        }
+    }
+    if (m_footerAutoSaveText.empty())
+        m_footerAutoSaveText = i18n.tr("settings.footer_autosave",
+            "Changes save automatically");
+
+    shell::drawOverlayFooter(ren, {
+        .panel = panel,
+        .theme = m_theme,
+        .font = m_smallFont,
+        .hints = m_footerHintsText,
+        .note = m_footerAutoSaveText,
+        .height = overlayFooterHeight(),
+        .opacity = opacity,
+    });
 }
 
 void SettingsScreen::ensureTabLoaded(int tabIndex) {
@@ -75,7 +312,8 @@ void SettingsScreen::ensureTabLoaded(int tabIndex) {
     if (m_loadingTabs[static_cast<std::size_t>(tabIndex)])
         return;
 
-    if (tabIndex == 5 && !bluetooth::IsAvailable()) {
+    if (m_tabs[static_cast<std::size_t>(tabIndex)].key == "bluetooth" &&
+        !bluetooth::IsAvailable()) {
         bluetooth::Initialize();
         DebugLog::log("[settings] Bluetooth audio manager initialized on demand");
     }
@@ -85,38 +323,45 @@ void SettingsScreen::ensureTabLoaded(int tabIndex) {
 }
 
 SettingsScreen::Tab SettingsScreen::buildTabNow(int tabIndex) {
-    switch (tabIndex) {
-        case 0: return settings::tabs::SystemTab::build(*this);
-        case 1: return settings::tabs::DisplayTab::build(*this);
-        case 2: return settings::tabs::AudioTab::build(*this);
-        case 3: return settings::tabs::InternetTab::build(*this);
-        case 4: return settings::tabs::ControllersTab::build(*this);
-        case 5: return settings::tabs::BluetoothTab::build(*this);
-        case 6: return settings::tabs::SleepTab::build(*this);
-        case 7: return settings::tabs::StorageTab::build(*this);
-        case 8: return settings::tabs::SteamGridDbTab::build(*this);
-        case 9: return settings::tabs::AboutTab::build(*this);
-        case 10: return settings::tabs::BackgroundsTab::build(*this);
-        case 11: return settings::tabs::AppearanceTab::build(*this);
-        case 12: return settings::tabs::LayoutTab::build(*this);
-        case 13: return settings::tabs::TreatmentTab::build(*this);
-        case 14: return settings::tabs::GlassTab::build(*this);
-        case 15: return settings::tabs::ShortcutsTab::build(*this);
-        case 16: return settings::tabs::DockedTab::build(*this);
-        case 17: return settings::tabs::HiddenGamesTab::build(*this);
-        case 18: return settings::tabs::LockScreenTab::build(*this);
-        case 19: return settings::tabs::AccessibilityTab::build(*this);
-        default: break;
-    }
+    Tab tab;
+    // Dispatch on the stable key instead of the rail position: tabs can be
+    // regrouped or folded together without renumbering every case below.
+    const std::string key =
+        (tabIndex >= 0 && tabIndex < static_cast<int>(m_tabs.size()))
+            ? m_tabs[static_cast<std::size_t>(tabIndex)].key
+            : std::string();
+    if (key == "system") tab = settings::tabs::SystemTab::build(*this);
+    else if (key == "display") tab = settings::tabs::DisplayTab::build(*this);
+    else if (key == "audio") tab = settings::tabs::AudioTab::build(*this);
+    else if (key == "internet") tab = settings::tabs::InternetTab::build(*this);
+    else if (key == "controllers") tab = settings::tabs::ControllersTab::build(*this);
+    else if (key == "bluetooth") tab = settings::tabs::BluetoothTab::build(*this);
+    else if (key == "sleep") tab = settings::tabs::SleepTab::build(*this);
+    else if (key == "storage") tab = settings::tabs::StorageTab::build(*this);
+    else if (key == "steamgriddb") tab = settings::tabs::SteamGridDbTab::build(*this);
+    else if (key == "about") tab = settings::tabs::AboutTab::build(*this);
+    else if (key == "backgrounds") tab = settings::tabs::BackgroundsTab::build(*this);
+    else if (key == "appearance") tab = settings::tabs::AppearanceTab::build(*this);
+    else if (key == "carousel") tab = settings::tabs::CarouselMovementTab::build(*this);
+    else if (key == "treatment") tab = settings::tabs::TreatmentTab::build(*this);
+    else if (key == "style") tab = settings::tabs::StyleTab::build(*this);
+    else if (key == "shortcuts") tab = settings::tabs::ShortcutsTab::build(*this);
+    else if (key == "hidden") tab = settings::tabs::HiddenGamesTab::build(*this);
+    else if (key == "lockscreen") tab = settings::tabs::LockScreenTab::build(*this);
+    else if (key == "accessibility") tab = settings::tabs::AccessibilityTab::build(*this);
+    else tab = makeLoadingTab(tabIndex);
 
-    return makeLoadingTab(tabIndex);
+    if (tab.key.empty() && tabIndex >= 0 && tabIndex < static_cast<int>(m_tabs.size()))
+        tab.key = m_tabs[static_cast<std::size_t>(tabIndex)].key;
+    return tab;
 }
 
 SettingsScreen::Tab SettingsScreen::makeLoadingTab(int tabIndex) const {
     Tab tab;
-    if (tabIndex >= 0 && tabIndex < static_cast<int>(m_tabs.size()))
+    if (tabIndex >= 0 && tabIndex < static_cast<int>(m_tabs.size())) {
         tab.name = m_tabs[static_cast<std::size_t>(tabIndex)].name;
-    else
+        tab.key = m_tabs[static_cast<std::size_t>(tabIndex)].key;
+    } else
         tab.name = nxui::I18n::instance().tr("common.loading", "Loading");
 
     SettingItem item;
@@ -149,6 +394,14 @@ void SettingsScreen::pollTabLoaders() {
             continue;
 
         Tab loaded = m_tabTasks[i].get();
+        // The lock profile list can arrive after this worker starts. Rebuild
+        // that lightweight section once with the settled profile state.
+        if (m_tabs[i].key == "lockscreen" && m_lockProfilesTabDirty) {
+            m_lockProfilesTabDirty = false;
+            loaded = buildTabNow(static_cast<int>(i));
+        }
+        if (loaded.key.empty())
+            loaded.key = m_tabs[i].key;
         m_tabs[i] = std::move(loaded);
         if (i < m_loadedTabs.size())
             m_loadedTabs[i] = true;
@@ -164,6 +417,9 @@ void SettingsScreen::pollTabLoaders() {
             m_contentIdx = 0;
             m_scrollY = 0.f;
             m_scrollTarget = 0.f;
+            m_scrollVel = 0.f;
+            m_scrollMomentum = 0.f;
+            m_touchScrollVel = 0.f;
             rebuildContentItems();
             rebuiltCurrent = true;
         }
@@ -171,38 +427,118 @@ void SettingsScreen::pollTabLoaders() {
 }
 
 void SettingsScreen::prefetchOneTab() {
-    if (m_tabs.empty())
+    if (m_tabs.empty() || m_tabIndex < 0 || m_tabIndex >= static_cast<int>(m_tabs.size()))
         return;
 
-    for (std::size_t n = 0; n < m_tabs.size(); ++n) {
-        std::size_t idx = static_cast<std::size_t>(m_nextPrefetchTab);
-        m_nextPrefetchTab = (m_nextPrefetchTab + 1) % static_cast<int>(m_tabs.size());
+    // Never build more than one section at a time: each starts a worker thread
+    // and touches storage or network, and overlapping builds are what made the
+    // panel stutter while tabs were being visited.
+    for (bool loading : m_loadingTabs)
+        if (loading) return;
 
-        if (idx >= m_loadedTabs.size() || idx >= m_loadingTabs.size())
+    // Only the neighbours of the current tab are worth warming: that is where
+    // a D-pad step lands, and it keeps a twenty-section screen from building
+    // itself in the background the moment it opens.
+    const int count = static_cast<int>(m_tabs.size());
+    const int candidates[2] = { (m_tabIndex + 1) % count,
+                                (m_tabIndex + count - 1) % count };
+    for (int idx : candidates) {
+        if (idx == m_tabIndex || idx < 0 || idx >= count)
             continue;
-        if (m_loadedTabs[idx] || m_loadingTabs[idx])
+        if (idx >= static_cast<int>(m_loadedTabs.size())
+            || idx >= static_cast<int>(m_loadingTabs.size()))
+            continue;
+        if (m_loadedTabs[static_cast<std::size_t>(idx)]
+            || m_loadingTabs[static_cast<std::size_t>(idx)])
             continue;
 
-        // Keep the optional btmsys client out of the normal menu/application
-        // handoff. Initialize it only when the user explicitly visits the tab.
-        if (idx == 9 && idx != static_cast<std::size_t>(m_tabIndex))
+        // Bluetooth brings up a hardware client and About keeps the optional
+        // btmsys client out of the handoff. Neither is warmed behind the
+        // user's back.
+        const std::string& key = m_tabs[static_cast<std::size_t>(idx)].key;
+        if (key == "bluetooth" || key == "about")
             continue;
 
-        if (idx != static_cast<std::size_t>(m_tabIndex))
-            m_tabs[idx] = makeLoadingTab(static_cast<int>(idx));
-        startAsyncTabLoad(static_cast<int>(idx));
+        m_tabs[static_cast<std::size_t>(idx)] = makeLoadingTab(idx);
+        startAsyncTabLoad(idx);
         return;
     }
 }
 
+void SettingsScreen::requestLookPresetRename(int slot) {
+    if (slot < 0 || slot > 2)
+        return;
+    auto& i18n = nxui::I18n::instance();
+    requestTextEntry(i18n.tr("settings.style.rename_title", "Rename look"),
+                     i18n.tr("settings.style.rename_guide", "Enter a name for this look"),
+                     m_lookPresetNames[slot], 24,
+                     [this, slot](const std::string& value) {
+                         std::string name = value;
+                         while (!name.empty() &&
+                                std::isspace(static_cast<unsigned char>(name.front())))
+                             name.erase(name.begin());
+                         while (!name.empty() &&
+                                std::isspace(static_cast<unsigned char>(name.back())))
+                             name.pop_back();
+                         if (name.empty())
+                             return;
+                         applyLookPresetName(slot, name);
+                     });
+}
+
+void SettingsScreen::applyLookPresetName(int slot, const std::string& name) {
+    if (slot < 0 || slot > 2 || name.empty())
+        return;
+    m_lookPresetNames[slot] = name;
+
+    // The row widgets read their label from SettingItem every frame, so the
+    // rename is visible immediately without rebuilding the tab (which would
+    // invalidate the text-entry focus target).
+    for (auto& tab : m_tabs) {
+        if (tab.key != "style")
+            continue;
+        const int presetRow = m_lookPresetRow[slot];
+        if (presetRow >= 0 && presetRow < static_cast<int>(tab.items.size()))
+            tab.items[static_cast<std::size_t>(presetRow)].label = name;
+        const int renameRow = m_lookRenameRow[slot];
+        if (renameRow >= 0 && renameRow < static_cast<int>(tab.items.size())) {
+            tab.items[static_cast<std::size_t>(renameRow)].description =
+                nxui::I18n::instance().tr("settings.style.current_name",
+                                          "Current name: ") + name;
+        }
+        break;
+    }
+
+    if (m_renameLookPresetCb)
+        m_renameLookPresetCb(slot, name);
+}
+
 void SettingsScreen::onContentUpdate(float dt) {
     pollTabLoaders();
+    if (m_lockProfileRefreshPending) {
+        m_lockProfileRefreshPending = false;
+        // Selecting another user changes every value below the selector, so
+        // rebuild the section instead of only recreating its row widgets.
+        refreshLockProfilesTab();
+    }
     pollClockSync();
-    if (isActive())
-        prefetchOneTab();
+    if (isActive()) {
+        // A tab build is a worker thread plus a full section build (storage,
+        // profiles, network). Starting one per frame while the user moved
+        // through the rail spawned a dozen threads at once and starved the
+        // frame the panel was animating. Wait for the switch to settle, then
+        // build at most one neighbour at a time.
+        if (m_tabIndex != m_prefetchAnchor) {
+            m_prefetchAnchor = m_tabIndex;
+            m_tabPrefetchDelay = 0.35f;
+        }
+        if (m_tabPrefetchDelay > 0.f)
+            m_tabPrefetchDelay = m_tabPrefetchDelay > dt
+                ? m_tabPrefetchDelay - dt : 0.f;
+        else
+            prefetchOneTab();
+    }
     TabbedOverlayScreen::onContentUpdate(dt);
-    pollTabLoaders();
-    pollClockSync();
 }
 
 void SettingsScreen::emitClockSyncToast(const std::string& msg, float holdSeconds) {

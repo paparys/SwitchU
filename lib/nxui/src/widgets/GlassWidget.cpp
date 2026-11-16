@@ -3,7 +3,6 @@
 namespace nxui {
 
 GlassWidget::GlassWidget() {
-    setLiquidGlassEnabled(true);
     setBlurEnabled(false);
     setBlurRadius(1.5f);
     setBlurPasses(1);

@@ -208,6 +208,7 @@ void TabbedOverlayScreen::setupActions() {
     addAction(static_cast<uint64_t>(nxui::Button::B), [this]() { onPressB(); });
     addAction(static_cast<uint64_t>(nxui::Button::A), [this]() { onPressA(); });
     addAction(static_cast<uint64_t>(nxui::Button::X), [this]() { onPressX(); });
+    addAction(static_cast<uint64_t>(nxui::Button::Y), [this]() { onPressY(); });
     addDirectionAction(nxui::FocusDirection::UP,    [this]() { onNavUp(); });
     addDirectionAction(nxui::FocusDirection::DOWN,  [this]() { onNavDown(); });
     addDirectionAction(nxui::FocusDirection::LEFT,  [this]() { onNavLeft(); });
@@ -335,6 +336,8 @@ void TabbedOverlayScreen::onPressX() {
 
 void TabbedOverlayScreen::onNavUp() {
     if (!m_active || m_animating) return;
+    m_scrollMomentum = 0.f;
+    m_tabScrollMomentum = 0.f;
     if (usesCustomContentLayout() && handleCustomNavUp()) {
         announceCurrentFocus();
         return;
@@ -350,10 +353,10 @@ void TabbedOverlayScreen::onNavUp() {
             m_scrollY = 0;
             m_scrollTarget = 0;
             m_contentSlideAnim.setImmediate(0.f);
-            m_contentSlideAnim.set(1.f, 0.28f, nxui::Easing::outCubic);
+            m_contentSlideAnim.set(1.f, 0.20f, nxui::Easing::outCubic);
             m_contentStaggerT = 0.f;
             m_tabAccentW.setImmediate(1.f);
-            m_tabAccentW.set(3.f, 0.32f, nxui::Easing::outExpo);
+            m_tabAccentW.set(3.f, 0.24f, nxui::Easing::outExpo);
             closeDropdown(false);
             rebuildContentItems();
             if (m_navSfxCb) m_navSfxCb();
@@ -399,12 +402,14 @@ void TabbedOverlayScreen::onNavUp() {
         // There can be non-focusable information/section rows before the
         // first control. At the focus boundary, keep D-pad repeat useful by
         // scrolling the remaining content instead of swallowing the input.
-        m_scrollTarget = std::max(0.f, m_scrollTarget - kRowHeight);
+        m_scrollTarget = std::max(0.f, m_scrollTarget - rowBaseHeight());
     }
 }
 
 void TabbedOverlayScreen::onNavDown() {
     if (!m_active || m_animating) return;
+    m_scrollMomentum = 0.f;
+    m_tabScrollMomentum = 0.f;
     if (usesCustomContentLayout() && handleCustomNavDown()) {
         announceCurrentFocus();
         return;
@@ -420,10 +425,10 @@ void TabbedOverlayScreen::onNavDown() {
             m_scrollY = 0;
             m_scrollTarget = 0;
             m_contentSlideAnim.setImmediate(0.f);
-            m_contentSlideAnim.set(1.f, 0.28f, nxui::Easing::outCubic);
+            m_contentSlideAnim.set(1.f, 0.20f, nxui::Easing::outCubic);
             m_contentStaggerT = 0.f;
             m_tabAccentW.setImmediate(1.f);
-            m_tabAccentW.set(3.f, 0.32f, nxui::Easing::outExpo);
+            m_tabAccentW.set(3.f, 0.24f, nxui::Easing::outExpo);
             closeDropdown(false);
             rebuildContentItems();
             if (m_navSfxCb) m_navSfxCb();
@@ -471,12 +476,14 @@ void TabbedOverlayScreen::onNavDown() {
         const float maxScroll = std::max(
             0.f, contentTotalHeight() + kContentTopPad - cr.height + 20.f);
         if (m_scrollTarget < maxScroll)
-            m_scrollTarget = std::min(maxScroll, m_scrollTarget + kRowHeight);
+            m_scrollTarget = std::min(maxScroll, m_scrollTarget + rowBaseHeight());
     }
 }
 
 void TabbedOverlayScreen::onNavLeft() {
     if (!m_active || m_animating) return;
+    m_scrollMomentum = 0.f;
+    m_tabScrollMomentum = 0.f;
     if (usesCustomContentLayout() && handleCustomNavLeft()) {
         announceCurrentFocus();
         return;
@@ -516,6 +523,8 @@ void TabbedOverlayScreen::onNavLeft() {
 
 void TabbedOverlayScreen::onNavRight() {
     if (!m_active || m_animating) return;
+    m_scrollMomentum = 0.f;
+    m_tabScrollMomentum = 0.f;
     if (usesCustomContentLayout() && handleCustomNavRight()) {
         announceCurrentFocus();
         return;
@@ -563,15 +572,21 @@ void TabbedOverlayScreen::onNavRight() {
 }
 
 void TabbedOverlayScreen::scrollToFocused() {
+    m_scrollMomentum = 0.f;
     if (m_tabIndex < 0 || m_tabIndex >= (int)m_tabs.size()) return;
     auto& items = m_tabs[m_tabIndex].items;
     nxui::Rect cr = contentRect();
     constexpr float kContentTopPad = 16.f;
     float itemY = kContentTopPad;
-    float focusedHeight = kRowHeight;
+    float focusedHeight = rowBaseHeight();
     int focusIndex = 0;
-    for (auto& item : items) {
-        float height = itemHeight(item, cr.width);
+    const std::vector<float>* heights = (m_tabIndex < (int)m_cachedItemHeights.size()
+        && m_cachedItemHeights[(size_t)m_tabIndex].size() == items.size())
+        ? &m_cachedItemHeights[(size_t)m_tabIndex] : nullptr;
+    for (int i = 0; i < (int)items.size(); ++i) {
+        auto& item = items[(size_t)i];
+        float height = heights ? (*heights)[(size_t)i]
+                               : itemHeight(item, cr.width);
         if (itemFocusable(item)) {
             if (focusIndex == m_contentIdx) {
                 focusedHeight = height;
@@ -600,11 +615,24 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
 
     constexpr float kContentTopPad = 16.f;
     constexpr float kCardInsetX = 18.f;
-    constexpr float kCardInsetY = 8.f;
 
     auto clampScrollTarget = [this, &cr](float value) {
         float maxScroll = std::max(0.f, contentTotalHeight() + kContentTopPad - cr.height + 20.f);
         return std::clamp(value, 0.f, maxScroll);
+    };
+
+    // Sample finger speed at the display frame rate. The low-pass keeps a
+    // single jittery sample from throwing the release velocity off, while the
+    // final idle decay in touchUp stops a held finger from flinging.
+    auto sampleScrollVelocity = [this](float ty) {
+        const float sampleDt = m_uiTime - m_touchLastMoveTime;
+        if (sampleDt <= 0.0005f)
+            return;
+        const float instant = std::clamp(
+            -(ty - m_touchLastY) / sampleDt, -6000.f, 6000.f);
+        m_touchScrollVel += (instant - m_touchScrollVel) * 0.45f;
+        m_touchLastY = ty;
+        m_touchLastMoveTime = m_uiTime;
     };
 
     auto findContentHit = [this, &cr](float tx, float ty) {
@@ -616,13 +644,11 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
         int focusIdx = 0;
         for (int i = 0; i < (int)items.size(); ++i) {
             float height = itemHeight(items[i], cr.width);
-            float insetY = (items[i].type == ItemType::Section) ? 1.f : kCardInsetY;
-            float cardH = std::max(0.f, height - (items[i].type == ItemType::Section ? 2.f : 6.f));
             nxui::Rect itemRect = {
                 cr.x + kCardInsetX,
-                y + insetY,
+                y,
                 std::max(0.f, cr.width - kCardInsetX * 2.f),
-                cardH
+                height
             };
             bool visible = y < cr.bottom() && y + height > cr.y;
             if (itemFocusable(items[i])) {
@@ -646,15 +672,12 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
             float height = itemHeight(items[i], cr.width);
             if (itemFocusable(items[i])) {
                 if (currentFocus == focusIdx) {
-                    float insetY = (items[i].type == ItemType::Section) ? 1.f : kCardInsetY;
-                    float cardH = std::max(0.f, height - (items[i].type == ItemType::Section ? 2.f : 6.f));
-                    nxui::Rect cardRect = {
+                    return nxui::Rect{
                         cr.x + kCardInsetX,
-                        y + insetY,
+                        y,
                         std::max(0.f, cr.width - kCardInsetX * 2.f),
-                        cardH
+                        height
                     };
-                    return cardRect;
                 }
                 ++currentFocus;
             }
@@ -673,12 +696,26 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
         if (item.type != ItemType::Slider)
             return nxui::Rect{0.f, 0.f, 0.f, 0.f};
 
-        nxui::Rect rowRect = contentRowRect(focusIdx);
-        float rightW = std::max(170.f, rowRect.width * 0.42f);
-        float trackW = std::clamp(rightW - 44.f - 10.f, 110.f, 260.f);
-        float trackX = rowRect.right() - rightW;
-        float trackY = rowRect.y + (rowRect.height - 12.f) * 0.5f;
-        return nxui::Rect{trackX, trackY, trackW, 12.f};
+        // Match SettingRowBase/SliderRowWidget exactly. The card content is
+        // inset (flat rows: 12px, described rows: 14px), then the row reserves
+        // a 10px inset, a 44px value label and a 10px gap before the track.
+        nxui::Rect cardRect = contentRowRect(focusIdx);
+        const float contentInsetX = showsRowDescriptions() ? 14.f : 12.f;
+        const float contentInsetY = showsRowDescriptions() ? 6.f : 0.f;
+        const float contentW = std::max(0.f, cardRect.width - contentInsetX * 2.f);
+        const float contentH = std::max(0.f, cardRect.height - contentInsetY * 2.f);
+        const float rightW = std::min(
+            std::clamp(contentW * 0.34f, 190.f, 280.f),
+            std::max(0.f, contentW - 20.f));
+        constexpr float kValueW = 44.f;
+        constexpr float kGap = 10.f;
+        constexpr float kRowInset = 10.f;
+        const float trackW = std::clamp(rightW - kValueW - kGap, 110.f, 260.f);
+        const float trackX = cardRect.right() - contentInsetX - kRowInset
+            - kValueW - kGap - trackW;
+        const float trackY = cardRect.y + contentInsetY
+            + (contentH - 14.f) * 0.5f;
+        return nxui::Rect{trackX, trackY, trackW, 14.f};
     };
 
     auto contentControlRect = [this, &contentRowRect, &sliderTrackRect](int focusIdx) {
@@ -688,13 +725,22 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
         int rawIdx = rawIndexFromFocusable(focusIdx);
         auto& item = m_tabs[m_tabIndex].items[rawIdx];
         nxui::Rect rowRect = contentRowRect(focusIdx);
+        // SettingRowBase lays its controls out inside the card's content inset,
+        // then leaves 10px at the right edge. Hit tests have to use that same
+        // box or taps land beside the visible control.
+        const float contentInsetX = showsRowDescriptions() ? 14.f : 12.f;
+        const float contentInsetY = showsRowDescriptions() ? 6.f : 0.f;
+        const float contentW = std::max(0.f, rowRect.width - contentInsetX * 2.f);
+        const float contentH = std::max(0.f, rowRect.height - contentInsetY * 2.f);
+        const float contentRight = rowRect.right() - contentInsetX;
+        const float contentY = rowRect.y + contentInsetY;
         switch (item.type) {
             case ItemType::Toggle: {
                 constexpr float kTrackW = 64.f;
                 constexpr float kTrackH = 32.f;
                 return nxui::Rect{
-                    rowRect.right() - kTrackW,
-                    rowRect.y + (rowRect.height - kTrackH) * 0.5f,
+                    contentRight - 10.f - kTrackW,
+                    contentY + (contentH - kTrackH) * 0.5f,
                     kTrackW,
                     kTrackH
                 }.expanded(10.f);
@@ -702,11 +748,14 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
             case ItemType::Slider:
                 return sliderTrackRect(focusIdx).expanded(18.f);
             case ItemType::Selector: {
-                float w = std::max(210.f, rowRect.width * 0.48f);
-                float h = std::max(38.f, rowRect.height - 14.f);
+                const float rightW = std::min(
+                    std::clamp(contentW * 0.34f, 190.f, 280.f),
+                    std::max(0.f, contentW - 20.f));
+                const float w = std::max(170.f, rightW);
+                const float h = std::max(36.f, contentH - 22.f);
                 return nxui::Rect{
-                    rowRect.right() - w,
-                    rowRect.y + (rowRect.height - h) * 0.5f,
+                    contentRight - 10.f - w,
+                    contentY + (contentH - h) * 0.5f,
                     w,
                     h
                 }.expanded(10.f);
@@ -817,6 +866,13 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
         m_touchStartDropdownVisualStart = m_dropdownVisualStart;
         m_touchScrolling = false;
         m_touchDraggingSlider = false;
+        m_scrollMomentum = 0.f;
+        m_tabScrollMomentum = 0.f;
+        m_touchScrollVel = 0.f;
+        m_touchDownTime = m_uiTime;
+        m_touchLongPressHandled = false;
+        m_touchLastY = ty;
+        m_touchLastMoveTime = m_uiTime;
 
         if (m_dropdownOpen && m_dropdownRawIdx >= 0 && m_tabIndex >= 0 && m_tabIndex < (int)m_tabs.size()) {
             auto& items = m_tabs[m_tabIndex].items;
@@ -840,6 +896,15 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
             float cursorY = tr.y + 14.f - m_tabScrollY;
             float tabH = kTabRowHeight - 10.f;
             for (int i = 0; i < (int)m_tabs.size(); ++i) {
+                const float groupH = tabGroupExtra(i);
+                if (groupH > 0.f) {
+                    // A tap on a group caption selects the group's first tab.
+                    if (ty >= cursorY && ty < cursorY + groupH) {
+                        idx = i;
+                        break;
+                    }
+                    cursorY += groupH;
+                }
                 if (ty >= cursorY && ty < cursorY + tabH) {
                     idx = i;
                     break;
@@ -873,23 +938,31 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
                 && m_focusArea == FocusArea::Content);
 
             if (m_touchHitIndex >= 0) {
+                int rawIdx = rawIndexFromFocusable(m_touchHitIndex);
+                auto& item = m_tabs[m_tabIndex].items[rawIdx];
                 nxui::Rect controlRect = contentControlRect(m_touchHitIndex);
-                if (controlRect.width > 0.f && controlRect.contains(tx, ty)) {
-                    m_touchDirectControl = m_touchOnSelected;
-                }
+                const bool onControl = controlRect.width > 0.f
+                    && controlRect.contains(tx, ty);
 
-                if (m_touchDirectControl) {
-                    int rawIdx = rawIndexFromFocusable(m_touchHitIndex);
-                    auto& item = m_tabs[m_tabIndex].items[rawIdx];
-                    if (item.type == ItemType::Slider) {
-                        m_touchDraggingSlider = true;
-                        applySliderDrag(m_touchHitIndex, tx);
-                    }
-                } else if (m_touchOnSelected) {
-                    nxui::Rect track = sliderTrackRect(m_touchHitIndex);
-                    if (track.width > 0.f && track.expanded(12.f).contains(tx, ty)) {
-                        m_touchDraggingSlider = true;
-                        applySliderDrag(m_touchHitIndex, tx);
+                if (onControl && item.type == ItemType::Slider) {
+                    // A slider should answer the first touch, not require a tap
+                    // to focus and a second one to drag. Focus the row here so
+                    // the cursor and the value stay together.
+                    m_focusArea = FocusArea::Content;
+                    m_contentIdx = m_touchHitIndex;
+                    m_touchOnSelected = true;
+                    m_touchDirectControl = true;
+                    m_touchDraggingSlider = true;
+                    applySliderDrag(m_touchHitIndex, tx);
+                } else {
+                    if (onControl)
+                        m_touchDirectControl = m_touchOnSelected;
+                    if (!m_touchDirectControl && m_touchOnSelected) {
+                        nxui::Rect track = sliderTrackRect(m_touchHitIndex);
+                        if (track.width > 0.f && track.expanded(12.f).contains(tx, ty)) {
+                            m_touchDraggingSlider = true;
+                            applySliderDrag(m_touchHitIndex, tx);
+                        }
                     }
                 }
             }
@@ -912,6 +985,20 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
             m_touchStartY = ty;
             m_touchStartScroll = m_scrollY;
             m_touchScrolling = true;
+            m_touchLastY = ty;
+            m_touchLastMoveTime = m_uiTime;
+            m_touchScrollVel = 0.f;
+        }
+
+        if (m_touchTarget == TouchTarget::Content && m_touchHitIndex >= 0
+            && !m_touchScrolling && !m_touchDraggingSlider
+            && !m_touchLongPressHandled
+            && m_uiTime - m_touchDownTime >= 0.65f) {
+            const int rawIndex = rawIndexFromFocusable(m_touchHitIndex);
+            if (rawIndex >= 0 && onSettingLongPress(rawIndex)) {
+                m_touchLongPressHandled = true;
+                if (m_activateSfxCb) m_activateSfxCb();
+            }
         }
 
         if (m_touchTarget == TouchTarget::Tab) {
@@ -919,6 +1006,9 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
                 m_touchScrolling = true;
                 m_touchStartY = ty;
                 m_touchStartScroll = m_tabScrollY;
+                m_touchLastY = ty;
+                m_touchLastMoveTime = m_uiTime;
+                m_touchScrollVel = 0.f;
             }
             if (m_touchScrolling) {
                 const float totalHeight = tabRailContentHeight();
@@ -927,6 +1017,7 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
                     m_touchStartScroll - (ty - m_touchStartY), 0.f, maxScroll);
                 m_tabScrollTarget = next;
                 m_tabScrollY = next;
+                sampleScrollVelocity(ty);
             }
         } else if (m_touchTarget == TouchTarget::Content) {
             if (m_touchDraggingSlider && m_touchHitIndex >= 0) {
@@ -940,12 +1031,16 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
                     m_touchStartX = tx;
                     m_touchStartY = ty;
                     m_touchStartScroll = m_scrollY;
+                    m_touchLastY = ty;
+                    m_touchLastMoveTime = m_uiTime;
+                    m_touchScrollVel = 0.f;
                 }
 
                 if (m_touchScrolling) {
                     float nextScroll = clampScrollTarget(m_touchStartScroll - (ty - m_touchStartY));
                     m_scrollTarget = nextScroll;
                     m_scrollY = nextScroll;
+                    sampleScrollVelocity(ty);
                 }
             }
         } else if (m_touchTarget == TouchTarget::Dropdown) {
@@ -1000,13 +1095,27 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
             m_touchDirectControl = false;
             m_touchScrolling = false;
             m_touchDraggingSlider = false;
+            m_touchLongPressHandled = false;
             return;
         }
 
         float dx = std::abs(input.touchDeltaX());
         float dy = std::abs(input.touchDeltaY());
         bool dragged = m_touchScrolling || m_touchDraggingSlider
+            || m_touchLongPressHandled
             || dx >= kTapThreshold || dy >= kTapThreshold;
+
+        if (m_touchScrolling && !m_touchDraggingSlider) {
+            const float idle = std::max(0.f, m_uiTime - m_touchLastMoveTime);
+            const float fling = std::clamp(
+                m_touchScrollVel * std::exp(-12.f * idle), -3500.f, 3500.f);
+            if (std::abs(fling) >= 80.f) {
+                if (m_touchTarget == TouchTarget::Tab)
+                    m_tabScrollMomentum = fling;
+                else if (m_touchTarget == TouchTarget::Content)
+                    m_scrollMomentum = fling;
+            }
+        }
 
         if (!dragged) {
             switch (m_touchTarget) {
@@ -1023,10 +1132,10 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
                             m_tabReveal.setImmediate(0.f);
                             m_tabReveal.set(1.f, 0.24f, nxui::Easing::outCubic);
                             m_contentSlideAnim.setImmediate(0.f);
-                            m_contentSlideAnim.set(1.f, 0.28f, nxui::Easing::outCubic);
+                            m_contentSlideAnim.set(1.f, 0.20f, nxui::Easing::outCubic);
                             m_contentStaggerT = 0.f;
                             m_tabAccentW.setImmediate(1.f);
-                            m_tabAccentW.set(3.f, 0.32f, nxui::Easing::outExpo);
+                            m_tabAccentW.set(3.f, 0.24f, nxui::Easing::outExpo);
                             closeDropdown(false);
                             rebuildContentItems();
                         }
@@ -1053,10 +1162,10 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
                             m_tabReveal.setImmediate(0.f);
                             m_tabReveal.set(1.f, 0.24f, nxui::Easing::outCubic);
                             m_contentSlideAnim.setImmediate(0.f);
-                            m_contentSlideAnim.set(1.f, 0.28f, nxui::Easing::outCubic);
+                            m_contentSlideAnim.set(1.f, 0.20f, nxui::Easing::outCubic);
                             m_contentStaggerT = 0.f;
                             m_tabAccentW.setImmediate(1.f);
-                            m_tabAccentW.set(3.f, 0.32f, nxui::Easing::outExpo);
+                            m_tabAccentW.set(3.f, 0.24f, nxui::Easing::outExpo);
                             closeDropdown(false);
                             rebuildContentItems();
                         }
@@ -1158,8 +1267,78 @@ void TabbedOverlayScreen::handleTouch(nxui::Input& input) {
         m_touchDirectControl = false;
         m_touchScrolling = false;
         m_touchDraggingSlider = false;
+        m_touchLongPressHandled = false;
+        m_touchScrollVel = 0.f;
     }
 }
+
+namespace {
+constexpr float kMaxScrollStep = 0.05f;
+
+// Touch fling: keep the list moving after release and bleed speed off
+// exponentially. The chase below owns D-pad targets; this writes value ==
+// target so the chase sees a settled pair and does not fight it.
+void stepScrollMomentumSlice(float& value, float& target, float& velocity,
+                             float maxScroll, float dt) {
+    if (velocity == 0.f || dt <= 0.f)
+        return;
+    target = std::clamp(target + velocity * dt, 0.f, maxScroll);
+    value = target;
+    velocity *= std::exp(-5.5f * dt);
+    if (target <= 0.f || target >= maxScroll || std::abs(velocity) < 10.f)
+        velocity = 0.f;
+}
+
+void stepScrollMomentum(float& value, float& target, float& velocity,
+                        float maxScroll, float dt) {
+    if (velocity == 0.f || dt <= 0.f)
+        return;
+    // Consume the whole frame instead of discarding everything past 50 ms.
+    // Splitting keeps a long frame on the same path as several normal ones
+    // and stops a hitch from visibly slowing the fling.
+    while (dt > kMaxScrollStep) {
+        stepScrollMomentumSlice(value, target, velocity, maxScroll, kMaxScrollStep);
+        dt -= kMaxScrollStep;
+        if (velocity == 0.f)
+            return;
+    }
+    stepScrollMomentumSlice(value, target, velocity, maxScroll, dt);
+}
+
+// Critically damped scroll chase. The first-order ease this replaces restarted
+// on every D-pad repeat, so a held direction moved in visible pulses even at a
+// steady 60 fps. Keeping the velocity across a retarget turns those steps into
+// one continuous glide. An externally written value (touch drag, tab reset)
+// arrives with value == target, which zeroes the velocity so nothing drifts.
+void stepScrollChaseSlice(float& value, float& velocity, float target, float dt) {
+    if (dt <= 0.f)
+        return;
+    if (value == target) {
+        velocity = 0.f;
+        return;
+    }
+    constexpr float kOmega = 24.f;   // rad/s: ~0.16 s to settle, no overshoot
+    const float a = value - target;
+    const float decay = std::exp(-kOmega * dt);
+    const float b = velocity + kOmega * a;
+    value = target + (a + b * dt) * decay;
+    velocity = (b - kOmega * (a + b * dt)) * decay;
+    if (std::abs(target - value) < 0.05f && std::abs(velocity) < 0.5f) {
+        value = target;
+        velocity = 0.f;
+    }
+}
+
+void stepScrollChase(float& value, float& velocity, float target, float dt) {
+    if (dt <= 0.f)
+        return;
+    while (dt > kMaxScrollStep) {
+        stepScrollChaseSlice(value, velocity, target, kMaxScrollStep);
+        dt -= kMaxScrollStep;
+    }
+    stepScrollChaseSlice(value, velocity, target, dt);
+}
+} // namespace
 
 void TabbedOverlayScreen::onContentUpdate(float dt) {
     if (m_deferredRefresh) {
@@ -1184,14 +1363,24 @@ void TabbedOverlayScreen::onContentUpdate(float dt) {
 
     syncPanelState(visibilityProgress());
 
-    m_scrollY += (m_scrollTarget - m_scrollY) * std::min(1.f, dt * 14.f);
+    {
+        const nxui::Rect cr = contentRect();
+        const float maxScroll = std::max(
+            0.f, contentTotalHeight() + 16.f - cr.height + 20.f);
+        stepScrollMomentum(m_scrollY, m_scrollTarget, m_scrollMomentum,
+                           maxScroll, dt);
+    }
+    stepScrollChase(m_scrollY, m_scrollVel, m_scrollTarget, dt);
     if (!m_tabs.empty()) {
         const nxui::Rect tr = tabsRect();
         const float totalHeight = tabRailContentHeight();
         const float maxTabScroll = std::max(0.f, totalHeight - tr.height);
+        stepScrollMomentum(m_tabScrollY, m_tabScrollTarget, m_tabScrollMomentum,
+                           maxTabScroll, dt);
+        const float flingTarget = m_tabScrollTarget;
         float rowTop = 14.f;
         for (int i = 0; i < m_tabIndex && i < (int)m_tabs.size(); ++i)
-            rowTop += kTabRowHeight + tabBranchExtraHeight(i);
+            rowTop += kTabRowHeight + tabBranchExtraHeight(i) + tabGroupExtra(i);
         float rowBottom = rowTop + (kTabRowHeight - 10.f);
         if (tabBranchConsumesFocus())
             rowBottom += tabBranchExtraHeight(m_tabIndex);
@@ -1202,7 +1391,12 @@ void TabbedOverlayScreen::onContentUpdate(float dt) {
         else if (rowBottom > viewBottom)
             m_tabScrollTarget = rowBottom - tr.height + 10.f;
         m_tabScrollTarget = std::clamp(m_tabScrollTarget, 0.f, maxTabScroll);
-        m_tabScrollY += (m_tabScrollTarget - m_tabScrollY) * std::min(1.f, dt * 16.f);
+        // The follow rule above keeps the selected tab on screen. If it pulled
+        // the fling back, let the constraint win instead of fighting it every
+        // frame; the rail then settles exactly where a drag would.
+        if (m_tabScrollMomentum != 0.f && m_tabScrollTarget != flingTarget)
+            m_tabScrollMomentum = 0.f;
+        stepScrollChase(m_tabScrollY, m_tabScrollVel, m_tabScrollTarget, dt);
     }
     m_uiTime += dt;
 

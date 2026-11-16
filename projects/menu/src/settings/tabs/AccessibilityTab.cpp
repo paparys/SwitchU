@@ -15,6 +15,13 @@ SettingsScreen::Tab settings::tabs::AccessibilityTab::build(SettingsScreen& scre
 
     {
         SettingItem it;
+        it.label = i18n.tr("settings.accessibility.section_voice", "Voice guidance");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("settings.accessibility.voice", "Voice Guidance");
         it.description = i18n.tr("settings.accessibility.voice_desc",
                                  "Read focused items and available actions aloud.");
@@ -60,6 +67,13 @@ SettingsScreen::Tab settings::tabs::AccessibilityTab::build(SettingsScreen& scre
             if (screen.m_accessibilitySpeechRateCb)
                 screen.m_accessibilitySpeechRateCb(screen.m_accessibilitySpeechRate);
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.accessibility.section_announcements", "Announcements");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 

@@ -22,8 +22,9 @@ struct AppConfig {
     std::vector<std::string> musicPlaylistOrder;
     int   gridColumns  = 5;
     int   gridRows     = 3;
-    // The grid view is gone: HOME is always the single row (carousel). Keep the
-    // field so older configs still round-trip through load/save cleanly.
+    // Current HOME presentation. homeLayout is the user-facing preset; the
+    // appLayoutMode field stays as the derived renderer mode for compatibility.
+    HomeLayoutPreset homeLayout = HomeLayoutPreset::Carousel;
     AppLayoutMode appLayoutMode = AppLayoutMode::DynamicLine;
     std::string actionHintStyle = "capsules";
     // 0 = animated translation, 1 = immediate jump.
@@ -34,6 +35,10 @@ struct AppConfig {
     std::string soundPreset = "wiiu";
     bool  defaultProfileEnabled = false;
     std::string defaultProfileUid;
+    // Account whose per-user settings are currently loaded. The boot picker
+    // writes this, and Config::load() overlays users/<uid>.json on settings.json
+    // so the next menu build starts with that account's preferences.
+    std::string activeProfileUid;
     bool  tutorialCompleted = false;
     bool  clockUse12Hour = false;
     // Alternate to Nintendo auto clock correction: HTTPS Date sync on boot.
@@ -44,13 +49,16 @@ struct AppConfig {
     bool  accessibilitySpeakPosition = true;
     int   accessibilitySpeechRate = 190;
     bool  steamGridDbEnabled = true;
+    // Full-screen per-game hero artwork. Turning this off keeps covers,
+    // posters, icons and logos but never loads a hero backdrop.
+    bool  steamGridDbShowHeroes = true;
     // Sub-toggles used when steamGridDbEnabled is on. Defaults keep prior
     // behaviour (artwork everywhere the focused title allows).
     bool  steamGridDbShowInGrid = true;
     bool  steamGridDbShowInDynamicLine = true;
     bool  steamGridDbShowInFolders = true;
-    // Tall SteamGridDB portrait covers (Poster) on the single-row carousel only.
-    // Settings → SteamGridDB toggle; Change View stays grid ↔ single-row.
+    // Tall SteamGridDB portrait covers (Poster) on the single-row carousel.
+    // Poster Wall uses the grid toggle below; Change View cycles HOME presets.
     bool  steamGridDbShowPosterInDynamicLine = true;
     // Logo overlay above / beside the single-row carousel.
     bool  steamGridDbShowLogoInDynamicLine = true;
@@ -87,15 +95,39 @@ struct AppConfig {
     // One continuous plate behind the whole strip instead of a pill per
     // shortcut. Only the top / bottom strip layout draws it.
     bool shortcutStrip = true;
+    // Moving two-colour gradient across the single strip plate. Colours index
+    // the shared accent palette (1..9), like the focus highlight gradient.
+    bool shortcutGradient = true;
+    int shortcutGradientA = 1;
+    int shortcutGradientB = 9;
+    // Stretches the strip out to whichever screen edge it sits on and squares
+    // that edge while the opposite corners stay rounded. The config key keeps
+    // its original name so existing settings files remain compatible.
+    bool shortcutFlushTop = false;
     // Vertical travel of the shortcut row in pixels (-24..24, snapped to 2px
     // steps). Applied at whichever edge the strip sits on.
     int shortcutNudgeY = 0;
     // Extra gap between tiles, percent of the fitted spacing (-50..100).
     int iconSpacing = 0;
-    // Carousel depth, percent: negative pulls the row back so smaller tiles
-    // and more of them are on screen, positive brings it forward.
-    int carouselDepth = 0;
+    // All Apps grid shape: how many tiles one page holds. The screen fits
+    // itself around these counts, so both directions stay usable on a TV.
+    int allAppsColumns = 6;
+    // 6x3 is the comfortable default: dropping one row makes every tile about
+    // a third larger on a 720p handheld. The slider still supports 2..5 rows.
+    int allAppsRows = 3;
+    // All Apps Y menu: 0 = A-Z, 1 = recently played, 2 = favourites only.
+    int allAppsSort = 0;
+    // Comma-separated favourited title ids (decimal).
+    std::string allAppsFavourites;
+    // Title restored when All Apps reopens; 0 means start at the top-left.
+    std::uint64_t allAppsLastFocus = 0;
+    // Carousel distance shrink, percent: 0 keeps every tile the same size,
+    // 100 shrinks the neighbours hardest. 50 is the shipped falloff.
+    int carouselShrink = 50;
     int carouselFade = 50;
+    // Carousel glide speed as a percentage of the stock pace. 50 = stock;
+    // 0 = half speed, 100 = 1.5x.
+    int carouselScrollSpeed = 50;
     int titlePillNudgeX = 0;
     // Hides the title capsule under the carousel entirely (clean shelf).
     bool hideGameTitle = false;
@@ -131,33 +163,125 @@ struct AppConfig {
     int iconVignette = 0;
     // Glass sheen across the top of each tile (0..100).
     int iconHighlight = 0;
-    // Bevel depth on every tile: light along the top/left inner edge, shadow
-    // along the bottom/right, so icons read as raised plates (0..100).
-    int iconDepth = 35;
     int motionStyle = 1;
-    // Liquid glass. 0 = the theme's own glass colour; 1..9 = a fixed tint
-    // applied to every glass surface. glassSolid drops refraction entirely and
-    // draws an opaque plate in that same colour.
-    int glassTint = 0;
-    bool glassSolid = false;
+    // Opacity layer. 0 = the theme's own panel colour; 1..9 = a fixed colour
+    // applied to the flat layer behind panels, dialogs and capsules.
+    // opacitySolid draws that layer fully opaque.
+    int opacityTint = 0;
+    bool opacitySolid = false;
     // Focus ring around the highlighted icon, same palette (0 = theme).
+    // 10 = animated two-colour gradient using highlightGradientA/B.
     int highlightTint = 0;
+    int highlightGradientA = 1;   // palette index 1..9
+    int highlightGradientB = 9;   // palette index 1..9
+    int highlightThicknessPx = 3; // focus ring stroke width 1..8
+
+    // Style lab values. Every default reproduces the shipped look exactly.
+    // Panel tint mix blends the theme's panel colour toward the opacity tint:
+    // 0 keeps the theme, 100 uses the tint colour throughout.
+    int panelTintMix = 0;
+    int panelBorderPct = 100;
+    int panelGrainPct = 0;
+    int panelShadowPct = 0;
+    // Focus treatment on tiles and cards.
+    int focusRingPx = 3;
+    int focusGlowPct = 100;
+    int focusLiftPct = 100;
+    int focusOvershootPct = 0;
+    // Capsule title: text scale, corner shape and backing strength.
+    int titleScalePct = 100;
+    int titleCornerStyle = 0; // 0 = pill, 1 = rounded, 2 = rect
+    int titleBackgroundPct = 100;
+    // Top HUD spacing and per-item visibility.
+    int hudGapPx = 0;
+    bool showHudClock = true;
+    bool showHudDate = true;
+    bool showHudBattery = true;
+    bool showHudProfile = true;
+    // Wallpaper grading.
+    int wallpaperBlurPx = 0;
+    int wallpaperSaturationPct = 100;
+    int wallpaperSharpnessPct = 0;
+    int wallpaperVibrancePct = 0;
+    int wallpaperNoisePct = 0;
+    int backdropTintPct = 0;
+    // Page slide duration in milliseconds (150..600).
+    int pageSlideMs = 340;
+
+    // A saved look captures the visual identity, not per-app layout.
+    struct LookPreset {
+        bool filled = false;
+        std::string name = "Look";
+        std::string themePreset = "Default Light";
+        int opacityTint = 0;
+        bool opacitySolid = false;
+        int highlightTint = 0;
+        int highlightGradientA = 1;
+        int highlightGradientB = 9;
+        int highlightThicknessPx = 3;
+        int panelTintMix = 0;
+        int panelBorderPct = 100;
+        int panelGrainPct = 0;
+        int panelShadowPct = 0;
+        int focusRingPx = 3;
+        int focusGlowPct = 100;
+        int focusLiftPct = 100;
+        int focusOvershootPct = 0;
+        int titleScalePct = 100;
+        int titleCornerStyle = 0;
+        int titleBackgroundPct = 100;
+        int hudGapPx = 0;
+        bool showHudClock = true;
+        bool showHudDate = true;
+        bool showHudBattery = true;
+        bool showHudProfile = true;
+        int wallpaperBlurPx = 0;
+        int wallpaperSaturationPct = 100;
+        int wallpaperSharpnessPct = 0;
+        int wallpaperVibrancePct = 0;
+        int wallpaperNoisePct = 0;
+        int backdropTintPct = 0;
+        int pageSlideMs = 340;
+        int motionStyle = 1;
+        int uiRadiusPct = 100;
+        int iconScale = 100;
+        int iconSpacing = 0;
+        int carouselShrink = 50;
+        int iconVignette = 0;
+        int iconHighlight = 0;
+        int iconShadowOffset = 6;
+        int iconShadowAlpha = 20;
+        std::vector<int> layout;
+    };
+    LookPreset lookPresets[3];
     // Carousel horizontal offset: moves the focused tile left or right of
     // centre without touching the grid.
     int lineNudgeX = 0;
     // Layout presets, 9 values each: aspect, corners, roundness,
-    // scale, spacing, depth, gridNudgeX, lineNudgeX, lineNudgeY.
+    // scale, spacing, shrink, gridNudgeX, lineNudgeX, lineNudgeY.
     std::vector<int> layoutPreset[3];
 
     // Animated wallpaper (animated WebP, or Motion-JPEG inside an .mp4).
     // Empty keeps the theme's still image.
     std::string wallpaperPath;
+    // Last wallpaper that decoded successfully. Kept separately from the
+    // selection so a later boot can recover to it if wallpaperPath fails.
+    std::string wallpaperLastUsedPath;
     bool wallpaperAnimated = true;
     int  wallpaperFps = 15;
     // Slow horizontal pan of the wallpaper / per-game backdrop. The speed is a
     // 1..100 travel rate, not a pixel value, so it reads the same on any art.
     bool backgroundDrift = false;
     int  backgroundDriftSpeed = 35;
+    // Decorative drifting shapes on the theme background. Off keeps the gradient
+    // and the wallpaper, dropping only the shapes.
+    bool backgroundShapes = true;
+    // Per-game hero fade-in, milliseconds (0..10000). 0 shows the art on the
+    // frame its upload completes.
+    int  heroFadeInMs = 3000;
+    // Per-title hero alignment, each axis -100..100 (0 = centred). Stored as a
+    // map so a game only carries an entry when it has been moved.
+    std::unordered_map<std::uint64_t, std::pair<int, int>> heroOffsets;
 
     float iconAspectRatio() const {
         switch (iconAspect) {
@@ -176,9 +300,6 @@ struct AppConfig {
     // Colour HOME chrome icons follow single-row hero light/dark chrome when on
     // (Theme > Options). Default on — matches pre-PoloNX enjoyment.
     bool iconContrastAdapt = true;
-    // Battery Saver = user-forced lite HOME path (same reclaim as Frame Tap
-    // coexistence). Quick Settings + Theme Shop → Interface, synced.
-    bool batterySaver = false;
     // Lock view (Theme Shop → Lock Screen). Gates Power→Lock entries too.
     bool lockScreenEnabled = false;
     // Hardware power short-press when Lock Screen is enabled:
@@ -199,6 +320,10 @@ struct AppConfig {
     // any-button unlock while this is false.
     bool lockPadCodeEnabled = false;
     std::string lockPadCode = "UDLR";
+    // Per-user lock codes keyed by AccountUid hex. An empty value explicitly
+    // disables the code for that user; a missing entry inherits the legacy
+    // global code above so existing installations stay protected.
+    std::unordered_map<std::string, std::string> lockPadCodes;
     // Per-game SteamGridDB backdrop canvas: 0 = 1280x720 (full), 1 = 960x540,
     // 2 = 640x360. Lower sizes cut RAM and SD traffic while scrolling; the
     // sharpness of the hero follows whatever canvas it is decoded at.
@@ -208,13 +333,21 @@ struct AppConfig {
     int heroBackdropBlur = 0;
     // Six comma-separated shortcut slot ids (0 = stock applet). Any installed
     // game or homebrew can occupy a slot from its Game Options page.
+    // Title started from the HOME shortcut row. The menu process exits while
+    // launching, so this survives the boundary and tells the next menu boot to
+    // close the suspended title instead of offering it as resumable.
+    std::uint64_t shortcutBootTitleId = 0;
     std::string gameShortcuts;
+    // Per-slot placement for those six pins: comma-separated 0/1 values
+    // (0 = left cluster, 1 = right cluster). Missing entries fall back to
+    // shortcutSide, which keeps existing installs where they were.
+    std::string gameShortcutSides;
     // Comma-separated title ids hidden from HOME. Restored from Settings.
     std::string hiddenGames;
     // Per-title display names: id<TAB>name lines.
     std::string gameNames;
-    // Docked-mode size overrides. handheld* keeps the normal values so
-    // undocking restores them; docked* is applied only while docked.
+    // Docked-mode layout overrides. handheld* keeps the normal sizes so
+    // undocking restores them; docked* values are applied only while docked.
     bool dockedSizeOverrides = true;
     int handheldIconScale = 0;
     int handheldShortcutScale = 0;
@@ -222,6 +355,11 @@ struct AppConfig {
     // custom icon/shortcut size keeps working when the console is docked.
     int dockedIconScale = 0;
     int dockedShortcutScale = 0;
+    // Carousel position while docked, +/-25 steps like lineNudgeX/Y. Missing
+    // keys inherit the current carousel position so an update does not
+    // recentre an existing docked layout.
+    int dockedCarouselX = 0;
+    int dockedCarouselY = 0;
     // Theme Shop → Lock Screen: applying a theme with fonts may set clock face.
     bool themeLockClockFontOverride = true;
     // Theme Shop → Interface: applying a theme with icons may switch icon pack.
@@ -311,10 +449,18 @@ struct AppConfig {
 
     bool load();
 
-    bool save() const;
+    // writeUserSettings=false is used when switching accounts: it commits the
+    // new active UID without copying the outgoing account's settings over the
+    // incoming account's file.
+    bool save(bool writeUserSettings = true) const;
+    // Selects the boot account, seeds its file on first use, and persists the
+    // selection. Returns false when the global settings file could not be
+    // written.
+    bool selectActiveUser(const std::string& uidHex);
 
     static constexpr const char* kConfigDir  = "sdmc:/config/SwitchU";
     static constexpr const char* kConfigPath = "sdmc:/config/SwitchU/settings.json";
+    static constexpr const char* kUsersDir   = "sdmc:/config/SwitchU/users";
     // The copy that was current before the last save. Read only when the live
     // settings file is missing or does not parse.
     static constexpr const char* kBackupPath = "sdmc:/config/SwitchU/settings.json.bak";

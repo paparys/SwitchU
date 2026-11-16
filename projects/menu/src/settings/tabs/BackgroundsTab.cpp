@@ -4,6 +4,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <string>
+
+namespace {
+std::string wallpaperLabel(const std::string& path) {
+    if (path.empty())
+        return "None (theme image)";
+    const std::size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+} // namespace
 
 SettingsScreen::Tab settings::tabs::BackgroundsTab::build(SettingsScreen& screen) {
     using ItemType = SettingsScreen::ItemType;
@@ -12,6 +23,73 @@ SettingsScreen::Tab settings::tabs::BackgroundsTab::build(SettingsScreen& screen
 
     SettingsScreen::Tab tab;
     tab.name = i18n.tr("settings.tabs.backgrounds", "Backgrounds");
+
+    SettingItem wallpaperSection;
+    wallpaperSection.type = ItemType::Section;
+    wallpaperSection.label = i18n.tr("settings.backgrounds.wallpaper_section",
+                                     "Wallpaper");
+    tab.items.push_back(std::move(wallpaperSection));
+
+    SettingItem choose;
+    choose.type = ItemType::Action;
+    choose.label = i18n.tr("settings.backgrounds.wallpaper", "Wallpaper");
+    choose.buttonLabel = i18n.tr("settings.backgrounds.wallpaper_choose", "Choose");
+    choose.description = i18n.tr("settings.backgrounds.wallpaper_choose_desc",
+        "Pick a PNG, JPEG, WebP, GIF or Motion-JPEG MP4 from "
+        "sdmc:/config/SwitchU/wallpapers. The picker shows a full preview before "
+        "anything is applied. PNG and JPEG files are still wallpapers.");
+    choose.infoText = wallpaperLabel(screen.wallpaperPath());
+    choose.onChange = [&screen](SettingItem&) {
+        screen.notifyWallpaperPicker();
+    };
+    tab.items.push_back(std::move(choose));
+
+    SettingItem animate;
+    animate.type = ItemType::Toggle;
+    animate.label = i18n.tr("settings.backgrounds.wallpaper_animate",
+                            "Animate wallpapers");
+    animate.description = i18n.tr("settings.backgrounds.wallpaper_animate_desc",
+        "Play animated WebP, GIF and Motion-JPEG MP4 files. PNG and JPEG stills "
+        "always display, whether this is on or off.");
+    animate.boolVal = screen.wallpaperAnimated();
+    animate.anim01 = animate.boolVal ? 1.f : 0.f;
+    animate.onChange = [&screen](SettingItem& self) {
+        screen.setWallpaperAnimated(self.boolVal);
+        screen.notifyWallpaperAnimated(self.boolVal);
+    };
+    tab.items.push_back(std::move(animate));
+
+    SettingItem fps;
+    fps.type = ItemType::Slider;
+    fps.label = i18n.tr("settings.backgrounds.wallpaper_fps",
+                        "Animation frame rate");
+    fps.description = i18n.tr("settings.backgrounds.wallpaper_fps_desc",
+        "Upper bound for animated wallpapers. Lower values use less CPU and "
+        "battery; still PNG and JPEG wallpapers ignore this setting.");
+    fps.sliderSteps = 25;
+    fps.valueBase = 5;
+    fps.valueSpan = 25;
+    fps.valueSuffix = " fps";
+    fps.floatVal = (std::clamp(screen.wallpaperFps(), 5, 30) - 5) / 25.f;
+    fps.anim01 = fps.floatVal;
+    fps.enabled = screen.wallpaperAnimated();
+    fps.onChange = [&screen](SettingItem& self) {
+        const int value = 5 + static_cast<int>(
+            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 25.f));
+        self.floatVal = (value - 5) / 25.f;
+        screen.setWallpaperFps(value);
+        screen.notifyWallpaperFps(value);
+    };
+    tab.items.push_back(std::move(fps));
+
+    SettingItem wallpaperHint;
+    wallpaperHint.type = ItemType::Info;
+    wallpaperHint.label = i18n.tr("settings.backgrounds.wallpaper_hint",
+                                  "Wallpaper folder");
+    wallpaperHint.infoText = i18n.tr("settings.backgrounds.wallpaper_hint_text",
+        "Put files in sdmc:/config/SwitchU/wallpapers. Supported formats: "
+        "PNG, JPEG, WebP, GIF, and Motion-JPEG MP4.");
+    tab.items.push_back(std::move(wallpaperHint));
 
     SettingItem section;
     section.type = ItemType::Section;
@@ -59,6 +137,38 @@ SettingsScreen::Tab settings::tabs::BackgroundsTab::build(SettingsScreen& screen
         screen.notifyHeroBackdropBlur();
     };
     tab.items.push_back(std::move(blur));
+
+    SettingItem fadeIn;
+    fadeIn.type = ItemType::Slider;
+    fadeIn.label = i18n.tr("settings.backgrounds.hero_fade",
+                           "Per-game fade-in");
+    fadeIn.description = i18n.tr("settings.backgrounds.hero_fade_desc",
+        "How long a new per-game background takes to fade in once its artwork "
+        "is ready. A longer fade hides the texture upload; 0 shows the art on "
+        "the frame it arrives.");
+    fadeIn.sliderSteps = 100;  // 0..10000 ms in 100 ms steps
+    fadeIn.valueSpan = 100;
+    fadeIn.hasReset = true;
+    fadeIn.resetValue = 30.f / 100.f;
+    fadeIn.floatVal = std::clamp(screen.heroFadeInMs(), 0, 10000) / 10000.f;
+    fadeIn.anim01 = fadeIn.floatVal;
+    {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%.1f s", fadeIn.floatVal * 10.f);
+        fadeIn.infoText = buf;
+    }
+    fadeIn.onChange = [&screen](SettingItem& self) {
+        const int steps = static_cast<int>(
+            std::lround(std::clamp(self.floatVal, 0.f, 1.f) * 100.f));
+        const int ms = steps * 100;
+        self.floatVal = steps / 100.f;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%.1f s", ms / 1000.f);
+        self.infoText = buf;
+        screen.setHeroFadeInMs(ms);
+        screen.notifyHeroFadeIn(ms);
+    };
+    tab.items.push_back(std::move(fadeIn));
 
     SettingItem hint;
     hint.type = ItemType::Info;
@@ -111,17 +221,38 @@ SettingsScreen::Tab settings::tabs::BackgroundsTab::build(SettingsScreen& screen
     };
     tab.items.push_back(std::move(driftSpeed));
 
-    // The speed row is meaningless until the drift is on, so grey it out rather
-    // than letting it move with nothing to control.
+    SettingItem shapes;
+    shapes.type = ItemType::Toggle;
+    shapes.label = i18n.tr("settings.backgrounds.shapes", "Drifting shapes");
+    shapes.description = i18n.tr("settings.backgrounds.shapes_desc",
+        "The floating glass shapes drawn over the wallpaper. Turn them off to "
+        "keep the gradient and the wallpaper on their own.");
+    shapes.boolVal = screen.backgroundShapes();
+    shapes.anim01 = shapes.boolVal ? 1.f : 0.f;
+    shapes.onChange = [&screen](SettingItem& self) {
+        screen.setBackgroundShapes(self.boolVal);
+        screen.notifyBackgroundShapes(self.boolVal);
+    };
+    tab.items.push_back(std::move(shapes));
+
+    // Keep the live wallpaper filename and animation state in sync while the
+    // chooser is open on top of this tab. The drift speed is meaningless until
+    // drift is on, so grey it out rather than letting it move with nothing to
+    // control.
     tab.onUpdate = [](SettingsScreen::Tab& current, TabbedOverlayScreen& base) {
-        if (current.items.size() < 7)
+        if (current.items.size() < 14)
             return;
-        const bool on = static_cast<SettingsScreen&>(base).backgroundDrift();
-        if (current.items[5].boolVal != on) {
-            current.items[5].boolVal = on;
-            current.items[5].anim01 = on ? 1.f : 0.f;
+        auto& settings = static_cast<SettingsScreen&>(base);
+        const std::string name = wallpaperLabel(settings.wallpaperPath());
+        if (current.items[1].infoText != name)
+            current.items[1].infoText = name;
+        current.items[3].enabled = settings.wallpaperAnimated();
+        const bool on = settings.backgroundDrift();
+        if (current.items[11].boolVal != on) {
+            current.items[11].boolVal = on;
+            current.items[11].anim01 = on ? 1.f : 0.f;
         }
-        current.items[6].enabled = on;
+        current.items[12].enabled = on;
     };
 
     return tab;

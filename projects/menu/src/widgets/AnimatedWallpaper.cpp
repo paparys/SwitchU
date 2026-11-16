@@ -17,8 +17,8 @@ namespace {
 
 // The HOME background shares the GPU budget with icons, the WaraWara shapes and
 // the UI itself, so the animation is bounded rather than fully resident.
-constexpr std::size_t kWallpaperGpuBudget = 12u * 1024u * 1024u;
-constexpr int kWallpaperMaxWidth = 640;
+constexpr std::size_t kWallpaperGpuBudget = 8u * 1024u * 1024u;
+constexpr int kWallpaperMaxWidth = 480;
 constexpr int kWallpaperMaxFrames = 48;
 constexpr int kWallpaperMinFrames = 3;
 
@@ -301,6 +301,18 @@ bool AnimatedWallpaper::load(nxui::GpuDevice& gpu, nxui::Renderer& ren,
     std::vector<float> durations;
 
     auto upload = [&](const std::uint8_t* rgba, int width, int height) {
+        // A single transparent pixel anywhere means the layer no longer hides
+        // what is behind it, so the background gradient must keep drawing.
+        if (m_opaque) {
+            const std::size_t pixels = static_cast<std::size_t>(width) *
+                                       static_cast<std::size_t>(height);
+            for (std::size_t i = 0; i < pixels; ++i) {
+                if (rgba[i * 4u + 3u] != 255u) {
+                    m_opaque = false;
+                    break;
+                }
+            }
+        }
         nxui::Texture texture;
         if (!texture.loadFromPixels(gpu, ren, rgba, width, height))
             return false;
@@ -421,6 +433,33 @@ bool AnimatedWallpaper::load(nxui::GpuDevice& gpu, nxui::Renderer& ren,
             DebugLog::log("[wallpaper] WebP frames=%d/%d size=%dx%d from %s",
                           static_cast<int>(m_frames.size()), totalFrames,
                           targetW, targetH, path.c_str());
+    } else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
+        // Still wallpapers reuse the frame path: one opaque texture and no
+        // per-frame update. Keeping them here means restoreImage() still knows
+        // the theme image path and the wallpaper covers the screen exactly like
+        // an animated one.
+        int width = 0, height = 0, channels = 0;
+        stbi_uc* decoded = stbi_load_from_memory(
+            bytes.data(), static_cast<int>(bytes.size()), &width, &height,
+            &channels, 4);
+        if (!decoded || width <= 0 || height <= 0) {
+            if (decoded)
+                stbi_image_free(decoded);
+            m_error = "Image wallpaper could not be decoded";
+            DebugLog::log("[wallpaper] image decode failed: %s", path.c_str());
+            return false;
+        }
+        const int targetW = std::min(width, kWallpaperMaxWidth);
+        const int targetH = std::max(1, height * targetW / std::max(1, width));
+        scaleRgba(decoded, width, height, targetW, targetH, framePixels);
+        stbi_image_free(decoded);
+        if (!upload(framePixels.data(), targetW, targetH)) {
+            m_error = "Image wallpaper could not be uploaded";
+            return false;
+        }
+        durations.push_back(kDefaultFrameSeconds);
+        DebugLog::log("[wallpaper] image size=%dx%d from %s", targetW, targetH,
+                      path.c_str());
     } else if (ext == ".gif") {
         // stb_image composites the GIF for us: one RGBA buffer holding every
         // frame back to back, plus a per-frame delay table in milliseconds.
@@ -485,8 +524,16 @@ bool AnimatedWallpaper::load(nxui::GpuDevice& gpu, nxui::Renderer& ren,
     return true;
 }
 
+std::size_t AnimatedWallpaper::gpuBytes() const {
+    std::size_t bytes = 0;
+    for (const auto& frame : m_frames)
+        bytes += frame.allocationSize();
+    return bytes;
+}
+
 void AnimatedWallpaper::clear() {
     m_frames.clear();
+    m_opaque = true;
     m_frameSeconds.clear();
     m_index = 0;
     m_elapsed = 0.f;

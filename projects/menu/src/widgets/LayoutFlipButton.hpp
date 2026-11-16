@@ -10,7 +10,7 @@
 
 namespace nxui { class Renderer; }
 
-// Compact camera-flip control for toggling grid Γåö single-row (touch + D-pad).
+// Compact camera-flip control for cycling HOME presets (and folder grid/line).
 class LayoutFlipButton : public nxui::GlassWidget {
 public:
     LayoutFlipButton();

@@ -61,6 +61,9 @@ void TabbedOverlayScreen::rebuildCurrentTab() {
         m_contentIdx = 0;
     m_scrollTarget = oldScroll;
     m_scrollY = oldScroll;
+    m_scrollVel = 0.f;
+    m_scrollMomentum = 0.f;
+    m_touchScrollVel = 0.f;
 
     if (needsStructuralRebuild || !usesCustomContentLayout())
         rebuildTabBar();
@@ -166,6 +169,9 @@ void TabbedOverlayScreen::warmup() {
         m_contentIdx = 0;
     m_scrollTarget = oldScrollTarget;
     m_scrollY = oldScrollY;
+    m_scrollVel = 0.f;
+    m_scrollMomentum = 0.f;
+    m_touchScrollVel = 0.f;
 
     rebuildTabBar();
 
@@ -266,7 +272,8 @@ nxui::Rect TabbedOverlayScreen::tabsRect() const {
 nxui::Rect TabbedOverlayScreen::tabsRect(const nxui::Rect& panel) const {
     const float headerH = overlayHeaderHeight();
     return { panel.x + kInnerPad, panel.y + kInnerPad + headerH,
-             overlayTabWidth(), panel.height - 2 * kInnerPad - headerH };
+             overlayTabWidth(),
+             panel.height - 2 * kInnerPad - headerH - overlayFooterHeight() };
 }
 
 nxui::Rect TabbedOverlayScreen::contentRect() const {
@@ -278,14 +285,22 @@ nxui::Rect TabbedOverlayScreen::contentRect(const nxui::Rect& panel) const {
     const float headerH = overlayHeaderHeight();
     float left = panel.x + kInnerPad + overlayTabWidth() + kInnerPad;
     return { left, panel.y + kInnerPad + headerH,
-             panel.right() - kInnerPad - left, panel.height - 2 * kInnerPad - headerH };
+             panel.right() - kInnerPad - left,
+             panel.height - 2 * kInnerPad - headerH - overlayFooterHeight() };
 }
 
 float TabbedOverlayScreen::contentTotalHeight() const {
     if (m_tabIndex < 0 || m_tabIndex >= (int)m_tabs.size()) return 0;
-    const float width = contentRect().width;
+    const auto& items = m_tabs[m_tabIndex].items;
     float height = 0;
-    for (auto& item : m_tabs[m_tabIndex].items)
+    if (m_tabIndex < (int)m_cachedItemHeights.size()
+        && m_cachedItemHeights[(size_t)m_tabIndex].size() == items.size()) {
+        for (float h : m_cachedItemHeights[(size_t)m_tabIndex])
+            height += h;
+        return height;
+    }
+    const float width = contentRect().width;
+    for (auto& item : items)
         height += itemHeight(item, width);
     return height;
 }

@@ -1,13 +1,17 @@
 #include "AppletButton.hpp"
+#include "../ui/ChromeTokens.hpp"
 #include <nxui/core/Renderer.hpp>
 #include <algorithm>
 
 
 AppletButton::AppletButton() {
-    setCornerRadius(16.f);
+    setCornerRadius(switchu::ui::chrome::kRadiusRow);
     setPadding(6.f);
-    setLiquidGlassEnabled(true);
-    setForceLiquidGlass(true);
+    // Shortcut pills are a flat, tinted surface: the liquid-glass pass only
+    // shaded the rim around the glyph and sampled the backdrop per button.
+    // The rim now follows the icon itself, while the base alpha still carries
+    // the pill's opacity and theme colour underneath.
+    setPanelHighlightEnabled(false);
     setBlurEnabled(false);
     setBorderWidth(2.2f);
     m_i18nListenerId = nxui::I18n::instance().addLanguageChangedListener([this]() {
@@ -88,4 +92,15 @@ void AppletButton::onContentRender(nxui::Renderer& ren) {
     ren.drawTextureRounded(tex, {ix, iy, iconSz, iconSz},
                            iconCorner,
                            m_iconTint.withAlpha(m_iconTint.a * m_opacity));
+
+    // The glass pill is gone, so its rim light sits on the glyph instead of
+    // circling an empty plate around it. When the strip plate owns the chrome
+    // it sets this colour transparent, which skips the rim entirely.
+    if (m_opacity > 0.01f && highlightColor().a > 0.001f) {
+        const nxui::Rect iconRect{ix, iy, iconSz, iconSz};
+        ren.drawRoundedRectOutline(
+            iconRect.shrunk(0.5f),
+            highlightColor().withAlpha(highlightColor().a * 0.65f * m_opacity),
+            std::max(0.f, iconCorner - 0.5f), 1.f);
+    }
 }

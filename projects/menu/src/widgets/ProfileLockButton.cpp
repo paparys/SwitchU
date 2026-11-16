@@ -10,8 +10,8 @@ ProfileLockButton::ProfileLockButton() {
     setFocusable(true);
     setCornerRadius(26.f);
     setPadding(6.f);
-    setLiquidGlassEnabled(true);
-    setForceLiquidGlass(true);
+    // Flat capsule: the theme colour, alpha and the panel's own rim stay, but
+    // the plate no longer samples or blurs the scene behind it.
     setBlurEnabled(false);
     setPanelOpacity(0.90f);
     setBorderWidth(1.8f);

@@ -5,6 +5,8 @@
 
 PageIndicator::PageIndicator() {
     setPadding(10.f, 18.f, 10.f, 18.f);
+    // Flat capsule: the dot track still draws over the panel fill and rim, but
+    // the plate must not sample the scene on every HOME frame.
 }
 
 void PageIndicator::setPageCount(int total) {

@@ -13,6 +13,13 @@ SettingsScreen::Tab settings::tabs::AboutTab::build(SettingsScreen& /* screen */
     Tab t;
     t.name = i18n.tr("settings.tabs.about", "About");
 
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.about.section_application", "Application");
+        it.type  = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
     // Application info
     {
         SettingItem it;

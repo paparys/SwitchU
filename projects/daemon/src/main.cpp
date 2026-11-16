@@ -1878,6 +1878,21 @@ static bool handleAction(daemon::SystemAction& action) {
     return false;
 }
 
+// qlaunch-ext prepares the next launch while the current screen is still
+// tearing down. Do the same here: the menu queues LaunchApplication before it
+// has finished closing, so provision its metadata/save data during that window
+// instead of paying for it after the applet is gone.
+static void maybePrefetchPendingLaunch() {
+    if (!daemon::menu_la::hasHolder() || g_foregroundAppletActive)
+        return;
+
+    const daemon::SystemAction* pending = g_actionQueue.front();
+    if (!pending || pending->type != daemon::SystemActionType::LaunchApplication)
+        return;
+
+    daemon::app::prefetchLaunchData(pending->titleId, pending->uid);
+}
+
 static bool consumeOneAction() {
     if (g_actionQueue.empty() || daemon::menu_la::hasHolder() ||
         g_foregroundAppletActive)
@@ -2140,6 +2155,7 @@ static void mainLoop() {
         didWork = true;
     }
 
+    maybePrefetchPendingLaunch();
     didWork |= consumeOneAction();
 
     if (daemon::app::checkFinished()) {

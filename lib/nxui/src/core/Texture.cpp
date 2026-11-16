@@ -62,19 +62,21 @@ Texture& Texture::operator=(Texture&& o) noexcept {
 // drawing. The user's file was never corrupt -- both default covers are the
 // same 1280x720 JPEG, and his copy is byte-for-byte the right size.
 //
-// The wait only happens when there is something live to retire, which is a
-// theme change or a cache eviction, not every frame.
+// Hand-back is deferred instead of waited on: the descriptor slot goes to the
+// renderer's deferred list and the memory to the device's retire queue, both
+// drained only after the frames that could reference them are presented.
 void Texture::retireGpuResources() {
     const bool holdsMemory = m_gpu && m_mem && m_allocSize > 0;
     if (m_slot < 0 && !holdsMemory)
         return;
-    if (m_gpu)
-        m_gpu->waitIdle();
+    // No waitIdle. A font LRU eviction, an icon swap or a theme change used to
+    // stall the whole queue at the exact moment the UI was busiest; both
+    // resources now retire on a delay instead.
     if (m_renderer && m_slot >= 0)
         m_renderer->releaseTextureSlot(m_slot);
     m_slot = -1;
     if (holdsMemory)
-        m_gpu->freeImageMemory(m_allocSize);
+        m_gpu->retireImageMemory(static_cast<dk::MemBlock&&>(m_mem), m_allocSize);
     m_allocSize = 0;
     m_valid = false;
 }
@@ -95,8 +97,26 @@ bool Texture::loadFromPixels(GpuDevice& gpu, Renderer& ren,
     // MemBlock is dropped when a bigger one is needed, and the descriptor at
     // oldSlot is rewritten to point at the new image. Both belong to the frame
     // in flight until the GPU says otherwise.
-    if (m_valid && (oldSlot >= 0 || m_mem))
-        gpu.waitIdle();
+    //
+    // Icon pool slots are reloaded every time a page streams in, so this was a
+    // full queue drain per uploaded icon -- the hitch as a page fills. Small
+    // reloads now hand the previous descriptor and image to the same deferred
+    // queues texture destruction uses (4- and 6-frame margins) and allocate
+    // fresh memory, so nothing in flight is rewritten. Large surfaces (posters,
+    // heroes, wallpapers) keep the drain: deferring megabytes on every change
+    // would cost more GPU memory than the stall it removes.
+    constexpr std::size_t kDeferredReloadMaxBytes = 256u * 1024u;
+    const std::size_t incomingBytes = static_cast<std::size_t>(w > 0 ? w : 0)
+        * static_cast<std::size_t>(h > 0 ? h : 0) * 4u;
+    if (m_valid && (oldSlot >= 0 || m_mem)) {
+        if (incomingBytes <= kDeferredReloadMaxBytes) {
+            retireGpuResources();
+            oldSlot = -1;
+            oldAllocSize = 0;
+        } else {
+            gpu.waitIdle();
+        }
+    }
 
     m_valid = false;
     m_slot  = -1;

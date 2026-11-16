@@ -31,18 +31,50 @@ SettingsScreen::Tab settings::tabs::LockScreenTab::build(SettingsScreen& screen)
     SettingsScreen::Tab tab;
     tab.name = i18n.tr("settings.tabs.lockscreen", "Lock Screen");
 
+    const auto& profiles = screen.lockProfiles();
+    if (profiles.empty()) {
+        SettingItem empty;
+        empty.type = ItemType::Info;
+        empty.label = i18n.tr("settings.lockscreen.no_users", "No users found");
+        empty.infoText = i18n.tr("settings.lockscreen.no_users_text",
+            "SwitchU could not read the console's users. A lock code cannot be "
+            "assigned until a user is available.");
+        tab.items.push_back(std::move(empty));
+        return tab;
+    }
+
     SettingItem section;
     section.type = ItemType::Section;
-    section.label = i18n.tr("settings.lockscreen.section", "D-pad passcode");
+    section.label = i18n.tr("settings.lockscreen.section", "User lock code");
     tab.items.push_back(std::move(section));
+
+    SettingItem user;
+    user.type = ItemType::Selector;
+    user.label = i18n.tr("settings.lockscreen.user", "User");
+    user.description = i18n.tr("settings.lockscreen.user_desc",
+        "Each console user can have their own four-step D-pad code.");
+    for (std::size_t i = 0; i < profiles.size(); ++i) {
+        user.options.push_back(profiles[i].nickname.empty()
+            ? i18n.tr("settings.lockscreen.user_fallback", "User")
+                + " " + std::to_string(i + 1)
+            : profiles[i].nickname);
+    }
+    user.intVal = screen.lockPadProfileIndex();
+    user.onChange = [&screen](SettingItem& self) {
+        if (self.intVal == screen.lockPadProfileIndex())
+            return;
+        screen.setLockPadProfileIndex(self.intVal);
+        screen.requestLockPadProfileRefresh();
+    };
+    tab.items.push_back(std::move(user));
 
     SettingItem toggle;
     toggle.type = ItemType::Toggle;
     toggle.label = i18n.tr("settings.lockscreen.code", "Require a D-pad code");
     toggle.description = i18n.tr("settings.lockscreen.code_desc",
-        "Replaces swipe and any-button unlock with four D-pad steps. While it "
-        "is on, only the exact sequence below opens HOME, so write it down "
-        "before you enable it.");
+        "Replaces swipe and any-button unlock with four D-pad steps for this "
+        "user. While it is on, only the exact sequence below opens HOME, so "
+        "write it down before you enable it.");
     toggle.boolVal = screen.lockPadCodeEnabled();
     toggle.anim01 = toggle.boolVal ? 1.f : 0.f;
     toggle.onChange = [&screen](SettingItem& self) {
@@ -77,8 +109,9 @@ SettingsScreen::Tab settings::tabs::LockScreenTab::build(SettingsScreen& screen)
     hint.type = ItemType::Info;
     hint.label = i18n.tr("settings.lockscreen.hint", "Unlocking");
     hint.infoText = i18n.tr("settings.lockscreen.hint_text",
-        "On the lock screen press the four directions in order. A wrong "
-        "sequence flashes and clears the entry; B clears it at any time.");
+        "At startup, choose the user whose code opens this session, then press "
+        "their four directions in order. Sleep, wake and manual Lock skip the "
+        "account screen; a wrong sequence clears the entry, and B resets it.");
     tab.items.push_back(std::move(hint));
 
     return tab;

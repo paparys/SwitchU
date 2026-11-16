@@ -10,6 +10,10 @@ void ThemeShopScreen::buildTabs() {
     // m_tabs is still empty (cache resized to 0); Icons → Icon Shop → Down into
     // Sounds then indexed a null cache (Data Abort at null+0x30).
     m_tabs.clear();
+    // buildTabs also runs on a language change; drop the cached hint string
+    // so the footer picks up the new translation.
+    m_footerHintsText.clear();
+    m_footerHintsKey = -1;
     DebugLog::log("[themeshop]   ThemesTab...");
     m_tabs.push_back(themeshop::tabs::InstalledTab::build(*this));
     DebugLog::log("[themeshop]   IconsTab...");

@@ -1,4 +1,5 @@
 #include "ActionButton.hpp"
+#include "../ui/ChromeTokens.hpp"
 
 #include <algorithm>
 
@@ -7,10 +8,7 @@ ActionButton::ActionButton() {
     setPadding(9.f, 14.f, 9.f, 14.f);
     setAlignItems(nxui::AlignItems::CENTER);
     setJustifyContent(nxui::JustifyContent::CENTER);
-    setCornerRadius(12.f);
-    setLiquidGlassEnabled(false);
-    setForceLiquidGlass(false);
-    setLiquidGlassShaderEnabled(false);
+    setCornerRadius(switchu::ui::chrome::kRadiusControl);
     setBlurEnabled(false);
     setBackingEnabled(false);
     setMaterialTextureEnabled(false);

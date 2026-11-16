@@ -25,6 +25,11 @@ namespace {
 constexpr int kPreviewCanvasW = 960;
 constexpr int kPreviewCanvasH = 540;
 
+// A settings slider fires on every step, and applying a step costs a full hero
+// decode plus a multi-megabyte upload. Waiting for the value to be still this
+// long turns a drag into one rework instead of one per tick.
+constexpr float kSettingsReworkDelaySec = 0.22f;
+
 // Hero blur runs on the decode worker, so a slider change never costs the
 // render thread a frame. The image is box-averaged down to a quarter, blurred
 // there with three sliding-window passes and scaled back up: a quarter canvas
@@ -38,7 +43,12 @@ void blurRgba(std::vector<std::uint8_t>& rgba, int width, int height, float stre
 
     const int sw = std::max(4, width / 4);
     const int sh = std::max(4, height / 4);
-    std::vector<std::uint8_t> small(static_cast<std::size_t>(sw) * sh * 4u);
+    // Reused across decodes. A slider change re-blurs the focused hero, and two
+    // fresh ~324 KB buffers per pass was allocator traffic on the same worker
+    // that carries the decode. Every pixel is written below, so no stale data.
+    static thread_local std::vector<std::uint8_t> small;
+    static thread_local std::vector<std::uint8_t> scratch;
+    small.resize(static_cast<std::size_t>(sw) * sh * 4u);
     for (int y = 0; y < sh; ++y) {
         const int y0 = y * height / sh;
         const int y1 = std::max(y0 + 1, (y + 1) * height / sh);
@@ -71,7 +81,7 @@ void blurRgba(std::vector<std::uint8_t>& rgba, int width, int height, float stre
     const float growth = std::clamp((t - 0.15f) / 0.85f, 0.f, 1.f);
     const int radius = 1 + static_cast<int>(std::lround(growth * 8.f));
     const std::uint32_t count = static_cast<std::uint32_t>(radius * 2 + 1);
-    std::vector<std::uint8_t> scratch(small.size());
+    scratch.resize(small.size());
     for (int pass = 0; pass < 3; ++pass) {
         for (int y = 0; y < sh; ++y) {
             const std::uint8_t* src = small.data()
@@ -155,13 +165,6 @@ void blurRgba(std::vector<std::uint8_t>& rgba, int width, int height, float stre
     }
 }
 
-bool heroCachePresent(std::uint64_t titleId, int width, int height) {
-    std::error_code ec;
-    const std::string cache = SteamGridDbManager::heroPath(titleId) + "."
-        + std::to_string(width) + "x" + std::to_string(height) + ".rgba-cache";
-    return std::filesystem::is_regular_file(cache, ec);
-}
-
 } // namespace
 
 SteamGridDbBackdrop::SteamGridDbBackdrop(nxui::GpuDevice& gpu,
@@ -181,6 +184,26 @@ void SteamGridDbBackdrop::setEnabled(bool enabled) {
     setVisible(enabled);
 }
 
+void SteamGridDbBackdrop::setShowHero(bool show) {
+    if (m_showHero == show)
+        return;
+    m_showHero = show;
+    // Drop any hero decode or upload in flight, and hide the hero already in
+    // the front buffer immediately. Logo-only sets stay usable until the next
+    // showTitle() replaces them.
+    cancelPendingDecode();
+    m_readyArtwork.reset();
+    m_uploadStage = 0;
+    m_showPreviousDuringCrossfade = false;
+    m_decodedCache.clear();
+    m_missingArtworkTitleIds.clear();
+    for (auto& set : m_sets) {
+        set.hasHero = false;
+        set.heroLuminance = -1.f;
+    }
+    DebugLog::log("[steamgriddb-ui] hero artwork enabled=%d", show ? 1 : 0);
+}
+
 void SteamGridDbBackdrop::setHeroCanvas(int width, int height) {
     const int w = std::clamp(width, 320, 1280);
     const int h = std::clamp(height, 180, 720);
@@ -188,12 +211,9 @@ void SteamGridDbBackdrop::setHeroCanvas(int width, int height) {
         return;
     m_heroCanvasW = w;
     m_heroCanvasH = h;
-    // Uploaded sets are the old size and the pending decode has the old
-    // canvas baked in, so drop both and let the next focus rebuild.
-    cancelPendingDecode();
-    m_readyArtwork.reset();
-    m_uploadStage = 0;
-    invalidateArtworkCaches();
+    // The uploaded sets are the old size and the pending decode has the old
+    // canvas baked in, so both are dropped — once the slider stops moving.
+    m_settingsReworkDelay = kSettingsReworkDelaySec;
     DebugLog::log("[steamgriddb-ui] hero canvas %dx%d", m_heroCanvasW, m_heroCanvasH);
 }
 
@@ -202,12 +222,9 @@ void SteamGridDbBackdrop::setBlur(float strength) {
     if (std::abs(value - m_heroBlur) < 0.001f)
         return;
     m_heroBlur = value;
-    // The disk cache holds unblurred pixels, so a new amount only invalidates
-    // what is on the GPU: the next decode blurs again on the worker.
-    cancelPendingDecode();
-    m_readyArtwork.reset();
-    m_uploadStage = 0;
-    invalidateArtworkCaches();
+    // The disk cache holds unblurred pixels, so the uploaded art has to be
+    // decoded again. Applied after the drag settles, not per step.
+    m_settingsReworkDelay = kSettingsReworkDelaySec;
     DebugLog::log("[steamgriddb-ui] hero blur %.2f", m_heroBlur);
 }
 
@@ -284,6 +301,17 @@ void SteamGridDbBackdrop::setPreloadPaused(bool paused) {
     m_preloadPaused = paused;
 }
 
+std::size_t SteamGridDbBackdrop::gpuArtworkBytes() const {
+    std::size_t bytes = 0;
+    for (const auto& set : m_sets) {
+        if (set.hero.valid())
+            bytes += set.hero.allocationSize();
+        if (set.logo.valid())
+            bytes += set.logo.allocationSize();
+    }
+    return bytes;
+}
+
 bool SteamGridDbBackdrop::isArtworkBusy() const {
     return m_pendingDecode.has_value()
         || m_readyArtwork.has_value()
@@ -295,6 +323,9 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
     // view toggles never leave a stale hero on screen.
     if (!m_enabled && titleId != 0) return;
     if (!forceReload && m_requestedTitleId == titleId) return;
+    // The selection moved: this request already uses the current settings, so a
+    // queued rework would only throw away work that just started.
+    m_settingsReworkDelay = 0.f;
 
     // Dwell of the title we are leaving. Short means the user is scrolling, and
     // the next hero is worth decoding small: the SD cache read is what makes a
@@ -302,10 +333,9 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
     const float dwell = m_sinceFocusChange;
     m_sinceFocusChange = 0.f;
 
-    // While scrolling, nothing on this path may touch the SD card: a stat() per
-    // focus step on the render thread is what made fast scrolling hitch. The
-    // worker verifies the files anyway, so skipping the probes only costs a
-    // frame or two of the previous hero for titles that have no artwork.
+    // This path never touches the SD card. The worker verifies the files; a
+    // probe here made every settled selection pay a filesystem stat on the
+    // render thread, which showed up as a small hitch between games.
     const bool scrolling = !forceReload && dwell < 0.22f;
 
     // A direct artwork-to-artwork change may crossfade from the current set.
@@ -355,19 +385,10 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
             m_missingArtworkTitleIds.end());
     }
 
-    auto missingArtwork = std::find(m_missingArtworkTitleIds.begin(),
-                                    m_missingArtworkTitleIds.end(), titleId);
-    if (!scrolling && missingArtwork != m_missingArtworkTitleIds.end()
-        && SteamGridDbManager::hasArtwork(titleId)) {
-        // A SteamGridDB download may have completed since this title was
-        // classified as missing. Revalidate the negative cache during the same
-        // menu session instead of requiring a restart.
-        m_missingArtworkTitleIds.erase(missingArtwork);
-        missingArtwork = m_missingArtworkTitleIds.end();
-        DebugLog::log("[steamgriddb-ui] artwork became available: title=%016llX",
-                      static_cast<unsigned long long>(titleId));
-    }
-
+    // Force reloads clear the negative cache, so a downloaded hero appears
+    // without re-probing every other missing title as focus moves past it.
+    const auto missingArtwork = std::find(m_missingArtworkTitleIds.begin(),
+                                          m_missingArtworkTitleIds.end(), titleId);
     if (!forceReload && missingArtwork != m_missingArtworkTitleIds.end()) {
         cancelPendingDecode();
         m_readyArtwork.reset();
@@ -377,31 +398,9 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
         m_appliedGeneration = m_requestGeneration;
         m_showPreviousDuringCrossfade = false;
         m_artworkOpacity.set(0.f, 0.22f, nxui::Easing::outCubic);
-        DebugLog::log("[steamgriddb-ui] artwork cleared: title=%016llX has no assets",
-                      static_cast<unsigned long long>(titleId));
-        return;
-    }
-
-    // A directory lookup is much cheaper than decoding an image and lets a
-    // missing-artwork selection start fading immediately instead of retaining
-    // the previous game's hero until the worker completes.
-    if (!scrolling && !SteamGridDbManager::hasArtwork(titleId)) {
-        cancelPendingDecode();
-        m_readyArtwork.reset();
-        m_uploadStage = 0;
-        m_requestedTitleId = titleId;
-        ++m_requestGeneration;
-        m_appliedGeneration = m_requestGeneration;
-        if (std::find(m_missingArtworkTitleIds.begin(), m_missingArtworkTitleIds.end(), titleId)
-            == m_missingArtworkTitleIds.end()) {
-            m_missingArtworkTitleIds.push_back(titleId);
-            if (m_missingArtworkTitleIds.size() > kMissingCacheLimit)
-                m_missingArtworkTitleIds.erase(m_missingArtworkTitleIds.begin());
-        }
-        m_showPreviousDuringCrossfade = false;
-        m_artworkOpacity.set(0.f, 0.22f, nxui::Easing::outCubic);
-        DebugLog::log("[steamgriddb-ui] artwork fading out: title=%016llX has no files",
-                      static_cast<unsigned long long>(titleId));
+        if (!scrolling)
+            DebugLog::log("[steamgriddb-ui] artwork cleared: title=%016llX has no assets",
+                          static_cast<unsigned long long>(titleId));
         return;
     }
 
@@ -418,14 +417,14 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
             m_requestedTitleId = titleId;
             ++m_requestGeneration;
             m_appliedGeneration = m_requestGeneration;
-            if (i != m_current)
-                beginCrossfade(i, titleId);
-            else {
-                m_fade.setImmediate(1.f);
-                m_artworkOpacity.set(1.f, 0.18f, nxui::Easing::outCubic);
-            }
-            DebugLog::log("[steamgriddb-ui] gpu cache hit title=%016llX",
-                          static_cast<unsigned long long>(titleId));
+            // Always go through the crossfade path. When the previous title had
+            // no artwork, this slot can still be the active set from before the
+            // fade-out; the old branch snapped m_fade back to 1 and skipped the
+            // configured fade-in.
+            beginCrossfade(i, titleId);
+            if (!scrolling)
+                DebugLog::log("[steamgriddb-ui] gpu cache hit title=%016llX",
+                              static_cast<unsigned long long>(titleId));
             return;
         }
 
@@ -458,19 +457,25 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
     m_nextCanvasW = preview ? std::min(m_heroCanvasW, kPreviewCanvasW) : m_heroCanvasW;
     m_nextCanvasH = preview ? std::min(m_heroCanvasH, kPreviewCanvasH) : m_heroCanvasH;
     m_nextUseCache = !preview;
-    if (preview)
-        DebugLog::log("[steamgriddb-ui] fast scroll preview %dx%d title=%016llX",
-                      m_nextCanvasW, m_nextCanvasH,
-                      static_cast<unsigned long long>(titleId));
-    // A preview is decoded straight from the source, so there is no cache read
-    // to wait for and no reason to hold it behind the coalescing window.
-    m_decodeDebounce = forceReload || preview ? 0.f
-        : (heroCachePresent(titleId, m_heroCanvasW, m_heroCanvasH) ? 0.f : 0.06f);
+    // A preview decodes from the source instead of the cache, but that is still
+    // an SD read plus a PNG decode on the same workers the focused tile needs.
+    // Starting one per D-pad step cancelled the previous decode only after it
+    // had read its file, so a held direction kept the pool busy with artwork
+    // the user had already passed. Preview decodes now wait behind a short
+    // coalescing window too: nothing starts mid-sweep, and the title the user
+    // stops on is decoded 120 ms later.
+    // Let the worker verify the cache file. Probing it here runs on the render
+    // thread for every selection and is exactly the tiny per-game hitch this
+    // path is meant to avoid.
+    m_decodeDebounce = forceReload ? 0.f : (preview ? 0.12f : 0.06f);
     m_readyArtwork.reset();
     m_uploadStage = 0;
     cancelPendingDecode();
-    DebugLog::log("[steamgriddb-ui] cache miss title=%016llX",
-                  static_cast<unsigned long long>(titleId));
+    // Per-step logs wake the file writer on every D-pad repeat; the SD
+    // writes contend with the very decodes the row is waiting for.
+    if (!scrolling)
+        DebugLog::log("[steamgriddb-ui] cache miss title=%016llX",
+                      static_cast<unsigned long long>(titleId));
 }
 
 SteamGridDbBackdrop::DecodedImage SteamGridDbBackdrop::decodeImage(
@@ -483,6 +488,33 @@ SteamGridDbBackdrop::DecodedImage SteamGridDbBackdrop::decodeImage(
     out.width = decoded.width;
     out.height = decoded.height;
     return out;
+}
+
+// Single-row heroes sit under a full-screen black scrim (0.04 alpha at the
+// top, 0.46 at the bottom). Baking it into the decoded pixels removes that
+// gradient from every frame; dividing by the 0.94 hero alpha keeps the
+// delivered strength the same, since the draw multiplies the texture by it.
+void bakeBottomScrim(std::vector<std::uint8_t>& rgba, int width, int height) {
+    if (rgba.empty() || width <= 0 || height <= 0)
+        return;
+    constexpr float kTopAlpha = 0.04f;
+    constexpr float kBottomAlpha = 0.46f;
+    constexpr float kHeroAlpha = 0.94f;
+    const float invRows = 1.f / static_cast<float>(std::max(1, height - 1));
+    for (int y = 0; y < height; ++y) {
+        const float t = static_cast<float>(y) * invRows;
+        const float alpha = std::clamp(
+            (kTopAlpha + (kBottomAlpha - kTopAlpha) * t) / kHeroAlpha, 0.f, 1.f);
+        const float keep = 1.f - alpha;
+        std::uint8_t* row = rgba.data() +
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4u;
+        for (int x = 0; x < width; ++x) {
+            std::uint8_t* p = row + static_cast<std::size_t>(x) * 4u;
+            p[0] = static_cast<std::uint8_t>(p[0] * keep + 0.5f);
+            p[1] = static_cast<std::uint8_t>(p[1] * keep + 0.5f);
+            p[2] = static_cast<std::uint8_t>(p[2] * keep + 0.5f);
+        }
+    }
 }
 
 float SteamGridDbBackdrop::sampleLuminance(const DecodedImage& image) {
@@ -515,12 +547,21 @@ bool SteamGridDbBackdrop::useFullHeroOpacity() const {
 }
 
 bool SteamGridDbBackdrop::hasDisplayedHero() const {
-    if (!m_enabled || !isVisible())
+    if (!m_showHero || !m_enabled || !isVisible())
         return false;
     if (m_artworkOpacity.value() <= 0.05f)
         return false;
     const auto& set = m_sets[m_current];
     return set.hasHero && set.hero.valid();
+}
+
+bool SteamGridDbBackdrop::coversWallpaper() const {
+    // Grid and folder heroes are a dim wash over the wallpaper, so their
+    // shapes still show through. Only the full-opacity single-row hero hides
+    // that animated layer.
+    if (!useFullHeroOpacity() || !hasDisplayedHero())
+        return false;
+    return m_fade.value() >= 0.98f && m_artworkOpacity.value() >= 0.98f;
 }
 
 float SteamGridDbBackdrop::displayedHeroLuminance() const {
@@ -536,9 +577,14 @@ void SteamGridDbBackdrop::startPendingDecode(std::uint64_t titleId, int canvasW,
     state->artwork.generation = titleId == m_requestedTitleId ? m_requestGeneration : 0;
 
     const float blur = m_heroBlur;
-    auto work = [state, titleId, canvasW, canvasH, useCache, blur]() {
+    // Bake the scrim only when this hero is drawn at full strength; a dimmed
+    // grid hero keeps the separate gradient it already had.
+    const bool bakeScrim = useFullHeroOpacity();
+    const bool showHero = m_showHero;
+    auto heroWork = [state, titleId, canvasW, canvasH, useCache, blur, bakeScrim,
+                     showHero]() {
         const auto started = std::chrono::steady_clock::now();
-        if (titleId != 0 && SteamGridDbManager::hasArtwork(titleId)) {
+        if (showHero && titleId != 0 && SteamGridDbManager::hasArtwork(titleId)) {
             // Fixed canvases let both double-buffer slots reuse their existing
             // MemBlocks. Variable source dimensions previously triggered a
             // free + waitIdle on the render thread during focus changes.
@@ -555,22 +601,50 @@ void SteamGridDbBackdrop::startPendingDecode(std::uint64_t titleId, int canvasW,
                          state->artwork.hero.height, blur);
             if (!state->cancelled.load())
                 state->artwork.heroLuminance = sampleLuminance(state->artwork.hero);
-            if (!state->cancelled.load())
-                state->artwork.logo = decodeImage(
-                    SteamGridDbManager::logoPath(titleId), 384, 192, false,
-                    &state->cancelled);
+            // Luminance is sampled above from the un-scrimmed art, so chrome
+            // contrast decisions stay exactly as before.
+            if (bakeScrim && !state->cancelled.load()) {
+                bakeBottomScrim(state->artwork.hero.rgba,
+                                state->artwork.hero.width,
+                                state->artwork.hero.height);
+                state->artwork.scrimBaked = true;
+            }
         }
         state->artwork.decodeMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();
     };
+    // The logo is independent of the hero pixels. Submitting it separately lets
+    // an idle second worker decode it while the hero is still scaling; with no
+    // idle worker it simply queues behind the hero, exactly as before.
+    auto logoWork = [state, titleId]() {
+        if (state->cancelled.load()
+            || titleId == 0
+            || !SteamGridDbManager::hasArtwork(titleId))
+            return;
+        state->artwork.logo = decodeImage(
+            SteamGridDbManager::logoPath(titleId), 384, 192, false,
+            &state->cancelled);
+    };
 
     PendingDecode pending;
     pending.state = state;
-    if (m_threadPool)
-        pending.future = m_threadPool->submit(std::move(work));
-    else
-        pending.future = std::async(std::launch::async, std::move(work));
+    if (m_threadPool) {
+        pending.heroFuture = m_threadPool->submit(std::move(heroWork));
+        pending.logoFuture = m_threadPool->submit(std::move(logoWork));
+    } else {
+        pending.heroFuture = std::async(std::launch::async, std::move(heroWork));
+        pending.logoFuture = std::async(std::launch::async, std::move(logoWork));
+    }
     m_pendingDecode = std::move(pending);
+}
+
+void SteamGridDbBackdrop::setNavigationBusy(bool busy) {
+    // A decode started for the title the row is leaving is pure worker load
+    // once the user starts scrolling. Cancel it on the transition instead of
+    // letting it finish and race the focused tile's artwork for the pool.
+    if (busy && !m_navigationBusy)
+        cancelPendingDecode();
+    m_navigationBusy = busy;
 }
 
 void SteamGridDbBackdrop::cancelPendingDecode() {
@@ -582,11 +656,72 @@ void SteamGridDbBackdrop::cancelPendingDecode() {
     m_pendingDecode.reset();
 }
 
+void SteamGridDbBackdrop::applyPendingSettingsRework() {
+    // Pixels decoded at the old canvas/blur must never be reused.
+    cancelPendingDecode();
+    m_readyArtwork.reset();
+    m_uploadStage = 0;
+    invalidateArtworkCaches();
+    m_nextCanvasW = m_heroCanvasW;
+    m_nextCanvasH = m_heroCanvasH;
+    m_nextUseCache = true;
+    // A settings change never calls showTitle(), so bumping the generation is
+    // what makes onUpdate decode the focused hero again. Without it the old
+    // hero stayed on screen and the new setting only took effect after the
+    // selection moved, which read as the slider doing nothing.
+    if (m_enabled && m_requestedTitleId != 0)
+        ++m_requestGeneration;
+    DebugLog::log("[steamgriddb-ui] hero settings applied for title=%016llX",
+                  static_cast<unsigned long long>(m_requestedTitleId));
+}
+
+void SteamGridDbBackdrop::setHeroFadeIn(float seconds) {
+    const float value = std::clamp(seconds, 0.f, 10.f);
+    if (value == m_heroFadeInSec)
+        return;
+    m_heroFadeInSec = value;
+    DebugLog::log("[steamgriddb-ui] hero fade-in %.2fs", m_heroFadeInSec);
+}
+
+void SteamGridDbBackdrop::setHeroOffset(int xPercent, int yPercent) {
+    const int x = std::clamp(xPercent, -100, 100);
+    const int y = std::clamp(yPercent, -100, 100);
+    if (x == m_heroOffsetX && y == m_heroOffsetY)
+        return;
+    m_heroOffsetX = x;
+    m_heroOffsetY = y;
+    // The slider is edited while this title is on screen, so move its uploaded
+    // set immediately instead of waiting for another focus change.
+    if (m_sets[m_current].titleId == m_requestedTitleId) {
+        m_sets[m_current].offsetX = x;
+        m_sets[m_current].offsetY = y;
+    }
+}
+
 void SteamGridDbBackdrop::beginCrossfade(int nextSet, std::uint64_t titleId) {
+    // The backdrop is the largest surface on screen; cutting to a new hero on the
+    // frame it finishes uploading reads as a pop even when the frame time is fine.
+    // Ease it in over the chosen fade-in instead.
+    const float kHeroFadeInSec = std::max(0.001f, m_heroFadeInSec);
+    // A same-title change is the preview canvas being replaced by the full-size
+    // decode: keep the alpha already reached instead of restarting the fade.
+    // Preserve the fade only while the same title's art is actually visible.
+    // After focus visits a title without artwork, m_artworkOpacity has faded to
+    // zero, so the cached set must start the next fade from the beginning.
+    const bool sameTitle = (m_sets[m_current].titleId == titleId)
+        && m_artworkOpacity.value() > 0.002f;
+    const float from = sameTitle ? std::clamp(m_fade.value(), 0.f, 1.f) : 0.f;
+    if (sameTitle)
+        m_showPreviousDuringCrossfade = false;
+
     m_sets[nextSet].titleId = titleId;
+    m_sets[nextSet].offsetX = m_heroOffsetX;
+    m_sets[nextSet].offsetY = m_heroOffsetY;
     m_current = nextSet;
-    m_fade.setImmediate(0.f);
-    m_fade.set(1.f, 0.30f, nxui::Easing::outCubic);
+    m_fade.setImmediate(from);
+    // Constant fade rate: a resume part-way through finishes proportionally sooner.
+    m_fade.set(1.f, std::max(0.05f, kHeroFadeInSec * (1.f - from)),
+               nxui::Easing::outCubic);
     m_artworkOpacity.set(1.f, 0.14f, nxui::Easing::outCubic);
 }
 
@@ -610,30 +745,47 @@ nxui::Rect SteamGridDbBackdrop::containRect(const nxui::Texture& texture,
 
 void SteamGridDbBackdrop::drawSet(nxui::Renderer& renderer,
                                   const ArtworkSet& set,
-                                  float alpha) const {
+                                  float alpha,
+                                  bool drawLogo) const {
     if (alpha <= 0.002f) return;
     const nxui::Rect screen = rect();
 
-    if (set.hasHero && set.hero.valid()) {
+    if (m_showHero && set.hasHero && set.hero.valid()) {
         const bool fullHero = useFullHeroOpacity();
         const float heroAlpha = fullHero ? 0.94f : 0.24f;
-        nxui::Rect heroRect = fillRect(set.hero, screen);
+        const float offsetX = static_cast<float>(set.offsetX) / 100.f
+                            * screen.width * 0.18f;
+        const float offsetY = static_cast<float>(set.offsetY) / 100.f
+                            * screen.height * 0.18f;
+        // Grow the fill area by the travel on each axis before shifting, so a
+        // moved hero never exposes a screen edge.
+        nxui::Rect cover = screen;
+        cover.x -= std::abs(offsetX);
+        cover.y -= std::abs(offsetY);
+        cover.width += std::abs(offsetX) * 2.f;
+        cover.height += std::abs(offsetY) * 2.f;
+        nxui::Rect heroRect = fillRect(set.hero, cover);
         if (m_driftEnabled) {
             // Same 8% overscan the wallpaper uses, so the pan has slack on
             // both sides and the full-bleed hero keeps covering the screen.
             constexpr float kDriftOverscan = 0.08f;
             const float w = heroRect.width * (1.f + kDriftOverscan);
             const float h = heroRect.height * (1.f + kDriftOverscan);
-            heroRect = {screen.x + (screen.width - w) * 0.5f,
-                        screen.y + (screen.height - h) * 0.5f, w, h};
+            heroRect = {cover.x + (cover.width - w) * 0.5f,
+                        cover.y + (cover.height - h) * 0.5f, w, h};
             heroRect.x += std::sin(m_driftPhase) * (w - screen.width) * 0.5f;
         }
-        renderer.pushClipRect(screen);
+        heroRect.x += offsetX;
+        heroRect.y += offsetY;
+        // fillRect already covers the full-screen backdrop, including the
+        // drift overscan. The old full-screen clip pair forced two renderer
+        // flushes for every hero draw without changing a pixel.
         renderer.drawTexture(&set.hero, heroRect,
                              nxui::Color::white().withAlpha(alpha * heroAlpha));
-        renderer.popClipRect();
         // Soft bottom scrim so chrome stays legible over bright/dark heroes.
-        if (fullHero) {
+        // Single-row heroes carry it baked into their pixels, so this gradient
+        // only runs for sets decoded without it (dimmed grid art).
+        if (fullHero && !set.scrimBaked) {
             renderer.drawGradientRect(
                 screen,
                 nxui::Color(0.f, 0.f, 0.f, 0.04f * alpha),
@@ -643,7 +795,7 @@ void SteamGridDbBackdrop::drawSet(nxui::Renderer& renderer,
 
     if (m_layoutMode != AppLayoutMode::DynamicLine) return;
 
-    if (m_showLogo && set.hasLogo && set.logo.valid()) {
+    if (drawLogo && m_showLogo && set.hasLogo && set.logo.valid()) {
         // containRect centres and constrains the logo inside the gutter band.
         renderer.drawTexture(&set.logo, containRect(set.logo, m_logoArea),
                              nxui::Color::white().withAlpha(0.96f * alpha));
@@ -652,6 +804,13 @@ void SteamGridDbBackdrop::drawSet(nxui::Renderer& renderer,
 
 void SteamGridDbBackdrop::onUpdate(float dt) {
     m_sinceFocusChange += dt;
+    // Runs before the navigation-busy guard: a settings change must still land
+    // while the row is moving, it just decodes once things settle.
+    if (m_settingsReworkDelay > 0.f) {
+        m_settingsReworkDelay = std::max(0.f, m_settingsReworkDelay - dt);
+        if (m_settingsReworkDelay <= 0.f)
+            applyPendingSettingsRework();
+    }
     if (m_driftEnabled) {
         const float period = std::max(6.f, 75.f - 0.63f * static_cast<float>(m_driftSpeed));
         m_driftPhase += dt * (6.2831853f / period);
@@ -664,9 +823,18 @@ void SteamGridDbBackdrop::onUpdate(float dt) {
         m_preloadGapSec = std::max(0.f, m_preloadGapSec - dt);
 
     if (m_pendingDecode
-        && m_pendingDecode->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        && m_pendingDecode->heroFuture.wait_for(std::chrono::seconds(0))
+               == std::future_status::ready
+        && (!m_pendingDecode->logoFuture.valid()
+            || m_pendingDecode->logoFuture.wait_for(std::chrono::seconds(0))
+                   == std::future_status::ready)) {
         try {
-            m_pendingDecode->future.get();
+            m_pendingDecode->heroFuture.get();
+        } catch (...) {
+        }
+        try {
+            if (m_pendingDecode->logoFuture.valid())
+                m_pendingDecode->logoFuture.get();
         } catch (...) {
         }
         auto state = std::move(m_pendingDecode->state);
@@ -726,7 +894,22 @@ void SteamGridDbBackdrop::onUpdate(float dt) {
         m_uploadStage = 0;
     }
 
+    // No hero decode or upload while the row is moving. The next focus step
+    // would supersede the image anyway, and the upload is the largest synchro-
+    // nous cost on this path. Resume from the last requested title once the
+    // carousel settles.
+    if (m_navigationBusy)
+        return;
+
     if (m_readyArtwork) {
+        // Starting a hero upload drains the queue (waitIdle) and copies up to a
+        // few megabytes. Hold the first stage until the selection has been still
+        // for a moment; the logo stage that follows is small and may finish.
+        constexpr float kUploadSettleSec = 0.12f;
+        if (m_uploadStage == 0 && !m_waitForGpuBeforeUpload
+            && m_sinceFocusChange < kUploadSettleSec)
+            return;
+
         auto& decoded = *m_readyArtwork;
         auto& target = m_sets[1 - m_current];
         if (m_uploadStage == 0) {
@@ -750,6 +933,7 @@ void SteamGridDbBackdrop::onUpdate(float dt) {
             // stored canvas as "already attempted" and must not retry forever.
             target.canvasW = decoded.hero.width;
             target.canvasH = decoded.hero.height;
+            target.scrimBaked = decoded.scrimBaked;
             decoded.hero.rgba.clear();
         } else if (m_uploadStage == 1) {
             target.hasLogo = !decoded.logo.rgba.empty()
@@ -758,7 +942,11 @@ void SteamGridDbBackdrop::onUpdate(float dt) {
             decoded.logo.rgba.clear();
         }
         ++m_uploadStage;
-        if (m_uploadStage >= 2) {
+        // No logo means there is nothing to upload in the second stage; start
+        // the existing crossfade one frame earlier instead of spending a frame
+        // on an empty loadFromPixels call.
+        if (m_uploadStage >= 2
+            || (m_uploadStage == 1 && decoded.logo.rgba.empty())) {
             const int next = 1 - m_current;
             const std::uint64_t titleId = decoded.titleId;
             m_appliedGeneration = decoded.generation;
@@ -789,7 +977,11 @@ void SteamGridDbBackdrop::onUpdate(float dt) {
         m_showPreviousDuringCrossfade = true;
         startPendingDecode(m_requestedTitleId, m_heroCanvasW, m_heroCanvasH, true);
     } else if (!m_pendingDecode && !m_readyArtwork
-               && !m_preloadPaused && m_preloadGapSec <= 0.f) {
+               && !m_preloadPaused && m_preloadGapSec <= 0.f
+               && m_sinceFocusChange > 0.4f) {
+        // Prefetch exists to warm the neighbours of a settled selection. While
+        // the user is still moving it only occupies the two shared decode
+        // workers, which is exactly what the focused tile needs to appear.
         for (std::uint64_t titleId : m_preloadTitleIds) {
             const bool decoded = std::any_of(
                 m_decodedCache.begin(), m_decodedCache.end(),
@@ -813,7 +1005,18 @@ void SteamGridDbBackdrop::onRender(nxui::Renderer& renderer) {
     const float t = std::clamp(m_fade.value(), 0.f, 1.f);
     const float artworkOpacity = std::clamp(m_artworkOpacity.value(), 0.f, 1.f)
                                * opacity();
-    if (m_showPreviousDuringCrossfade)
-        drawSet(renderer, m_sets[1 - m_current], (1.f - t) * artworkOpacity);
-    drawSet(renderer, m_sets[m_current], t * artworkOpacity);
+    if (m_showPreviousDuringCrossfade) {
+        // The outgoing hero is gone within ~0.5 s of the fade starting, so a three
+        // second fade never pays for two full-screen quads for three seconds.
+        const float previous = std::clamp(1.f - t * 6.f, 0.f, 1.f);
+        if (previous * artworkOpacity > 0.002f) {
+            // The outgoing hero may belong to another game. Never carry its
+            // logo across the fade: a title without a logo would otherwise
+            // briefly wear the previous title's mark.
+            drawSet(renderer, m_sets[1 - m_current], previous * artworkOpacity,
+                    false);
+        }
+    }
+    if (t * artworkOpacity > 0.002f)
+        drawSet(renderer, m_sets[m_current], t * artworkOpacity);
 }

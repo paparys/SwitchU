@@ -1,4 +1,5 @@
 #pragma once
+#include "../ui/ChromeTokens.hpp"
 #include <nxui/widgets/GlassWidget.hpp>
 #include <nxui/widgets/Label.hpp>
 #include <nxui/widgets/Box.hpp>
@@ -11,9 +12,11 @@
 #include "ActionButton.hpp"
 #include "SelectionCursor.hpp"
 #include <switch.h>
+#include <cstddef>
 #include <vector>
 #include <string>
 #include <functional>
+#include <unordered_map>
 
 class OverlayDialog : public nxui::GlassWidget {
 public:
@@ -37,8 +40,8 @@ public:
 
     OverlayDialog();
 
-    void setFont(nxui::Font* f)         { m_font = f; }
-    void setSmallFont(nxui::Font* f)    { m_smallFont = f; }
+    void setFont(nxui::Font* f)         { m_font = f; clearMeasureCache(); }
+    void setSmallFont(nxui::Font* f)    { m_smallFont = f; clearMeasureCache(); }
     void setTheme(const nxui::Theme* t) { m_theme = t; }
     void setAccessibilitySpeechPreferences(bool speakHints, bool speakPosition) {
         m_accessibilitySpeakHints = speakHints;
@@ -138,6 +141,17 @@ private:
     void ensureTimezoneHoverVisible();
 
     nxui::Rect panelRect() const;
+    nxui::Vec2 cachedTextSize(nxui::Font* font, const std::string& text);
+    std::string fittedTimezoneLabel(nxui::Font* font, const std::string& text,
+                                    float maxWidth, float scale);
+    float userTitleHeight() const;
+    void clearMeasureCache() {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+        m_timezoneFitCache.clear();
+        m_timezoneFitEntries = 0;
+        m_timezoneFitFont = nullptr;
+    }
 
     enum class DialogMode {
         Buttons,
@@ -155,6 +169,21 @@ private:
     nxui::Font*        m_font      = nullptr;
     nxui::Font*        m_smallFont = nullptr;
     const nxui::Theme* m_theme     = nullptr;
+    // Dialog labels, field values and timezone names are drawn every frame but
+    // only change when a value or language changes, so cache their metrics.
+    std::unordered_map<const nxui::Font*,
+                       std::unordered_map<std::string, nxui::Vec2>> m_measureCache;
+    std::size_t m_measureCacheEntries = 0;
+    struct TimezoneFit {
+        int widthKey = 0;
+        int scaleKey = 0;
+        std::string text;
+    };
+    std::unordered_map<std::string, std::vector<TimezoneFit>> m_timezoneFitCache;
+    std::size_t m_timezoneFitEntries = 0;
+    const nxui::Font* m_timezoneFitFont = nullptr;
+    mutable nxui::Font* m_cachedUserTitleFont = nullptr;
+    mutable float m_cachedUserTitleHeight = -1.f;
 
     std::string              m_title;
     std::string              m_message;
@@ -215,9 +244,9 @@ private:
     static constexpr float kPanelW       = 560.f;
     static constexpr float kPanelPadX    = 40.f;
     static constexpr float kPanelPadY    = 34.f;
-    static constexpr float kPanelRadius  = 26.f;
+    static constexpr float kPanelRadius  = switchu::ui::chrome::kRadiusPanel;
     static constexpr float kButtonH      = 50.f;
-    static constexpr float kButtonRadius = 16.f;
+    static constexpr float kButtonRadius = switchu::ui::chrome::kRadiusRow;
     static constexpr float kButtonGap    = 14.f;
     static constexpr float kTitleMsgGap  = 14.f;
     static constexpr float kMsgBtnGap    = 24.f;

@@ -26,9 +26,9 @@ std::string ellipsize(nxui::Font* font, const std::string& text, float maxWidth)
 }
 
 TitlePillWidget::TitlePillWidget() {
-    setLiquidGlassEnabled(true);
-    setForceLiquidGlass(true);
-    setLiquidGlassShaderEnabled(true);
+    // Flat, colourable pill: the liquid-glass surface only shaded the capsule.
+    // The panel's own rim now sits on the pill itself, while the base alpha and
+    // theme colours still carry its opacity and tint.
     setPanelOpacity(0.98f);
     setBorderWidth(0.f);
 }
@@ -40,7 +40,9 @@ void TitlePillWidget::onRender(nxui::Renderer& ren) {
         return;
     // Soft drop shadow so the capsule separates from bright artwork instead of
     // relying on the glass alone.
-    const float radius = m_rect.height * 0.5f;
+    const float radius = m_cornerStyle == 2 ? 3.f
+        : (m_cornerStyle == 1 ? std::max(4.f, m_rect.height * 0.24f)
+                              : m_rect.height * 0.5f);
     ren.drawRoundedRect({m_rect.x, m_rect.y + 3.f, m_rect.width, m_rect.height},
                         nxui::Color(0.f, 0.f, 0.f, 0.16f * m_opacity), radius);
     ren.drawRoundedRect({m_rect.x, m_rect.y + 1.5f, m_rect.width, m_rect.height},
@@ -66,9 +68,9 @@ void TitlePillWidget::setText(const std::string& text, float screenWidth) {
     m_screenWidth = screenWidth;
     const float maxContentWidth = std::max(120.f, std::min(736.f, screenWidth - 420.f));
     m_sourceText = text;
-    m_text = ellipsize(m_font, text, maxContentWidth);
+    m_text = ellipsize(m_font, text, maxContentWidth / m_textScale);
     sizeToFit();
-    setCornerRadius(m_rect.height * 0.5f);
+    applyCornerStyle();
     float targetW = m_rect.width;
     float targetX = (screenWidth - targetW) * 0.5f + m_nudgeX;
 
@@ -147,19 +149,74 @@ void TitlePillWidget::onContentRender(nxui::Renderer& ren) {
     if (!m_font || m_text.empty()) return;
 
     nxui::Rect cr = contentRect();
-    nxui::Vec2 textSz = m_font->measure(m_text);
-    float tx = cr.x + (cr.width  - textSz.x) * 0.5f;
-    float ty = cr.y + (cr.height - textSz.y) * 0.5f;
+    // The same short accent bar used by the All Apps metadata shelf, scaled
+    // down to the capsule. It stays at the left edge while the title is
+    // centred, so it never changes the text fit.
+    if (m_rect.width > 80.f && m_rect.height > 16.f) {
+        const float barH = std::min(18.f, m_rect.height - 16.f);
+        ren.drawRoundedRect({m_rect.x + 13.f,
+                             m_rect.y + (m_rect.height - barH) * 0.5f,
+                             3.f, barH},
+                            m_accentColor.withAlpha(m_opacity * 0.9f), 1.5f);
+    }
+    if (m_cachedMeasureFont != m_font || m_cachedMeasureText != m_text) {
+        m_cachedMeasureFont = m_font;
+        m_cachedMeasureText = m_text;
+        m_cachedTextSize = m_font->measure(m_text);
+    }
+    const nxui::Vec2 textSz = m_cachedTextSize;
+    const float drawW = textSz.x * m_textScale;
+    const float drawH = textSz.y * m_textScale;
+    float tx = cr.x + (cr.width  - drawW) * 0.5f;
+    float ty = cr.y + (cr.height - drawH) * 0.5f;
     float reveal = std::clamp(m_textReveal.value(), 0.f, 1.f);
     ren.pushClipRect(cr);
     ren.drawText(m_text, {tx, ty + (1.f - reveal) * 3.f}, m_font,
-                 m_textColor.withAlpha(m_opacity * reveal), 1.f);
+                 m_textColor.withAlpha(m_opacity * reveal), m_textScale);
     ren.popClipRect();
 }
 
 nxui::Vec2 TitlePillWidget::computeContentSize() const {
     if (!m_font || m_text.empty()) return {0.f, 0.f};
-    return m_font->measure(m_text);
+    if (m_cachedMeasureFont != m_font || m_cachedMeasureText != m_text) {
+        m_cachedMeasureFont = m_font;
+        m_cachedMeasureText = m_text;
+        m_cachedTextSize = m_font->measure(m_text);
+    }
+    return {m_cachedTextSize.x * m_textScale, m_cachedTextSize.y * m_textScale};
+}
+
+void TitlePillWidget::applyCornerStyle() {
+    if (m_cornerStyle == 2)
+        setCornerRadius(3.f);
+    else if (m_cornerStyle == 1)
+        setCornerRadius(std::max(4.f, m_rect.height * 0.24f));
+    else
+        setCornerRadius(m_rect.height * 0.5f);
+}
+
+void TitlePillWidget::setTextScale(int pct) {
+    const float next = std::clamp(pct, 80, 120) / 100.f;
+    if (std::abs(next - m_textScale) < 0.001f)
+        return;
+    m_textScale = next;
+    if (!m_sourceText.empty()) {
+        const std::string source = m_sourceText;
+        m_sourceText.clear();
+        setText(source, m_screenWidth);
+    }
+}
+
+void TitlePillWidget::setCornerStyle(int style) {
+    style = std::clamp(style, 0, 2);
+    if (style == m_cornerStyle)
+        return;
+    m_cornerStyle = style;
+    applyCornerStyle();
+}
+
+void TitlePillWidget::setBackgroundStrength(int pct) {
+    setPanelOpacity(std::clamp(pct, 0, 100) / 100.f);
 }
 
 void TitlePillWidget::setSuppressed(bool s) {

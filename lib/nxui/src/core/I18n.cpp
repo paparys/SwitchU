@@ -203,10 +203,18 @@ bool I18n::setLanguage(const std::string& tag) {
 }
 
 std::string I18n::tr(std::string_view key, std::string_view fallback) const {
-    auto it = m_activeMap.find(std::string(key));
+    // The unordered_map keys are std::string, but callers pass literals and
+    // frequently called labels (the action hints) would otherwise build a
+    // throwaway key allocation on every lookup. A reusable scratch key keeps
+    // its capacity across calls; the maps are only read here, so sharing it on
+    // this thread is safe.
+    static thread_local std::string lookupKey;
+    lookupKey.assign(key.data(), key.size());
+
+    auto it = m_activeMap.find(lookupKey);
     if (it != m_activeMap.end()) return it->second;
 
-    auto fb = m_fallbackMap.find(std::string(key));
+    auto fb = m_fallbackMap.find(lookupKey);
     if (fb != m_fallbackMap.end()) return fb->second;
 
     if (!fallback.empty()) return std::string(fallback);

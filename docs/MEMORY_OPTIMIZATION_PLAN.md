@@ -1,8 +1,8 @@
 # SwitchU memory optimization plan (normal path)
 
 Goal: use less process/GPU memory **without** changing the day-to-day SwitchU
-feel (poster browsing, soft-land, Theme Shop, SGDB heroes). Frame Tap light
-path (`FT_VIEWER_LIGHT_PATH.md` / #177) stays separate.
+feel (poster browsing, soft-land, Theme Shop, SGDB heroes). Frame Tap's
+headroom handshake (`FT_HEADROOM_PATH.md`) stays separate.
 
 Inventory soak uses a **temporary** log gated by a flag file so we can measure,
 then turn logging off.
@@ -79,7 +79,7 @@ in release indefinitely).
 | Holder | Approx / limit |
 |--------|----------------|
 | GpuDevice image budget | 64 MiB soft |
-| IconStreamer single-row | ±4 pages; posters up to ~320×480; free slots keep MemBlocks |
+| IconStreamer single-row | ±4 pages (±6 during a fast drag); posters up to ~320×480; free slots keep MemBlocks |
 | SGDB fit RAM | ≤4 MiB / 6 entries |
 | Fonts (×2) | up to 4 MiB each |
 | Folder peeks / composites | capped (32 / 24 / 24) |
@@ -94,5 +94,5 @@ in release indefinitely).
 
 ## Related
 
-- `docs/FT_VIEWER_LIGHT_PATH.md` — viewer light + NeedHeadroom handshake  
-- PR #177 — FT coexistence light path  
+- `docs/FT_HEADROOM_PATH.md` — Frame Tap NeedHeadroom handshake  
+- PR #177 — FT coexistence headroom handshake  

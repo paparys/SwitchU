@@ -13,6 +13,13 @@ SettingsScreen::Tab settings::tabs::AudioTab::build(SettingsScreen& screen) {
     t.name = i18n.tr("settings.tabs.audio", "Audio");
 
     {
+        SettingItem it;
+        it.label = i18n.tr("settings.audio.section_output", "Output");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
         SettingItem it; it.label = i18n.tr("settings.audio.speaker_auto_mute", "Speaker Auto-Mute"); it.type = ItemType::Toggle;
         it.description = i18n.tr("settings.audio.speaker_auto_mute_desc", "Mute speakers automatically when headphones are connected.");
         bool val = false;

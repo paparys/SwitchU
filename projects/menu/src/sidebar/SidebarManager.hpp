@@ -2,6 +2,7 @@
 #include "SidebarAnimation.hpp"
 #include "widgets/AdaptiveIconLoad.hpp"
 #include "widgets/AppletButton.hpp"
+#include "widgets/GameSearchBar.hpp"
 #include <nxui/widgets/GlassPanel.hpp>
 #include <nxui/core/Texture.hpp>
 #include <nxui/core/GpuDevice.hpp>
@@ -11,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <array>
 #include <vector>
 
 class SidebarManager {
@@ -21,6 +23,7 @@ public:
         std::function<void()> onControllers;
         std::function<void()> onSleep;
         std::function<void()> onSettings;
+        std::function<void()> onAllApps;
         std::function<void()> onMiiverse;
     };
 
@@ -66,23 +69,37 @@ public:
     void setChromeStyle(float cornerRadius, float borderWidth);
     // 0 = strip at the top of the screen, 1 = at the bottom.
     void setStripEdge(int edge);
-    // Which applet cluster the pinned sockets sit next to: 0 = left, 1 = right.
-    void setPinSide(int side);
-    int  pinSide() const { return m_pinSide; }
+    // Side used by a pinned socket: 0 = left cluster, 1 = right cluster.
+    // Sockets can be split across both sides; call refreshLayout() after
+    // changing more than one.
+    void setGameShortcutSide(int slot, int side);
+    int  gameShortcutSide(int slot) const;
     // Horizontal travel in pixels, clamped so no group leaves the screen.
     // Left and right groups travel independently (pixels, clamped).
     void setStripNudge(float leftPx, float rightPx);
     // Vertical travel of the strip row in pixels (2px steps in the UI).
     void setStripNudgeY(float px);
-    // Horizontal span of the game tiles. The two-column layout parks the
-    // shortcut stacks outside it, so moving them never lands on the grid.
+    // Horizontal span of the game tiles. The side-row layout parks the
+    // shortcut rows outside it, so moving them never lands on the grid.
     void setGridClearance(float left, float right);
     // One continuous plate behind the whole strip instead of a pill per
     // shortcut (top / bottom strip layout only).
     void setStripPlate(bool enabled);
+    // Animated two-colour gradient for the continuous strip plate. Ignored
+    // while the plate is off (each shortcut then draws its own pill).
+    void setStripGradient(bool enabled, const nxui::Color& a, const nxui::Color& b);
+    // Run the plate out to the screen edge the strip sits on and square that
+    // edge, leaving the opposite corners rounded.
+    void setStripFlushTop(bool enabled);
     // Hide it with the sidebar when another screen owns the frame.
     void setStripPlateSuppressed(bool suppressed);
     std::shared_ptr<nxui::GlassPanel> stripPlate() const { return m_stripPlateWidget; }
+    // Search shortcut. In the strip it is the first icon of the left group;
+    // its activation and results behaviour is unchanged.
+    std::shared_ptr<GameSearchBar> searchBar() const { return m_searchBar; }
+    // The strip always follows the opacity colour, even when the Style panel
+    // tint mix is low: choosing a colour is what the user expects to see here.
+    void setOpacityTint(bool enabled, const nxui::Color& tint);
     // True while an overlay owns the frame and the plate is hidden with it.
     bool stripPlateSuppressed() const { return m_plateSuppressed; }
     // Target row of the shortcut strip (full width, height = one button). The
@@ -91,14 +108,21 @@ public:
     // Space the live strip occupies, for the grid to keep clear.
     float reservedTop() const;
     float reservedBottom() const;
+    // Width one side needs for its single shortcut row at a given button size.
+    // The fixed grid presets use this to keep their tiles out of the side
+    // gutter in every non-carousel layout.
+    static float sideGutterWidth(int buttonScalePercent);
     void setDynamicLineDownAction(std::function<void()> action);
     void setDynamicLineUpTarget(nxui::Widget* target);
     void setDynamicLineProfileTarget(nxui::Widget* profile);
     // Battery is the strip's right-hand neighbour: RIGHT from the last shortcut
     // lands on it. Stored like the profile target so a re-place keeps the hop.
     void setDynamicLineBatteryTarget(nxui::Widget* battery);
-    // Profile / battery capsules the plate runs into when the strip is on top.
-    void setHudAnchors(const nxui::Rect& profile, const nxui::Rect& battery);
+    // Profile / clock / battery capsules the strip shares its row with. The
+    // clock is the centre cell: pinned shortcuts stop short of it instead of
+    // growing underneath it.
+    void setHudAnchors(const nxui::Rect& profile, const nxui::Rect& clock,
+                       const nxui::Rect& battery);
 
     void applyTheme(const nxui::Theme& theme);
     // Colour icon contrast adapt: follow HOME chrome while a single-row hero
@@ -119,6 +143,7 @@ public:
     int visiblePinCount() const { return m_visiblePins; }
 
     AppletButton*  albumButton()    const { return m_albumButton; }
+    nxui::Widget*  allAppsButton()  const { return m_allAppsButton; }
     nxui::Widget*  settingsButton() const { return m_settingsButton; }
     nxui::Widget*  themeShopButton() const { return m_themeShopButton; }
 
@@ -163,8 +188,9 @@ private:
     std::vector<std::shared_ptr<AppletButton>> m_rightButtons;
     std::vector<std::shared_ptr<AppletButton>> m_pinButtons;
     int m_visiblePins = 0;
-    int m_pinSide = 0;
+    std::array<int, kPinnedSlotCount> m_pinSides{};
     AppletButton*  m_albumButton    = nullptr;
+    nxui::Widget*  m_allAppsButton  = nullptr;
     nxui::Widget*  m_settingsButton = nullptr;
     nxui::Widget*  m_themeShopButton = nullptr;
 
@@ -172,6 +198,8 @@ private:
         SidebarAnimation anim;
         AppletButton*    button    = nullptr;
         nxui::Texture*   staticTex = nullptr;
+        nxui::Texture*   appliedTex = nullptr;
+        bool             appliedColorArtwork = false;
     };
     std::vector<AnimEntry> m_anims;
     std::vector<ButtonGlide> m_buttonGlides;
@@ -192,15 +220,37 @@ private:
     float m_stripNudgeRight = 0.f;
     float m_stripNudgeY     = 0.f;
     std::shared_ptr<nxui::GlassPanel> m_stripPlateWidget;
+    std::shared_ptr<GameSearchBar> m_searchBar;
+    bool m_opacityTintEnabled = false;
+    nxui::Color m_opacityTint {1.f, 1.f, 1.f, 1.f};
+    // Last style/geometry applied to the plate. syncStripPlateGeometry runs every
+    // frame; when these match, the seven widget setters can be skipped.
+    nxui::Rect m_plateRectCache{};
+    nxui::Color m_plateBaseCache{};
+    nxui::Color m_plateRimCache{};
+    nxui::Color m_plateHighlightCache{};
+    bool m_plateGradientCache = false;
+    nxui::Color m_plateGradientACache{};
+    nxui::Color m_plateGradientBCache{};
+    float m_plateRadiusCache = -1.f;
+    float m_plateBorderCache = -1.f;
+    bool m_plateCacheValid = false;
     bool m_stripPlate = true;
+    bool m_stripGradient = false;
+    nxui::Color m_stripGradientA {0.32f, 0.55f, 0.95f, 1.f};
+    nxui::Color m_stripGradientB {0.62f, 0.45f, 0.92f, 1.f};
+    float m_stripGradientPhase = 0.f;
+    bool m_stripFlushTop = false;
     bool m_plateSuppressed = false;
     float m_clearLeft  = 0.f;
     float m_clearRight = 1280.f;
     nxui::Widget*  m_hudLeftTarget  = nullptr;
     nxui::Widget*  m_hudRightTarget = nullptr;
     nxui::Rect     m_anchorProfile{};
+    nxui::Rect     m_anchorClock{};
     nxui::Rect     m_anchorBattery{};
     bool           m_anchorValid = false;
+    bool           m_anchorClockValid = false;
     // Theme chrome, cached so the plate can be styled without a Theme handle.
     nxui::Color m_btnBase      {0.10f, 0.11f, 0.16f, 0.90f};
     nxui::Color m_btnBorder    {0.50f, 0.50f, 0.65f, 0.34f};

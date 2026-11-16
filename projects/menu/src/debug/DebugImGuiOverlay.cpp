@@ -1,12 +1,12 @@
 #include "DebugImGuiOverlay.hpp"
 #include "core/DebugLog.hpp"
-#include "settings/SettingsGlassTuning.hpp"
 
 #ifdef SWITCHU_DEBUG_UI
 
 #include <algorithm>
 #include <array>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -223,10 +223,6 @@ void DebugImGuiOverlay::updateInput(nxui::GpuDevice& gpu, const nxui::Input& inp
 }
 
 void DebugImGuiOverlay::drawWindow(nxui::Renderer& ren, bool& open) {
-    auto& lg = ren.liquidGlassSettings();
-    auto& settingsGlass = settings::debug::settingsGlassTuning();
-    bool rawBackdrop = ren.liquidGlassDebugRawBackdrop();
-
     if (m_activePanel == Panel::Logs) {
         ImGui::SetNextWindowSize(ImVec2(760.0f, 520.0f), ImGuiCond_FirstUseEver);
     } else {
@@ -279,79 +275,9 @@ void DebugImGuiOverlay::drawWindow(nxui::Renderer& ren, bool& open) {
         open = false;
     }
 
-    ImGui::SeparatorText("Blur / Liquid Glass");
-
-    if (ImGui::Button("Reset Defaults")) {
-        ren.resetLiquidGlassSettings();
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Raw Backdrop", &rawBackdrop)) {
-        ren.setLiquidGlassDebugRawBackdrop(rawBackdrop);
-    }
-
     ImGui::SeparatorText("Backdrop Capture");
     ImGui::TextUnformatted("Preview of offscreen texture 0");
     ImGui::Image((ImTextureID)(intptr_t)ren.offscreenDescSlot(0), ImVec2(240.0f, 135.0f));
-    
-    if (ImGui::CollapsingHeader("Shape", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Power", &lg.powerFactor, 1.001f, 6.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Blur & Noise", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Blur Radius", &lg.blurIntensity, 0.0f, 10.0f);
-        ImGui::SliderFloat("Noise", &lg.noiseIntensity, 0.0f, 0.3f);
-    }
-
-    if (ImGui::CollapsingHeader("Refraction", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextUnformatted("f(x) = 1 - b (ce)^(-dx-a)");
-        ImGui::SliderFloat("f(x) Power", &lg.fPower, -1.5f, 6.0f);
-        ImGui::SliderFloat("a", &lg.refA, 0.0f, 5.0f);
-        ImGui::SliderFloat("b", &lg.refB, 0.0f, 6.0f);
-        ImGui::SliderFloat("c", &lg.refC, 0.0f, 6.0f);
-        ImGui::SliderFloat("d", &lg.refD, 0.0f, 10.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Glow", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Glow weight", &lg.glowWeight, -1.0f, 1.0f);
-        ImGui::SliderFloat("Glow bias", &lg.glowBias, -1.0f, 1.0f);
-        ImGui::SliderFloat("Glow edge0", &lg.glowEdge0, -1.0f, 1.0f);
-        ImGui::SliderFloat("Glow edge1", &lg.glowEdge1, -1.0f, 1.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Advanced")) {
-        ImGui::SliderFloat("Refraction mix", &lg.refractionIntensity, 0.0f, 1.5f);
-        ImGui::SliderFloat("Glow intensity", &lg.glowIntensity, 0.0f, 1.5f);
-        ImGui::SliderFloat("Saturation", &lg.saturation, 0.0f, 2.0f);
-        ImGui::SliderFloat("Reflection", &lg.opacityMultiplier, 0.0f, 1.5f);
-        ImGui::SliderFloat("Roughness", &lg.roughness, 0.0f, 1.0f);
-        ImGui::Checkbox("Auto Time", &m_autoAnimateTime);
-        if (!m_autoAnimateTime) {
-            ImGui::SliderFloat("Time", &lg.time, 0.0f, 120.0f);
-        } else {
-            ImGui::Text("Time: %.2f", lg.time);
-        }
-        ImGui::SliderFloat("Anim speed", &lg.animSpeed, 0.0f, 6.0f);
-        ImGui::SliderFloat4("Tint RGBA", &lg.tintBoost.r, 0.0f, 2.0f);
-    }
-
-    ImGui::SeparatorText("Settings Panel");
-    if (ImGui::Button("Reset Settings Panel")) {
-        settings::debug::resetSettingsGlassTuning();
-    }
-    ImGui::TextUnformatted("Tune the cached backdrop blur first, then the glass pass.");
-    ImGui::TextUnformatted("If the blur starts to smear, lower the shader blur before raising the pre-blur.");
-    ImGui::SliderFloat("Settings Blur Radius", &settingsGlass.preBlurRadius, 0.0f, 10.0f);
-    ImGui::SliderInt("Settings Blur Iters", &settingsGlass.blurIterations, 0, 20);
-    ImGui::SliderFloat("Settings Shader Blur", &settingsGlass.shaderBlurIntensity, 0.0f, 10.0f);
-    ImGui::SliderFloat("Settings Refraction", &settingsGlass.refractionIntensity, 0.0f, 1.0f);
-    ImGui::SliderFloat("Settings Glow", &settingsGlass.glowIntensity, 0.0f, 1.5f);
-    ImGui::SliderFloat("Settings Roughness", &settingsGlass.roughness, 0.0f, 0.10f);
-    ImGui::SliderFloat("Settings Power", &settingsGlass.powerFactor, 1.001f, 32.0f);
-    ImGui::SliderFloat("Settings Inset", &settingsGlass.inset, 0.0f, 20.0f);
-    ImGui::SliderFloat("Settings Shade", &settingsGlass.shade, 0.0f, 1.0f);
-    ImGui::SliderFloat("Settings Dark Tint", &settingsGlass.tintAlphaDark, 0.0f, 0.5f);
-    ImGui::SliderFloat("Settings Light Tint", &settingsGlass.tintAlphaLight, 0.0f, 0.5f);
-    ImGui::SliderFloat("Settings Saturation", &settingsGlass.saturation, 0.0f, 2.0f);
 
     ImGui::End();
 }
@@ -366,11 +292,6 @@ void DebugImGuiOverlay::render(nxui::Renderer& ren, nxui::Input& input, bool& op
     if (!m_wasOpen) {
         m_activePanel = Panel::Logs;
         m_wasOpen = true;
-    }
-
-    auto& lg = ren.liquidGlassSettings();
-    if (m_autoAnimateTime) {
-        lg.time += std::max(m_deltaTime, 1.0f / 240.0f);
     }
 
     updateInput(ren.gpu(), input);
@@ -403,8 +324,10 @@ void DebugImGuiOverlay::renderDrawData(nxui::Renderer& ren, ImDrawData* drawData
     dk::ImageView colorTarget{gpu.fbImage(slot)};
     dk::ImageView dsTarget{gpu.dsImage()};
     cmd.bindRenderTargets(&colorTarget, &dsTarget);
-    cmd.setViewports(0, DkViewport{0.0f, 0.0f, (float)gpu.width(), (float)gpu.height(), 0.0f, 1.0f});
-    cmd.setScissors(0, DkScissor{0, 0, (uint32_t)gpu.width(), (uint32_t)gpu.height()});
+    cmd.setViewports(0, DkViewport{0.0f, 0.0f,
+        (float)gpu.framebufferWidth(), (float)gpu.framebufferHeight(), 0.0f, 1.0f});
+    cmd.setScissors(0, DkScissor{0, 0,
+        (uint32_t)gpu.framebufferWidth(), (uint32_t)gpu.framebufferHeight()});
     cmd.bindShaders(DkStageFlag_GraphicsMask, {&m_vertexShader, &m_fragmentShader});
     cmd.bindRasterizerState(dk::RasterizerState{}.setCullMode(DkFace_None));
     cmd.bindColorState(dk::ColorState{}.setBlendEnable(0, true));
@@ -468,9 +391,25 @@ void DebugImGuiOverlay::renderDrawData(nxui::Renderer& ren, ImDrawData* drawData
                 continue;
             }
 
+            // ImGui draws in the logical 1280x720 space. The debug viewport is
+            // the physical framebuffer, so scale and clamp its scissor too.
+            const float fbScaleX =
+                (float)gpu.framebufferWidth() / std::max(1.0f, drawData->DisplaySize.x);
+            const float fbScaleY =
+                (float)gpu.framebufferHeight() / std::max(1.0f, drawData->DisplaySize.y);
+            const int clipX0 = (int)std::floor(clipX * fbScaleX);
+            const int clipY0 = (int)std::floor(clipY * fbScaleY);
+            const int clipX1 = (int)std::ceil(clipZ * fbScaleX);
+            const int clipY1 = (int)std::ceil(clipW * fbScaleY);
+
             int texSlot = (int)(intptr_t)drawCmd.GetTexID();
-            cmd.setScissors(0, DkScissor{(uint32_t)clipX, (uint32_t)clipY,
-                                         (uint32_t)(clipZ - clipX), (uint32_t)(clipW - clipY)});
+            cmd.setScissors(0, DkScissor{
+                (uint32_t)std::clamp(clipX0, 0, gpu.framebufferWidth()),
+                (uint32_t)std::clamp(clipY0, 0, gpu.framebufferHeight()),
+                (uint32_t)(std::clamp(clipX1, 0, gpu.framebufferWidth()) -
+                           std::clamp(clipX0, 0, gpu.framebufferWidth())),
+                (uint32_t)(std::clamp(clipY1, 0, gpu.framebufferHeight()) -
+                           std::clamp(clipY0, 0, gpu.framebufferHeight()))});
             cmd.bindTextures(DkStage_Fragment, 0, dkMakeTextureHandle(texSlot, 0));
             cmd.drawIndexed(DkPrimitive_Triangles,
                             drawCmd.ElemCount,

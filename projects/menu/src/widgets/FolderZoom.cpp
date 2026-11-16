@@ -109,11 +109,8 @@ void FolderZoom::onRender(nxui::Renderer& ren) {
     const nxui::Rect r = m_panel.value();
     const float cr = m_radius.value();
 
-    // Near folder-title glass weight so heroes read clearly through the plate.
-    if (ren.gpu().offscreenReady())
-        ren.drawLiquidGlass(2, r, cr, m_tint.withAlpha(0.06f), fade * 0.70f, 0.04f);
-    else
-        ren.drawRoundedRect(r, m_tint.withAlpha(0.08f * fade), cr);
+    // Flat tinted plate: no backdrop capture, blur or refraction.
+    ren.drawRoundedRect(r, m_tint.withAlpha(0.08f * fade), cr);
     ren.drawRoundedRect(r, nxui::Color(1.f, 1.f, 1.f, 0.02f * fade), cr);
     ren.drawRoundedRectOutline(r.shrunk(1.5f), m_tint.withAlpha(0.18f * fade),
                                std::max(4.f, cr - 1.5f), 1.5f);

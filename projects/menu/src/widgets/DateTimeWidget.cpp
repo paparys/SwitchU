@@ -61,26 +61,51 @@ void DateTimeWidget::onContentRender(nxui::Renderer& ren) {
         ren.drawRoundedRect({cr.x - 2.f, ruleY, 1.f, ruleH}, rule, 0.5f);
         ren.drawRoundedRect({cr.right() + 1.f, ruleY, 1.f, ruleH}, rule, 0.5f);
     }
-    nxui::Vec2 timeSz = m_font->measure(m_timeStr);
-    nxui::Vec2 dateSz = sf->measure(m_dateStr);
+    // The clock refreshes once a second but renders every frame; font layout
+    // does not need to run again until the string or font actually changes.
+    if (m_cachedTimeFont != m_font || m_cachedTimeText != m_timeStr) {
+        m_cachedTimeFont = m_font;
+        m_cachedTimeText = m_timeStr;
+        m_cachedTimeSize = m_font->measure(m_timeStr);
+    }
+    if (m_cachedDateFont != sf || m_cachedDateText != m_dateStr) {
+        m_cachedDateFont = sf;
+        m_cachedDateText = m_dateStr;
+        m_cachedDateSize = sf->measure(m_dateStr);
+    }
+    const nxui::Vec2 timeSz = m_cachedTimeSize;
+    const nxui::Vec2 dateSz = m_cachedDateSize;
     const float dateScale = 0.7f * s;
-    float contentH = timeSz.y * s + 2.f * s + dateSz.y * dateScale;
+    float contentH = timeSz.y * s;
+    if (m_showDate)
+        contentH += 2.f * s + dateSz.y * dateScale;
     float tx = cr.x + (cr.width - timeSz.x * s) * 0.5f;
     float ty = cr.y + (cr.height - contentH) * 0.5f;
     ren.drawText(m_timeStr, {tx, ty}, m_font, m_textColor.withAlpha(m_opacity), s);
 
-    float dx = cr.x + (cr.width - dateSz.x * dateScale) * 0.5f;
-    float dy = ty + timeSz.y * s + 2.f * s;
-    ren.drawText(m_dateStr, {dx, dy}, sf, m_secondaryColor.withAlpha(m_opacity),
-                 dateScale);
+    if (m_showDate) {
+        float dx = cr.x + (cr.width - dateSz.x * dateScale) * 0.5f;
+        float dy = ty + timeSz.y * s + 2.f * s;
+        ren.drawText(m_dateStr, {dx, dy}, sf, m_secondaryColor.withAlpha(m_opacity),
+                     dateScale);
+    }
 }
 
 nxui::Vec2 DateTimeWidget::computeContentSize() const {
     if (!m_font) return {130.f, 46.f};
-    nxui::Vec2 timeSz = m_font->measure(m_use12HourClock ? "12:00 PM" : "00:00");
     nxui::Font* sf = m_smallFont ? m_smallFont : m_font;
-    nxui::Vec2 dateSz = sf->measure("00/00/0000");
-    float w = std::max(timeSz.x, dateSz.x * 0.7f);
-    float h = timeSz.y + 2.f + dateSz.y * 0.7f;
+    if (m_cachedMeasureFont != m_font || m_cachedMeasureSmall != sf
+        || m_cachedMeasure12h != m_use12HourClock) {
+        m_cachedMeasureFont = m_font;
+        m_cachedMeasureSmall = sf;
+        m_cachedMeasure12h = m_use12HourClock;
+        m_cachedTimePlaceholder =
+            m_font->measure(m_use12HourClock ? "12:00 PM" : "00:00");
+        m_cachedDatePlaceholder = sf->measure("00/00/0000");
+    }
+    const nxui::Vec2 timeSz = m_cachedTimePlaceholder;
+    const nxui::Vec2 dateSz = m_cachedDatePlaceholder;
+    float w = m_showDate ? std::max(timeSz.x, dateSz.x * 0.7f) : timeSz.x;
+    float h = timeSz.y + (m_showDate ? 2.f + dateSz.y * 0.7f : 0.f);
     return {w * m_scale, h * m_scale};
 }

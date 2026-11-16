@@ -21,6 +21,9 @@ public:
                         nxui::ThreadPool* threadPool);
 
     void setEnabled(bool enabled);
+    // False skips decoding and drawing the full-screen hero while keeping the
+    // logo overlay. The next showTitle() re-decodes the current title.
+    void setShowHero(bool show);
     // Canvas the per-game hero is decoded at: 1280x720 (Full), 960x540
     // (Balanced) or 640x360 (Fast). Changing it drops the uploaded sets so the
     // next focus decodes at the new size.
@@ -32,6 +35,12 @@ public:
     // Slow horizontal pan of the hero. The art is overscanned while drifting
     // so the pan never exposes an edge.
     void setDrift(bool enabled, int speedPercent);
+    // Per-game hero fade-in, seconds. 0 makes the art appear on the frame its
+    // upload completes.
+    void setHeroFadeIn(float seconds);
+    // Per-game hero alignment, each axis -100..100. 0 keeps the art centred;
+    // positive X moves right, positive Y moves down.
+    void setHeroOffset(int xPercent, int yPercent);
     // Drops every artwork cache (uploaded sets, decoded images and the list of
     // titles known to have none) so the next showTitle() re-reads the card.
     // Needed whenever SteamGridDB settings change what is available.
@@ -42,6 +51,9 @@ public:
     void setLayoutMode(AppLayoutMode mode) { m_layoutMode = mode; }
     // True when a hero texture is on-screen at meaningful opacity.
     bool hasDisplayedHero() const;
+    // True when the single-row hero has faded in far enough to hide the
+    // wallpaper's animated shapes underneath it.
+    bool coversWallpaper() const;
     // Average relative luminance of the current hero [0..1], or <0 if none.
     float displayedHeroLuminance() const;
     // Screen-space band the logo is centred in (single-row mode only).
@@ -52,7 +64,13 @@ public:
     // of 3.6MB SD reads the moment defer expires. 0 = as soon as free.
     void setPreloadMinInterval(float seconds);
     void setPreloadPaused(bool paused);
+    // True while the carousel is moving. Hero decode and GPU upload wait until
+    // the row settles so SD/GPU work cannot steal a frame from the scroll.
+    // Entering the moving state also cancels a stale in-flight decode.
+    void setNavigationBusy(bool busy);
     bool isArtworkBusy() const;
+    // GPU bytes the uploaded hero/logo sets hold (both double-buffer slots).
+    std::size_t gpuArtworkBytes() const;
     void showTitle(std::uint64_t titleId, bool forceReload = false);
 
 protected:
@@ -70,7 +88,14 @@ private:
         int canvasH = 0;
         bool hasHero = false;
         bool hasLogo = false;
+        // True when the hero's pixels already carry the bottom scrim, so the
+        // per-frame full-screen gradient is skipped for this set.
+        bool scrimBaked = false;
         float heroLuminance = -1.f;
+        // Alignment this set was drawn with, so an outgoing crossfade keeps
+        // its own position while the next title is aligned differently.
+        int offsetX = 0;
+        int offsetY = 0;
     };
 
     struct DecodedImage {
@@ -85,6 +110,7 @@ private:
         std::uint64_t titleId = 0;
         std::uint64_t generation = 0;
         long decodeMilliseconds = 0;
+        bool scrimBaked = false;
         float heroLuminance = -1.f;
     };
 
@@ -95,7 +121,10 @@ private:
 
     struct PendingDecode {
         std::shared_ptr<DecodeState> state;
-        std::future<void> future;
+        // Hero and logo decode independently. The logo is small and can overlap
+        // the hero on another pool worker without changing either image.
+        std::future<void> heroFuture;
+        std::future<void> logoFuture;
     };
 
     static DecodedImage decodeImage(const std::string& path, int outputWidth,
@@ -106,10 +135,14 @@ private:
     static nxui::Rect fillRect(const nxui::Texture& texture, const nxui::Rect& area);
     static nxui::Rect containRect(const nxui::Texture& texture, const nxui::Rect& area);
     bool useFullHeroOpacity() const;
-    void drawSet(nxui::Renderer& renderer, const ArtworkSet& set, float alpha) const;
+    void drawSet(nxui::Renderer& renderer, const ArtworkSet& set, float alpha,
+                 bool drawLogo = true) const;
     void startPendingDecode(std::uint64_t titleId, int canvasW, int canvasH,
                             bool useCache);
     void cancelPendingDecode();
+    // Canvas / blur changes need the focused hero decoded and uploaded again.
+    // Sliders fire on every step, so the work waits for the value to settle.
+    void applyPendingSettingsRework();
     void beginCrossfade(int nextSet, std::uint64_t titleId);
     bool hasGpuArtwork(std::uint64_t titleId) const;
 
@@ -119,6 +152,7 @@ private:
     std::array<ArtworkSet, 2> m_sets;
     int m_current = 0;
     bool m_enabled = true;
+    bool m_showHero = true;
     std::uint64_t m_requestedTitleId = 0;
     std::uint64_t m_requestGeneration = 0;
     std::uint64_t m_appliedGeneration = 0;
@@ -135,9 +169,16 @@ private:
     float m_preloadMinInterval = 0.35f;
     float m_preloadGapSec = 0.f;
     bool m_preloadPaused = false;
+    bool m_navigationBusy = false;
+    // Seconds left before a canvas/blur change is applied; coalesces a slider
+    // drag into one decode instead of one per step.
+    float m_settingsReworkDelay = 0.f;
     int m_heroCanvasW = 1280;
     int m_heroCanvasH = 720;
     float m_heroBlur = 0.f;
+    float m_heroFadeInSec = 3.0f;
+    int m_heroOffsetX = 0;
+    int m_heroOffsetY = 0;
     bool m_driftEnabled = false;
     int m_driftSpeed = 35;
     float m_driftPhase = 0.f;

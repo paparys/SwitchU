@@ -1,5 +1,5 @@
 #include "SettingsScreen.hpp"
 
 SettingsScreen::SettingsScreen()
-    : TabbedOverlayScreen(ScreenMode::Settings) {
+    : TabbedOverlayScreen(ScreenMode::Settings, true) {
 }

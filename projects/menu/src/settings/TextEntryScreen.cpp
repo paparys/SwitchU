@@ -1,4 +1,5 @@
 #include "TextEntryScreen.hpp"
+#include "../ui/ChromeTokens.hpp"
 
 #include "core/DebugLog.hpp"
 
@@ -52,11 +53,9 @@ TextEntryScreen::TextEntryScreen() {
     setVisible(false);
     setFocusable(true);
     // Frosted backdrop is applied in onRender (same path as settings overlays).
-    setLiquidGlassEnabled(false);
-    setForceLiquidGlass(false);
     setBlurEnabled(false);
-    setPanelOpacity(0.94f);
-    setCornerRadius(18.f);
+    setPanelOpacity(switchu::ui::chrome::kModalAlpha);
+    setCornerRadius(switchu::ui::chrome::kRadiusCard);
     setBorderWidth(1.f);
     applyPanelRect();
     buildLayout();
@@ -72,7 +71,6 @@ void TextEntryScreen::setTheme(const nxui::Theme* theme) {
         std::clamp(m_theme->panelBorder.a * 0.92f, 0.14f, 0.42f)));
     setHighlightColor(m_theme->panelHighlight.withAlpha(
         std::clamp(m_theme->panelHighlight.a * 0.92f, 0.05f, 0.18f)));
-    setLiquidGlassShade(m_theme->mode == nxui::ThemeMode::Dark ? 0.08f : -0.03f);
 }
 
 TextEntryScreen::Metrics TextEntryScreen::metrics() const {
@@ -113,7 +111,7 @@ TextEntryScreen::Metrics TextEntryScreen::metrics() const {
 void TextEntryScreen::applyPanelRect() {
     const Metrics m = metrics();
     setRect({m.panelX, m.panelY, m.panelW, m.panelH});
-    setCornerRadius(26.f);
+    setCornerRadius(switchu::ui::chrome::kRadiusPanel);
 }
 
 void TextEntryScreen::setFullLayout(bool full) {
@@ -121,13 +119,6 @@ void TextEntryScreen::setFullLayout(bool full) {
         return;
     m_fullLayout = full;
     applyPanelRect();
-}
-
-void TextEntryScreen::setGlassStyle(bool glass) {
-    if (m_glassStyle == glass)
-        return;
-    m_glassStyle = glass;
-    m_backdropReady = false;
 }
 
 void TextEntryScreen::buildLayout() {
@@ -270,7 +261,6 @@ void TextEntryScreen::show(const Request& request) {
     m_column = 0;
     m_caretTime = 0.f;
     m_touchRow = m_touchColumn = -1;
-    m_touchOnStyleToggle = false;
     m_touchOnSizeToggle = false;
     m_touchOnCancelChip = false;
     m_touchOnClear = false;
@@ -283,7 +273,6 @@ void TextEntryScreen::show(const Request& request) {
     m_backspaceRepeatLeft = 0.f;
     m_alpha.setImmediate(0.f);
     m_alpha.set(1.f, 0.18f, nxui::Easing::outCubic);
-    m_backdropReady = false;
     applyPanelRect();
     setVisible(true);
     setupActions();
@@ -363,7 +352,6 @@ void TextEntryScreen::setupActions() {
         }
         toggleSizeMode();
     });
-    addAction(static_cast<std::uint64_t>(nxui::Button::ZR), [this]() { toggleGlassStyle(); });
     addAction(static_cast<std::uint64_t>(nxui::Button::ZL), [this]() {
         if (!m_text.empty())
             clearText();
@@ -404,13 +392,6 @@ nxui::Rect TextEntryScreen::keyboardBoardRect() const {
             panel.width - m.inset * 2.f, rowsH};
 }
 
-nxui::Rect TextEntryScreen::styleToggleRect() const {
-    const Metrics m = metrics();
-    const nxui::Rect panel = rect();
-    // Leftmost of the three chrome chips: Style | Size | Cancel
-    return {panel.right() - m.inset - 346.f, panel.y + 18.f, 106.f, 40.f};
-}
-
 nxui::Rect TextEntryScreen::sizeToggleRect() const {
     const Metrics m = metrics();
     const nxui::Rect panel = rect();
@@ -435,7 +416,6 @@ void TextEntryScreen::togglePage() {
 void TextEntryScreen::toggleSizeMode() {
     m_fullLayout = !m_fullLayout;
     applyPanelRect();
-    m_backdropReady = false;
     if (m_keySfxCb) m_keySfxCb();
     if (m_layoutCb) m_layoutCb(m_fullLayout);
     if (m_accessibilityCb) {
@@ -443,19 +423,6 @@ void TextEntryScreen::toggleSizeMode() {
         m_accessibilityCb(m_fullLayout
             ? i18n.tr("text_entry.layout_full", "Full keyboard")
             : i18n.tr("text_entry.layout_compact", "Compact keyboard"));
-    }
-}
-
-void TextEntryScreen::toggleGlassStyle() {
-    m_glassStyle = !m_glassStyle;
-    m_backdropReady = false;
-    if (m_keySfxCb) m_keySfxCb();
-    if (m_styleCb) m_styleCb(m_glassStyle);
-    if (m_accessibilityCb) {
-        auto& i18n = nxui::I18n::instance();
-        m_accessibilityCb(m_glassStyle
-            ? i18n.tr("text_entry.style_glass", "Glass keyboard")
-            : i18n.tr("text_entry.style_flat", "Flat keyboard"));
     }
 }
 
@@ -730,13 +697,33 @@ float TextEntryScreen::guideScale() const {
     return 0.92f;
 }
 
+nxui::Vec2 TextEntryScreen::cachedTextSize(nxui::Font* font,
+                                           const std::string& text) const {
+    if (!font)
+        return {0.f, 0.f};
+    auto& cache = m_measureCache[font];
+    const auto it = cache.find(text);
+    if (it != cache.end())
+        return it->second;
+
+    if (m_measureCacheEntries >= 1024) {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+    }
+    auto& fresh = m_measureCache[font];
+    const auto inserted = fresh.emplace(text, font->measure(text));
+    if (inserted.second)
+        ++m_measureCacheEntries;
+    return inserted.first->second;
+}
+
 float TextEntryScreen::fieldTrailingReserve() const {
     char counter[32]{};
     std::snprintf(counter, sizeof(counter), "%d/%d", textLength(),
                   std::max(1, m_request.maxLength));
     float reserve = 16.f;
     if (m_smallFont)
-        reserve += m_smallFont->measure(counter).x * counterScale() + 10.f;
+        reserve += cachedTextSize(m_smallFont, counter).x * counterScale() + 10.f;
     if (!m_text.empty())
         reserve += 34.f; // clear button
     if (m_request.password)
@@ -752,7 +739,7 @@ nxui::Rect TextEntryScreen::clearButtonRect() const {
     std::snprintf(counter, sizeof(counter), "%d/%d", textLength(),
                   std::max(1, m_request.maxLength));
     const float counterW = m_smallFont
-        ? m_smallFont->measure(counter).x * counterScale() : 36.f;
+        ? cachedTextSize(m_smallFont, counter).x * counterScale() : 36.f;
     const float size = 28.f;
     return {field.right() - 16.f - counterW - 8.f - size,
             field.y + (field.height - size) * 0.5f, size, size};
@@ -769,7 +756,7 @@ nxui::Rect TextEntryScreen::revealButtonRect() const {
     std::snprintf(counter, sizeof(counter), "%d/%d", textLength(),
                   std::max(1, m_request.maxLength));
     const float counterW = m_smallFont
-        ? m_smallFont->measure(counter).x * counterScale() : 36.f;
+        ? cachedTextSize(m_smallFont, counter).x * counterScale() : 36.f;
     const float x = clear.width > 0.f
         ? clear.x - 6.f - width
         : field.right() - 16.f - counterW - 8.f - width;
@@ -788,7 +775,7 @@ int TextEntryScreen::caretFromFieldX(float x) const {
     int best = 0;
     for (int i = 0; i <= len; ++i) {
         const std::string prefix = displayPrefix(i);
-        const float caretX = textX + m_font->measure(prefix).x * fieldScale;
+        const float caretX = textX + cachedTextSize(m_font, prefix).x * fieldScale;
         const float dist = std::abs(caretX - x);
         if (dist < bestDist) {
             bestDist = dist;
@@ -896,7 +883,6 @@ void TextEntryScreen::handleTouch(nxui::Input& input) {
 
     if (input.touchDown()) {
         m_touchRow = m_touchColumn = -1;
-        m_touchOnStyleToggle = false;
         m_touchOnSizeToggle = false;
         m_touchOnCancelChip = false;
         m_touchOnClear = false;
@@ -911,10 +897,6 @@ void TextEntryScreen::handleTouch(nxui::Input& input) {
         }
         if (reveal.width > 0.f && reveal.contains(input.touchX(), input.touchY())) {
             m_touchOnReveal = true;
-            return;
-        }
-        if (styleToggleRect().contains(input.touchX(), input.touchY())) {
-            m_touchOnStyleToggle = true;
             return;
         }
         if (sizeToggleRect().contains(input.touchX(), input.touchY())) {
@@ -968,12 +950,6 @@ void TextEntryScreen::handleTouch(nxui::Input& input) {
         if (m_touchOnField) {
             m_touchOnField = false;
             m_fieldSelecting = false;
-            return;
-        }
-        if (m_touchOnStyleToggle) {
-            m_touchOnStyleToggle = false;
-            if (styleToggleRect().contains(input.touchX(), input.touchY()))
-                toggleGlassStyle();
             return;
         }
         if (m_touchOnSizeToggle) {
@@ -1036,24 +1012,12 @@ void TextEntryScreen::onRender(nxui::Renderer& ren) {
     if (!isActive() || !m_theme || !m_font || !m_smallFont)
         return;
     const float alpha = m_alpha.value();
-    if (!m_backdropReady) {
-        ren.captureToOffscreen(false);
-        ren.applyBlur(4.f, 3);
-        ren.copyOffscreen(0, 2);
-        m_backdropReady = true;
-    }
     ren.drawRect({0.f, 0.f, 1280.f, 720.f},
-                 nxui::Color::black().withAlpha((m_glassStyle ? 0.62f : 0.72f) * alpha));
-    if (m_glassStyle) {
-        ren.drawOffscreenRounded(2, rect(), 26.f,
-                                 nxui::Color::white().withAlpha(alpha));
-        nxui::GlassWidget::onRender(ren);
-    } else {
-        // Flat: opaque panel for maximum contrast / readability.
-        ren.drawRoundedRect(rect(), m_theme->panelBase.withAlpha(0.96f * alpha), 26.f);
-        ren.drawRoundedRectOutline(rect(), m_theme->panelBorder.withAlpha(0.40f * alpha), 26.f, 1.2f);
-        onContentRender(ren);
-    }
+                 nxui::Color::black().withAlpha(0.72f * alpha));
+    // Flat, opaque panel for maximum contrast / readability.
+    ren.drawRoundedRect(rect(), m_theme->panelBase.withAlpha(0.96f * alpha), 26.f);
+    ren.drawRoundedRectOutline(rect(), m_theme->panelBorder.withAlpha(0.40f * alpha), 26.f, 1.2f);
+    onContentRender(ren);
 }
 
 void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
@@ -1069,34 +1033,22 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
                      m_theme->textSecondary.withAlpha(0.86f * alpha), guideScale());
 
     auto drawChip = [&](const nxui::Rect& r, const std::string& label) {
-        if (m_glassStyle)
-            ren.drawLiquidGlass(2, r, 10.f, m_theme->panelBase.withAlpha(0.16f), alpha, 0.05f);
-        else
-            ren.drawRoundedRect(r, m_theme->panelHighlight.withAlpha(0.20f * alpha), 10.f);
+        ren.drawRoundedRect(r, m_theme->panelHighlight.withAlpha(0.20f * alpha), 10.f);
         ren.drawRoundedRectOutline(r, m_theme->panelBorder.withAlpha(0.42f * alpha), 10.f, 1.f);
         const float scale = 0.66f;
-        const nxui::Vec2 size = m_smallFont->measure(label);
+        const nxui::Vec2 size = cachedTextSize(m_smallFont, label);
         ren.drawText(label,
             {r.x + (r.width - size.x * scale) * 0.5f,
              r.y + (r.height - size.y * scale) * 0.5f},
             m_smallFont, m_theme->textPrimary.withAlpha(alpha), scale);
     };
-    // Chip shows the mode you switch TO (same pattern as Compact/Full).
-    drawChip(styleToggleRect(),
-             m_glassStyle ? i18n.tr("text_entry.style_flat", "Flat")
-                          : i18n.tr("text_entry.style_glass", "Glass"));
     drawChip(sizeToggleRect(),
              m_fullLayout ? i18n.tr("text_entry.layout_compact", "Compact")
                           : i18n.tr("text_entry.layout_full", "Full"));
     drawChip(cancelChipRect(), i18n.tr("button.cancel", "Cancel"));
 
     const nxui::Rect field = textFieldRect();
-    if (m_glassStyle) {
-        ren.drawLiquidGlass(2, field, 14.f,
-                            m_theme->panelBase.withAlpha(0.16f), alpha, 0.06f);
-    } else {
-        ren.drawRoundedRect(field, m_theme->panelBase.withAlpha(0.40f * alpha), 14.f);
-    }
+    ren.drawRoundedRect(field, m_theme->panelBase.withAlpha(0.40f * alpha), 14.f);
     const float fieldOutline = m_focusField ? 0.78f : 0.42f;
     ren.drawRoundedRectOutline(
         field,
@@ -1108,7 +1060,7 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
     std::snprintf(counter, sizeof(counter), "%d/%d", textLength(),
                   std::max(1, m_request.maxLength));
     const float cScale = counterScale();
-    const nxui::Vec2 counterSize = m_smallFont->measure(counter);
+    const nxui::Vec2 counterSize = cachedTextSize(m_smallFont, counter);
     const float counterWidth = counterSize.x * cScale;
     ren.drawText(counter, {field.right() - 16.f - counterWidth,
                            field.y + (field.height - counterSize.y * cScale) * 0.5f},
@@ -1132,7 +1084,7 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
         ren.drawRoundedRect(reveal, m_theme->panelHighlight.withAlpha(0.28f * alpha), 10.f);
         const std::string eye = m_passwordRevealed ? "Hide" : "Show";
         const float eyeScale = 0.52f;
-        const nxui::Vec2 eyeSize = m_smallFont->measure(eye);
+        const nxui::Vec2 eyeSize = cachedTextSize(m_smallFont, eye);
         ren.drawText(eye,
             {reveal.x + (reveal.width - eyeSize.x * eyeScale) * 0.5f,
              reveal.y + (reveal.height - eyeSize.y * eyeScale) * 0.5f},
@@ -1144,13 +1096,16 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
     const float textX = field.x + 16.f;
     const float reserve = fieldTrailingReserve();
     const float clipW = std::max(8.f, field.width - reserve);
-    const nxui::Vec2 measuredFull = m_font->measure(shown.empty() ? "Ay" : shown);
+    const nxui::Vec2 measuredFull = shown.empty()
+        ? cachedTextSize(m_font, "Ay") : cachedTextSize(m_font, shown);
     const float textY = field.y + (field.height - measuredFull.y * fieldScale) * 0.5f;
 
     ren.pushClipRect({field.x + 4.f, field.y, clipW - 4.f, field.height});
     if (hasSelection() && !shown.empty()) {
-        const float sel0 = textX + m_font->measure(displayPrefix(selectionStart())).x * fieldScale;
-        const float sel1 = textX + m_font->measure(displayPrefix(selectionEnd())).x * fieldScale;
+        const float sel0 = textX
+            + cachedTextSize(m_font, displayPrefix(selectionStart())).x * fieldScale;
+        const float sel1 = textX
+            + cachedTextSize(m_font, displayPrefix(selectionEnd())).x * fieldScale;
         ren.drawRect({sel0, field.y + 10.f, std::max(2.f, sel1 - sel0), field.height - 20.f},
                      m_theme->cursorNormal.withAlpha(0.34f * alpha));
     }
@@ -1159,7 +1114,8 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
                      m_theme->textPrimary.withAlpha(alpha), fieldScale);
     }
     if (std::fmod(m_caretTime, 1.0f) < 0.55f) {
-        const float caretX = textX + m_font->measure(displayPrefix(m_caret)).x * fieldScale + 1.f;
+        const float caretX = textX
+            + cachedTextSize(m_font, displayPrefix(m_caret)).x * fieldScale + 1.f;
         ren.drawRect({caretX, field.y + 12.f, 2.f, field.height - 24.f},
                      m_theme->cursorNormal.withAlpha(0.92f * alpha));
     }
@@ -1175,21 +1131,11 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
             const bool shiftLit = (m_shift || m_shiftLock) && key.action == Action::Shift;
             const bool accept = key.action == Action::Accept;
 
-            if (m_glassStyle) {
-                ren.drawLiquidGlass(2, r, m.keyRadius,
-                    m_theme->panelBase.withAlpha(0.14f), alpha, 0.05f);
-                nxui::Color wash = nxui::Color::transparent();
-                if (accept) wash = m_theme->cursorNormal.withAlpha(0.18f * alpha);
-                if (shiftLit) wash = m_theme->cursorNormal.withAlpha(0.25f * alpha);
-                if (selected) wash = m_theme->cursorNormal.withAlpha(0.46f * alpha);
-                if (wash.a > 0.001f) ren.drawRoundedRect(r, wash, m.keyRadius);
-            } else {
-                nxui::Color fill = m_theme->panelHighlight.withAlpha(0.18f * alpha);
-                if (accept) fill = m_theme->cursorNormal.withAlpha(0.32f * alpha);
-                else if (shiftLit) fill = m_theme->cursorNormal.withAlpha(0.28f * alpha);
-                if (selected) fill = m_theme->cursorNormal.withAlpha(0.55f * alpha);
-                ren.drawRoundedRect(r, fill, m.keyRadius);
-            }
+            nxui::Color fill = m_theme->panelHighlight.withAlpha(0.18f * alpha);
+            if (accept) fill = m_theme->cursorNormal.withAlpha(0.32f * alpha);
+            else if (shiftLit) fill = m_theme->cursorNormal.withAlpha(0.28f * alpha);
+            if (selected) fill = m_theme->cursorNormal.withAlpha(0.55f * alpha);
+            ren.drawRoundedRect(r, fill, m.keyRadius);
             ren.drawRoundedRectOutline(r,
                 (selected ? m_theme->textPrimary : m_theme->panelBorder)
                     .withAlpha((selected ? 0.68f : 0.30f) * alpha), m.keyRadius, 1.f);
@@ -1201,7 +1147,7 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
                 : (m_fullLayout ? 0.90f : 0.80f);
             nxui::Font* labelFont = (wide && key.action != Action::Backspace)
                 ? m_smallFont : m_font;
-            const nxui::Vec2 size = labelFont->measure(label);
+            const nxui::Vec2 size = cachedTextSize(labelFont, label);
             ren.drawText(label,
                 {r.x + (r.width - size.x * labelScale) * 0.5f,
                  r.y + (r.height - size.y * labelScale) * 0.5f},
@@ -1227,9 +1173,9 @@ void TextEntryScreen::onContentRender(nxui::Renderer& ren) {
                 "↑ field · A type · X erase · Y shift · − show/hide · ZL clear · + OK · B cancel");
         } else {
             hint = i18n.tr("text_entry.hint",
-                "↑ field · A type · X erase · Y shift · L/R symbols · − size · ZR style · + OK · B cancel");
+                "↑ field · A type · X erase · Y shift · L/R symbols · − size · + OK · B cancel");
         }
-        const nxui::Vec2 hintSize = m_smallFont->measure(hint);
+        const nxui::Vec2 hintSize = cachedTextSize(m_smallFont, hint);
         // Shrink slightly if a long localization would overflow the panel.
         float scale = hScale;
         const float maxW = panel.width - m.inset * 2.f;

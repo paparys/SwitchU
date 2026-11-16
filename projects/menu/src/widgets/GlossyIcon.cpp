@@ -6,6 +6,8 @@
 #include "core/WidgetStore.hpp"
 #include "BatteryDrawing.hpp"
 #include "core/DebugLog.hpp"
+#include "ui/UiStyle.hpp"
+#include "ui/FocusHighlight.hpp"
 #include <nxui/core/Renderer.hpp>
 #include <nxui/core/Font.hpp>
 #include <nxui/core/ThreadPool.hpp>
@@ -14,10 +16,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <ctime>
 #include <cmath>
+#include <unordered_map>
 #include <filesystem>
 #include <fstream>
+
 struct WidgetGifDecodeState {
     std::vector<std::vector<std::uint8_t>> frames;
     std::vector<int> durationsMs;
@@ -145,6 +150,28 @@ void decodeWidgetGif(const std::string& path,
         std::chrono::steady_clock::now() - started).count();
 }
 
+nxui::Vec2 cachedFontMeasure(nxui::Font* font, const std::string& text) {
+    if (!font)
+        return {0.f, 0.f};
+    static std::unordered_map<const nxui::Font*,
+                              std::unordered_map<std::string, nxui::Vec2>> cache;
+    static std::size_t entries = 0;
+    auto& byText = cache[font];
+    const auto it = byText.find(text);
+    if (it != byText.end())
+        return it->second;
+
+    if (entries >= 1024) {
+        cache.clear();
+        entries = 0;
+    }
+    auto& fresh = cache[font];
+    const auto inserted = fresh.emplace(text, font->measure(text));
+    if (inserted.second)
+        ++entries;
+    return inserted.first->second;
+}
+
 void drawBatteryRing(nxui::Renderer& ren, const nxui::Vec2& center,
                      float radius, int percent, bool charging,
                      bool console, nxui::Texture* deviceIcon,
@@ -237,7 +264,7 @@ void drawBatteryRing(nxui::Renderer& ren, const nxui::Vec2& center,
     if (font) {
         const std::string text = std::to_string(percent) + "%";
         const float scale = std::max(0.34f, radius / 72.f * 0.50f);
-        const auto measured = font->measure(text);
+        const auto measured = cachedFontMeasure(font, text);
         ren.drawText(text,
                      {center.x - measured.x * scale * 0.5f,
                       center.y + radius * 0.28f}, font,
@@ -256,8 +283,13 @@ GlossyIcon::GlossyIcon() {
     m_jiggleAmount.setImmediate(0.f);
     setCornerRadius(16.f);
     setPadding(8.f);
-    setLiquidGlassEnabled(true);
+    // Icons are artwork plus their own rim highlight. The liquid-glass surface
+    // only shaded the 8px border around the art, and it cost a backdrop sample
+    // and shader pass per tile every frame.
+    setPanelHighlightEnabled(false);
     setBlurEnabled(false);
+    setPanelShadowEnabled(false);
+    setPanelGrainEnabled(false);
 }
 
 GlossyIcon::~GlossyIcon() {
@@ -509,7 +541,13 @@ void GlossyIcon::copyWidgetPresentationFrom(GlossyIcon& source) {
 
 void GlossyIcon::onFocusGained() {
     m_focused = true;
-    m_focusScale.set(1.075f, 0.18f, nxui::Easing::outBack);
+    // The lift is the resting focus size; overshoot controls the spring in the
+    // arrival animation. Defaults reproduce the shipped 1.075 out-cubic pop.
+    float lift = 0.075f * std::clamp(switchu::ui::style::focusLiftPct, 0, 150) / 100.f;
+    const int overshoot = std::clamp(switchu::ui::style::focusOvershootPct, 0, 100);
+    lift *= 1.f + 0.08f * static_cast<float>(overshoot) / 100.f;
+    m_focusScale.set(1.f + lift, 0.20f,
+                     overshoot > 0 ? nxui::Easing::outBack : nxui::Easing::outCubic);
     m_focusGlow.set(1.f, 0.16f, nxui::Easing::outCubic);
     if (!m_motionPaused)
         m_shineT = 0.f;
@@ -585,6 +623,25 @@ void GlossyIcon::onContentUpdate(float dt) {
             m_appearOpacity.set(1.f, 0.3f, nxui::Easing::outExpo);
         }
     }
+    // Off-screen pages still receive update ticks through the widget tree, but
+    // nothing they advance can be seen. The appear timer above still runs so a
+    // tile is fully arrived when it scrolls in; the shimmer, widget frames,
+    // jiggle phase and shine sweep can wait until the rect is near the screen.
+    const nxui::Rect& bounds = m_rect;
+    const bool onScreen = bounds.right() > -64.f && bounds.x < 1280.f + 64.f
+                       && bounds.bottom() > -64.f && bounds.y < 720.f + 64.f;
+    if (!onScreen) {
+        // A tile that leaves the screen may come back after a session ends;
+        // re-read playtime on its next visible frame instead of trusting the
+        // cached value indefinitely.
+        m_playtimeSourceValid = false;
+        return;
+    }
+    m_playtimeRefresh += dt;
+    if (m_playtimeRefresh >= 1.f) {
+        m_playtimeRefresh = 0.f;
+        m_playtimeSourceValid = false;
+    }
     if (!m_motionPaused)
         m_suspendPulse += dt * 2.8f;
     // Skeletons: while a tile has no artwork, run a brief shimmer so a cold
@@ -649,30 +706,49 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
         drawRect.height = jh;
     }
 
+    // Nothing off-screen can contribute a pixel. The grid lays out far pages
+    // and carousel neighbours anyway; skipping them here avoids the shadow,
+    // glass face and shine passes for tiles nobody can see. The margin covers
+    // the shadow spread and the focus pop, which draw outside the tile rect.
+    constexpr float kCullMargin = 32.f;
+    if (drawRect.right() < -kCullMargin || drawRect.x > 1280.f + kCullMargin
+        || drawRect.bottom() < -kCullMargin || drawRect.y > 720.f + kCullMargin)
+        return;
+
     if (drawRect.x != savedRect.x || drawRect.y != savedRect.y ||
         drawRect.width != savedRect.width || drawRect.height != savedRect.height) {
         m_rect = drawRect;
     }
     setScale(1.f);
-    float savedShade = liquidGlassShade();
-    setLiquidGlassShade(m_notLaunchable ? 0.58f : 0.0f);
 
     float savedOp = m_opacity;
     m_opacity = a * savedOp;
+    // Tiles at the fading ends of the row, and tiles drawn small, keep their
+    // silhouette but skip the soft shadow and the fine edge detail. Those
+    // passes are most of the per-tile geometry, and at this size the
+    // difference is a pixel of edge shading that the fade already hides.
+    m_lowDetail = m_scrollLowDetail || (m_opacity < 0.35f) || (drawRect.width < 132.f);
 
     // Focus lift: the tile already scales up, so also deepen and spread the
     // shadow a touch. Without it the tile inflates but does not rise.
     const float focusLift = std::clamp((m_focusScale.value() - 1.f) / 0.075f, 0.f, 1.f);
     const float shadowStrength = (m_entryKind == GridEntryKind::Empty ? 0.6f : 1.f)
                                * m_shadowAlpha * m_opacity * (1.f + 0.45f * focusLift);
-    if (shadowStrength > 0.001f) {
+    // Moving tiles skip the soft shadow too: it is a translucent fill behind
+    // every neighbour, and the eye cannot resolve it at carousel speed.
+    if (shadowStrength > 0.001f && !m_scrollLowDetail) {
         // Three concentric layers: the tile covers their cores, so all that
         // shows around it is a soft falloff instead of a hard offset copy.
         constexpr float kSpread[3] = {7.f, 3.5f, 0.f};
         constexpr float kWeight[3] = {0.34f, 0.58f, 1.f};
         const nxui::Color shadowColor(0.02f, 0.04f, 0.06f, 1.f);
         const float offsetY = m_shadowOffsetY + 2.f * focusLift;
-        for (int layer = 0; layer < 3; ++layer) {
+        // Only the focused tile draws the full three-layer falloff. Unfocused
+        // neighbours skip the outermost, widest layer; at rest its weight is
+        // low enough to vanish under the two remaining layers.
+        const bool focused = m_focusScale.value() > 1.0005f;
+        const int firstShadowLayer = m_lowDetail ? 2 : (focused ? 0 : 1);
+        for (int layer = firstShadowLayer; layer < 3; ++layer) {
             const float s = kSpread[layer] * (1.f + 0.22f * focusLift);
             ren.drawRoundedRect({drawRect.x - s * 0.55f,
                                  drawRect.y + offsetY - s * 0.30f,
@@ -684,34 +760,65 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
     }
     nxui::GlassWidget::onRender(ren);
 
+    if (m_innerHairline && m_opacity > 0.01f && !m_scrollLowDetail) {
+        ren.drawRoundedRectOutline(drawRect.shrunk(0.5f),
+            nxui::Color(1.f, 1.f, 1.f, 0.075f * m_opacity),
+            std::max(0.f, cornerRadius() - 0.5f), 1.f);
+    }
+
     if (m_entryKind != GridEntryKind::Empty
-        && m_entryKind != GridEntryKind::WidgetContinuation)
+        && m_entryKind != GridEntryKind::WidgetContinuation && !m_lowDetail)
         drawShine(ren, drawRect, cornerRadius());
+
+    std::uint64_t playtimeSeconds = 0;
+    if (m_showPlaytimeBadge && m_entryKind == GridEntryKind::Application &&
+        m_titleId != 0 && !m_scrollLowDetail) {
+        if (!m_playtimeSourceValid) {
+            m_playtimeSourceSeconds = switchu::playtime::secondsFor(m_titleId);
+            m_playtimeSourceValid = true;
+        }
+        playtimeSeconds = m_playtimeSourceSeconds;
+    }
+    if (m_titleOverlay && m_entryKind == GridEntryKind::Application
+        && !m_scrollLowDetail)
+        drawTitleOverlay(ren, drawRect, cornerRadius(),
+                         m_showPlaytimeBadge && playtimeSeconds >= 60ULL);
 
     // Time played, bottom-right: "12h 30m" / "45m" / "3d". Hidden below a
     // minute so titles that were never played stay clean.
-    if (m_entryKind == GridEntryKind::Application && m_titleId != 0 && m_font) {
-        const std::uint64_t seconds = switchu::playtime::secondsFor(m_titleId);
+    if (m_showPlaytimeBadge && m_entryKind == GridEntryKind::Application &&
+        m_titleId != 0 && m_font && !m_scrollLowDetail) {
+        const std::uint64_t seconds = playtimeSeconds;
         if (seconds >= 60ULL) {
-            std::string label;
-            if (seconds >= 86400ULL) {
-                label = std::to_string(seconds / 86400ULL) + "d";
-            } else if (seconds >= 3600ULL) {
-                const std::uint64_t hours = seconds / 3600ULL;
-                const std::uint64_t mins = (seconds % 3600ULL) / 60ULL;
-                label = std::to_string(hours) + "h";
-                if (mins != 0)
-                    label += " " + std::to_string(mins) + "m";
-            } else {
-                label = std::to_string(seconds / 60ULL) + "m";
+            if (seconds != m_playtimeSeconds || m_playtimeLabel.empty()) {
+                m_playtimeSeconds = seconds;
+                m_playtimeMeasureValid = false;
+                m_playtimeLabel.clear();
+                if (seconds >= 86400ULL) {
+                    m_playtimeLabel = std::to_string(seconds / 86400ULL) + "d";
+                } else if (seconds >= 3600ULL) {
+                    const std::uint64_t hours = seconds / 3600ULL;
+                    const std::uint64_t mins = (seconds % 3600ULL) / 60ULL;
+                    m_playtimeLabel = std::to_string(hours) + "h";
+                    if (mins != 0)
+                        m_playtimeLabel += " " + std::to_string(mins) + "m";
+                } else {
+                    m_playtimeLabel = std::to_string(seconds / 60ULL) + "m";
+                }
             }
-            constexpr float kTextScale = 1.20f; // 3x the old 0.40 badge
-            const nxui::Vec2 measured = m_font->measure(label);
-            constexpr float padX = 12.f;
-            constexpr float padY = 6.f;
-            const float pillW = measured.x * kTextScale + padX * 2.f;
-            const float pillH = measured.y * kTextScale + padY * 2.f;
-            const float inset = 6.f;
+            const std::string& label = m_playtimeLabel;
+            const float kTextScale = 1.20f * m_playtimePillScale;
+            if (!m_playtimeMeasureValid) {
+                const nxui::Vec2 measured = m_font->measure(label);
+                m_playtimeTextWidth = measured.x;
+                m_playtimeTextHeight = measured.y;
+                m_playtimeMeasureValid = true;
+            }
+            const float padX = 12.f * m_playtimePillScale;
+            const float padY = 6.f * m_playtimePillScale;
+            const float pillW = m_playtimeTextWidth * kTextScale + padX * 2.f;
+            const float pillH = m_playtimeTextHeight * kTextScale + padY * 2.f;
+            const float inset = 6.f * m_playtimePillScale;
             const nxui::Rect pill{drawRect.x + drawRect.width - pillW - inset,
                                   drawRect.y + drawRect.height - pillH - inset,
                                   pillW, pillH};
@@ -737,18 +844,27 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
 
     m_opacity = savedOp;
     m_rect = savedRect;
-    setLiquidGlassShade(savedShade);
     setScale(externalScale);
 
     nxui::Rect r = drawRect;
     float rad = cornerRadius();
 
     float focusGlow = m_focusGlow.value();
-    if (focusGlow > 0.01f && s > 0.5f) {
+    const float glowScale = std::clamp(switchu::ui::style::focusGlowPct, 0, 100) / 100.f;
+    if (focusGlow > 0.01f && s > 0.5f && glowScale > 0.001f) {
         float breathe = 0.5f + 0.5f * std::sin(m_suspendPulse * 1.8f + 0.4f);
-        nxui::Color focusColor = nxui::Color(0.65f, 0.90f, 1.f, (0.08f + 0.04f * breathe) * focusGlow * a);
-        ren.drawRoundedRectOutline(r.expanded(5.f * focusGlow), focusColor,
-                                   rad + 5.f, 2.f);
+        const float ringPx = static_cast<float>(
+            std::clamp(switchu::ui::style::focusRingPx, 1, 6));
+        // 3 px and 100% reproduce the old 5 px spread / 2 px line exactly.
+        const float spread = 5.f + (ringPx - 3.f);
+        const float ringWidth = 2.f * ringPx / 3.f;
+        const float focusAlpha =
+            (0.08f + 0.04f * breathe) * focusGlow * a * glowScale;
+        nxui::Color focusColor = nxui::Color(0.65f, 0.90f, 1.f, focusAlpha);
+        if (switchu::ui::highlight::gradientEnabled())
+            focusColor = switchu::ui::highlight::colorAt(0.f, focusAlpha);
+        ren.drawRoundedRectOutline(r.expanded(spread * focusGlow), focusColor,
+                                   rad + spread, ringWidth);
     }
 
     if (m_isGameCard && !m_notLaunchable && s > 0.5f) {
@@ -814,115 +930,109 @@ void GlossyIcon::onRender(nxui::Renderer& ren) {
     }
 }
 
-namespace {
-
-struct BevelSample {
-    float x = 0.f, y = 0.f;
-    float nx = 0.f, ny = 0.f;
-};
-
-// One segment of the bevel band: a quad hanging inward from two outline
-// samples, shaded by whether the surface normal faces the fixed top-left light
-// or away from it. Walking the real rounded-rect outline (straight runs and
-// corner arcs alike) is what makes the highlight run along the top and left and
-// the shadow along the bottom and right with no seam at the corners.
-void bevelSegment(nxui::Renderer& ren, const BevelSample& a, const BevelSample& b,
-                  float thickness, float lightAlpha, float darkAlpha) {
-    if (thickness <= 0.05f)
+void GlossyIcon::drawTitleOverlay(nxui::Renderer& ren, const nxui::Rect& r,
+                                  float radius, bool reservePill) {
+    if (!m_titleOverlay || !m_font || m_title.empty() || m_opacity <= 0.01f)
         return;
-    const float dx = (a.nx + b.nx) * 0.5f;
-    const float dy = (a.ny + b.ny) * 0.5f;
-    // Light comes from the top-left, so a normal pointing up-left is lit and a
-    // normal pointing down-right is shadowed; the magnitude is the incidence.
-    const float d = dx * -0.6f + dy * -0.8f;
-    const bool light = d >= 0.f;
-    const float alpha = light ? lightAlpha * d : darkAlpha * -d;
-    if (alpha <= 0.002f)
+    const float side = std::min(r.width, r.height);
+    if (side <= 48.f)
         return;
-    const nxui::Color c = light ? nxui::Color(1.f, 1.f, 1.f, alpha)
-                                : nxui::Color(0.f, 0.f, 0.f, alpha);
-    const nxui::Vec2 p0{a.x, a.y};
-    const nxui::Vec2 p1{b.x, b.y};
-    const nxui::Vec2 p2{b.x - b.nx * thickness, b.y - b.ny * thickness};
-    const nxui::Vec2 p3{a.x - a.nx * thickness, a.y - a.ny * thickness};
-    ren.drawTriangle(p0, p1, p2, c);
-    ren.drawTriangle(p0, p2, p3, c);
+
+    // Soft bottom scrim: rows follow the tile's rounded bottom edge so nothing
+    // paints outside the artwork. The ramp starts at near-zero alpha.
+    const float scrimH = std::min(side * 0.36f, 52.f);
+    const float rad = std::clamp(radius, 0.f, side * 0.5f);
+    const int rows = std::max(6, static_cast<int>(std::lround(scrimH / 4.f)));
+    const float rowH = scrimH / static_cast<float>(rows);
+    for (int i = 0; i < rows; ++i) {
+        const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(rows);
+        const float y = r.bottom() - scrimH + rowH * static_cast<float>(i);
+        const float yc = y + rowH * 0.5f;
+        float inset = 0.f;
+        if (rad > 0.f && yc > r.bottom() - rad) {
+            const float dy = yc - (r.bottom() - rad);
+            inset = rad - std::sqrt(std::max(0.f, rad * rad - dy * dy));
+        }
+        ren.drawRect({r.x + inset, y, r.width - inset * 2.f, rowH + 0.6f},
+                     nxui::Color(0.f, 0.f, 0.f, 0.42f * t * t * m_opacity));
+    }
+
+    const float pad = std::max(7.f, side * 0.055f);
+    const float scale = std::clamp(side / 270.f, 0.42f, 0.56f);
+    const float maxW = std::max(0.f, r.width - pad * 2.f
+        - (reservePill ? r.width * 0.46f : 0.f));
+    if (maxW <= 0.f)
+        return;
+
+    if (!m_titleOverlayValid
+        || std::abs(m_titleOverlayMaxW - maxW) > 0.25f
+        || std::abs(m_titleOverlayScale - scale) > 0.001f) {
+        std::string label = m_title;
+        if (m_font->measure(label).x * scale > maxW) {
+            const std::string dots = "...";
+            while (!label.empty()
+                   && m_font->measure(label + dots).x * scale > maxW)
+                label.pop_back();
+            if (!label.empty())
+                label += dots;
+        }
+        m_titleOverlayLabel = std::move(label);
+        m_titleOverlayMaxW = maxW;
+        m_titleOverlayScale = scale;
+        m_titleOverlayTextH = m_titleOverlayLabel.empty()
+            ? 0.f : m_font->measure(m_titleOverlayLabel).y * scale;
+        m_titleOverlayValid = true;
+    }
+    if (m_titleOverlayLabel.empty())
+        return;
+    const std::string& label = m_titleOverlayLabel;
+    const float textH = m_titleOverlayTextH;
+    const nxui::Vec2 pos{r.x + pad, r.bottom() - pad - textH};
+    ren.drawText(label, {pos.x + 1.f, pos.y + 1.f}, m_font,
+                 nxui::Color(0.f, 0.f, 0.f, 0.62f * m_opacity), scale);
+    nxui::Color titleColor(1.f, 1.f, 1.f, 0.96f * m_opacity);
+    if (ren.opacityTintEnabled()) {
+        // Tile captions follow the opacity colour too. Blending toward the
+        // tint instead of replacing white keeps the text readable on the
+        // dark scrim under every palette entry.
+        const nxui::Color& tint = ren.opacityTint();
+        constexpr float mix = 0.72f;
+        titleColor = nxui::Color(1.f + (tint.r - 1.f) * mix,
+                                 1.f + (tint.g - 1.f) * mix,
+                                 1.f + (tint.b - 1.f) * mix,
+                                 titleColor.a);
+    }
+    ren.drawText(label, pos, m_font, titleColor, scale);
 }
-
-} // namespace
 
 void GlossyIcon::drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r,
                                   float radius) {
+    // The tile used to be liquid glass, whose rim light sat on the glass edge.
+    // That surface is gone, so the same rim is drawn on the icon face itself.
+    // Full-bleed art already meets the tile edge and keeps the panel's rim.
+    const bool wantsRim = !m_artworkFullBleed && m_opacity > 0.01f
+        && highlightColor().a > 0.001f;
     if (m_opacity <= 0.01f
-        || (m_vignetteStrength <= 0.001f && m_highlightStrength <= 0.001f
-            && m_depth <= 0.001f))
+        || (!wantsRim && m_vignetteStrength <= 0.001f && m_highlightStrength <= 0.001f))
         return;
     const float side = std::min(r.width, r.height);
     if (side <= 2.f)
         return;
     const float rad = std::clamp(radius, 0.f, side * 0.5f);
+    const bool lowDetail = m_lowDetail;
 
-    // 3D bevel: a band that follows the tile's rounded outline, shaded by a
-    // fixed top-left light. Lit stretches (top, left, top-left corner) get a
-    // white band, the opposite stretches (bottom, right, bottom-right) get a
-    // black one, and the two pass through zero on the top-right and bottom-left
-    // corners where the surface turns away from the light. Because the band is
-    // walked along the outline itself, the highlight and shadow wrap every
-    // corner instead of stopping where the curve begins.
-    if (m_depth > 0.001f) {
-        const float band = std::clamp(side * 0.10f, 5.f, 16.f)
-                         * (0.55f + 0.45f * m_depth);
-        const float line = std::clamp(band * 0.20f, 1.f, 3.f);
-        const float softLight = 0.13f * m_depth * m_opacity;
-        const float softDark = 0.11f * m_depth * m_opacity;
-        const float lineLight = 0.30f * m_depth * m_opacity;
-        const float lineDark = 0.26f * m_depth * m_opacity;
-        const float rr = std::max(0.f, rad);
-        const float x0 = r.x, y0 = r.y, x1 = r.right(), y1 = r.bottom();
-
-        BevelSample prev;
-        bool havePrev = false;
-        auto push = [&](float px, float py, float nx, float ny) {
-            const BevelSample cur{px, py, nx, ny};
-            if (havePrev) {
-                bevelSegment(ren, prev, cur, band, softLight, softDark);
-                bevelSegment(ren, prev, cur, line, lineLight, lineDark);
-            }
-            prev = cur;
-            havePrev = true;
-        };
-        auto edge = [&](float ax, float ay, float bx, float by,
-                        float nx, float ny) {
-            const float len = std::hypot(bx - ax, by - ay);
-            const int steps = std::max(1, static_cast<int>(std::ceil(len / 16.f)));
-            for (int i = 0; i <= steps; ++i) {
-                const float t = static_cast<float>(i) / static_cast<float>(steps);
-                push(ax + (bx - ax) * t, ay + (by - ay) * t, nx, ny);
-            }
-        };
-        auto arc = [&](float cx, float cy, float a0, float a1) {
-            constexpr int kArcSteps = 8;
-            for (int i = 0; i <= kArcSteps; ++i) {
-                const float t = static_cast<float>(i) / kArcSteps;
-                const float a = a0 + (a1 - a0) * t;
-                const float ca = std::cos(a);
-                const float sa = std::sin(a);
-                push(cx + ca * rr, cy + sa * rr, ca, sa);
-            }
-        };
-        constexpr float kPi = 3.14159265f;
-        constexpr float kHalfPi = kPi * 0.5f;
-
-        // Clockwise from the top edge: top, top-right arc, right, bottom-right
-        // arc, bottom, bottom-left arc, left, top-left arc.
-        edge(x0 + rr, y0, x1 - rr, y0, 0.f, -1.f);
-        if (rr > 0.5f) arc(x1 - rr, y0 + rr, -kHalfPi, 0.f);
-        edge(x1, y0 + rr, x1, y1 - rr, 1.f, 0.f);
-        if (rr > 0.5f) arc(x1 - rr, y1 - rr, 0.f, kHalfPi);
-        edge(x1 - rr, y1, x0 + rr, y1, 0.f, 1.f);
-        if (rr > 0.5f) arc(x0 + rr, y1 - rr, kHalfPi, kPi);
-        edge(x0, y1 - rr, x0, y0 + rr, -1.f, 0.f);
-        if (rr > 0.5f) arc(x0 + rr, y0 + rr, kPi, kPi + kHalfPi);
+    // A moving tile only needs its silhouette. The stepped vignette, highlight
+    // rings and sheen below build dozens of blended quads per tile; at carousel
+    // speed they are not readable and are the largest per-tile cost. Draw the
+    // single rim and restore the full treatment on the first resting frame.
+    if (m_scrollLowDetail) {
+        if (wantsRim) {
+            ren.drawRoundedRectOutline(
+                r.shrunk(0.5f),
+                highlightColor().withAlpha(highlightColor().a * 0.65f * m_opacity),
+                std::max(0.f, radius - 0.5f), 1.f);
+        }
+        return;
     }
 
     // Vignette: a rim that darkens the edge and dissolves inward. The band is
@@ -935,7 +1045,7 @@ void GlossyIcon::drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r,
     if (m_vignetteStrength > 0.001f) {
         const float band = std::clamp(side * 0.16f, 6.f, 26.f);
         const int steps = std::clamp(static_cast<int>(std::lround(band * 1.25f)),
-                                     10, 30);
+                                     lowDetail ? 5 : 10, lowDetail ? 14 : 30);
         const float step = band / static_cast<float>(steps);
         const float peak = 0.34f * m_vignetteStrength * m_opacity;
         for (int i = 0; i < steps; ++i) {
@@ -964,7 +1074,7 @@ void GlossyIcon::drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r,
     if (m_highlightStrength > 0.001f) {
         const float band = std::clamp(side * 0.07f, 3.f, 12.f);
         const int steps = std::clamp(static_cast<int>(std::lround(band * 2.f)),
-                                     8, 24);
+                                     lowDetail ? 4 : 8, lowDetail ? 12 : 24);
         const float step = band / static_cast<float>(steps);
         const float peakAlpha = 0.30f * m_highlightStrength * m_opacity;
         for (int i = 0; i < steps; ++i) {
@@ -984,30 +1094,61 @@ void GlossyIcon::drawIconOverlays(nxui::Renderer& ren, const nxui::Rect& r,
                 std::max(0.f, rad - mid), step + 0.3f);
         }
 
-        // Sheen: a pool of light just under the top rim. It ramps in over a few
-        // pixels instead of starting at full strength (that hard top edge is
-        // what read as a drawn line), then tails off over a third of the tile.
-        // Both ends are tucked under the corner arcs, where the rim light is at
-        // its brightest, so their cut-off is not visible.
-        const float inset = std::min(r.width * 0.5f, rad);
-        const float sheenW = std::max(1.f, r.width - inset * 2.f);
+        // Sheen: a pool of light just under the top rim. Draw it in rows that
+        // follow the rounded silhouette. A single inset rectangle used to leave
+        // its vertical sides cutting through the tile face below the corner arc.
         const float peakH = std::max(3.f, r.height * 0.08f);
         const float tailH = std::max(4.f, r.height * 0.42f);
-        const nxui::Color clear = nxui::Color(1.f, 1.f, 1.f, 0.f);
-        const nxui::Color peak = nxui::Color(
-            1.f, 1.f, 1.f, 0.16f * m_highlightStrength * m_opacity);
-        const nxui::Rect ramp{r.x + inset, r.y + 0.5f, sheenW, peakH};
-        const nxui::Rect tail{r.x + inset, r.y + 0.5f + peakH, sheenW, tailH};
-        ren.drawGradientRect(ramp, clear, peak);
-        ren.drawGradientRect(tail, peak, clear);
-        // A wider, much fainter veil gives the tile glass body without adding an
-        // edge of its own.
-        const nxui::Rect veil{r.x + inset, r.y + 0.5f + peakH, sheenW,
-                              tailH * 1.6f};
-        ren.drawGradientRect(
-            veil, nxui::Color(1.f, 1.f, 1.f,
-                              0.05f * m_highlightStrength * m_opacity),
-            clear);
+        const float veilH = tailH * 1.6f;
+        const float sheenH = peakH + std::max(tailH, veilH);
+        const float sheenPeakAlpha = 0.16f * m_highlightStrength * m_opacity;
+        const float sheenVeilAlpha = 0.05f * m_highlightStrength * m_opacity;
+        const int rows = std::clamp(
+            static_cast<int>(std::lround(sheenH / (lowDetail ? 5.f : 3.f))),
+            lowDetail ? 6 : 12, lowDetail ? 18 : 44);
+        const float rowH = sheenH / static_cast<float>(rows);
+        const float sheenTop = r.y + 0.5f;
+        const auto sheenAlpha = [&](float y) {
+            const float yRel = std::max(0.f, y - sheenTop);
+            float a = 0.f;
+            if (yRel < peakH) {
+                const float t = yRel / peakH;
+                a = sheenPeakAlpha * t * t * (3.f - 2.f * t);
+            } else if (yRel < peakH + tailH) {
+                const float t = (yRel - peakH) / tailH;
+                a = sheenPeakAlpha * (1.f - t) * (1.f - t);
+            }
+            const float veil = sheenVeilAlpha * std::max(0.f, 1.f - yRel / sheenH);
+            return a + veil * (1.f - a);
+        };
+        for (int row = 0; row < rows; ++row) {
+            const float y0 = sheenTop + rowH * static_cast<float>(row);
+            const float y1 = std::min(r.bottom(), y0 + rowH);
+            if (y1 <= y0)
+                break;
+            const float yc = (y0 + y1) * 0.5f;
+            const float dy = std::max(0.f, std::max((r.y + rad) - yc,
+                                                    yc - (r.bottom() - rad)));
+            const float inset = rad - std::sqrt(std::max(0.f, rad * rad - dy * dy));
+            const float x0 = r.x + inset;
+            const float x1 = r.right() - inset;
+            if (x1 <= x0)
+                continue;
+            const float a0 = sheenAlpha(y0);
+            const float a1 = sheenAlpha(y1);
+            if (a0 <= 0.002f && a1 <= 0.002f)
+                continue;
+            ren.drawGradientRect({x0, y0, x1 - x0, y1 - y0},
+                                 nxui::Color(1.f, 1.f, 1.f, a0),
+                                 nxui::Color(1.f, 1.f, 1.f, a1));
+        }
+    }
+
+    if (wantsRim) {
+        ren.drawRoundedRectOutline(
+            r.shrunk(0.5f),
+            highlightColor().withAlpha(highlightColor().a * 0.65f * m_opacity),
+            std::max(0.f, radius - 0.5f), 1.f);
     }
 }
 
@@ -1039,9 +1180,12 @@ void GlossyIcon::drawShine(nxui::Renderer& ren, const nxui::Rect& r, float radiu
     // Rows are thin enough that the rounded silhouette is followed closely, and
     // the band is cut into a handful of alpha steps across its width so the
     // streak has soft edges instead of a hard-edged bar.
-    const int rows = std::max(6, static_cast<int>(std::lround(r.height / 4.f)));
+    // The sweep is a soft, skewed band: it does not need one row per 4 px and
+    // eight alpha slices per row. The old density built ~1,400 quads for a
+    // single tile every focus change, a quarter of the vertex buffer.
+    const int rows = std::max(6, static_cast<int>(std::lround(r.height / 7.f)));
     const float rowH = r.height / static_cast<float>(rows);
-    constexpr int kSteps = 8;
+    constexpr int kSteps = 6;
     for (int row = 0; row < rows; ++row) {
         const float y0 = r.y + rowH * static_cast<float>(row);
         const float yc = y0 + rowH * 0.5f;
@@ -1141,7 +1285,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
                      iconSide, iconSide}, 10.f * s,
                     nxui::Color::white().withAlpha(m_opacity));
             } else if (m_font && !m_widgetPrimary.empty()) {
-                const nxui::Vec2 measured = m_font->measure(m_widgetPrimary);
+                const nxui::Vec2 measured = cachedFontMeasure(m_font, m_widgetPrimary);
                 float scale = 0.70f * s;
                 if (measured.x > 0.f)
                     scale = std::min(scale, logoArea.width / measured.x);
@@ -1161,7 +1305,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             ren.drawText(m_widgetHeader, {inner.x + 10.f * s, inner.y + 8.f * s},
                          m_font, nxui::Color::white().withAlpha(0.68f * m_opacity),
                          headerScale);
-            const float headerHeight = m_font->measure(m_widgetHeader).y * headerScale;
+            const float headerHeight = cachedFontMeasure(m_font, m_widgetHeader).y * headerScale;
             const float bodyTop = inner.y + 12.f * s + headerHeight;
             const float bodyHeight = std::max(28.f, inner.bottom() - bodyTop - 8.f * s);
             const float iconSide = std::min(bodyHeight, inner.width * 0.30f);
@@ -1180,12 +1324,12 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
 
             const float textX = iconRect.right() + 12.f * s;
             const float textWidth = std::max(20.f, inner.right() - textX - 10.f * s);
-            const nxui::Vec2 nameMeasure = m_font->measure(m_widgetPrimary);
+            const nxui::Vec2 nameMeasure = cachedFontMeasure(m_font, m_widgetPrimary);
             float nameScale = 0.62f * s;
             if (nameMeasure.x > 0.f)
                 nameScale = std::min(nameScale, textWidth / nameMeasure.x);
             nameScale = std::max(0.38f * s, nameScale);
-            const nxui::Vec2 timeMeasure = m_font->measure(m_widgetSecondary);
+            const nxui::Vec2 timeMeasure = cachedFontMeasure(m_font, m_widgetSecondary);
             float timeScale = 0.52f * s;
             if (timeMeasure.x > 0.f)
                 timeScale = std::min(timeScale, textWidth / timeMeasure.x);
@@ -1266,7 +1410,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             if (m_widgetColumns > 1 || m_posterFrame) secondary = dateBuffer;
         }
 
-        const nxui::Vec2 primaryMeasure = m_font->measure(primary);
+        const nxui::Vec2 primaryMeasure = cachedFontMeasure(m_font, primary);
         float primaryScale = 0.78f;
         if (m_widgetType == switchu::widgets::WidgetType::Clock) {
             if (m_posterFrame)
@@ -1285,7 +1429,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
         float secondaryScale = m_posterFrame ? 0.78f : 0.62f;
         nxui::Vec2 secondaryMeasure{};
         if (!secondary.empty()) {
-            secondaryMeasure = m_font->measure(secondary);
+            secondaryMeasure = cachedFontMeasure(m_font, secondary);
             if (secondaryMeasure.x > 0.f)
                 secondaryScale = std::min(secondaryScale,
                     (inner.width - 18.f) / secondaryMeasure.x);
@@ -1405,7 +1549,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
                    && !(m_wideGameHero && m_wideGameHero->valid())
                    && !(m_tex && m_tex->valid())) {
             // Title fallback only on empty wide cards — never overlay hero/icon.
-            const auto measured = m_font->measure(m_title);
+            const auto measured = cachedFontMeasure(m_font, m_title);
             float textScale = 0.68f * s;
             if (measured.x > 0.f)
                 textScale = std::min(textScale, logoArea.width / measured.x);
@@ -1444,12 +1588,13 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
         return;
     }
 
-    float inset = 8.f * s;
+    float inset = m_artworkFullBleed ? 0.f : 8.f * s;
     nxui::Rect texRect = r.shrunk(inset);
     // Contain-fit: square icons stay square inside tall Poster tiles instead
-    // of stretching to fill the 2:3 cell.
-    if (m_tex->width() > 0 && m_tex->height() > 0 && texRect.width > 0.f
-        && texRect.height > 0.f) {
+    // of stretching to fill the 2:3 cell. Full-bleed All Apps tiles skip this
+    // and cover-crop below, so no glass rim can show around the artwork.
+    if (!m_artworkFullBleed && m_tex->width() > 0 && m_tex->height() > 0
+        && texRect.width > 0.f && texRect.height > 0.f) {
         const float texAspect = (float)m_tex->width() / (float)m_tex->height();
         const float boxAspect = texRect.width / texRect.height;
         if (texAspect > boxAspect) {
@@ -1468,6 +1613,12 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
         iconTint.g = 0.80f;
         iconTint.b = 0.80f;
     }
-    ren.drawTextureRounded(m_tex, texRect, rad - 3.f, iconTint);
-    drawIconOverlays(ren, texRect, std::max(0.f, rad - 3.f));
+    if (m_artworkFullBleed) {
+        ren.drawTextureSubRounded(m_tex, centeredCoverSource(*m_tex, texRect),
+                                   texRect, rad, iconTint);
+        drawIconOverlays(ren, texRect, rad);
+    } else {
+        ren.drawTextureRounded(m_tex, texRect, rad - 3.f, iconTint);
+        drawIconOverlays(ren, texRect, std::max(0.f, rad - 3.f));
+    }
 }

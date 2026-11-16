@@ -11,9 +11,6 @@ ContextMenu::ContextMenu() {
     setFrameworkTouchEnabled(false);
     setTag("context_menu");
     setCornerRadius(20.f);
-    setLiquidGlassEnabled(false);
-    setForceLiquidGlass(false);
-    setLiquidGlassShaderEnabled(false);
     setBlurEnabled(false);
     setPanelOpacity(0.96f);
 
@@ -207,6 +204,10 @@ void ContextMenu::render(nxui::Renderer& renderer) {
     }
 
     nxui::Font* itemFont = m_smallFont ? m_smallFont : m_font;
+    if (itemFont != m_cachedMeasureFont) {
+        m_cachedMeasureFont = itemFont;
+        m_measureCache.clear();
+    }
     for (int visible = 0; visible < m_visibleItems; ++visible) {
         const int index = m_scroll + visible;
         if (index >= static_cast<int>(m_items.size())) break;
@@ -219,7 +220,11 @@ void ContextMenu::render(nxui::Renderer& renderer) {
                 accent.withAlpha(0.92f * reveal), 13.f, 2.f);
         }
         if (itemFont) {
-            const nxui::Vec2 measure = itemFont->measure(item.label);
+            auto measured = m_measureCache.find(item.label);
+            if (measured == m_measureCache.end())
+                measured = m_measureCache.emplace(
+                    item.label, itemFont->measure(item.label)).first;
+            const nxui::Vec2 measure = measured->second;
             float scale = 0.88f;
             if (measure.x > 0.f)
                 scale = std::min(scale, (row.width - 24.f) / measure.x);

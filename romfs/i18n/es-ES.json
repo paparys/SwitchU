@@ -287,6 +287,8 @@
       "section": "Carátulas de juegos",
       "enabled": "Mostrar arte de SteamGridDB",
       "enabled_desc": "Interruptor general. Las opciones de abajo eligen dónde aparece el arte.",
+      "show_heroes": "Mostrar fondos de héroe",
+      "show_heroes_desc": "Arte de héroe a pantalla completa. Desactívalo para conservar carátulas, iconos y logos; se verá el fondo de pantalla.",
       "show_line": "Mostrar en el menú de una fila",
       "show_line_desc": "Hero y logo detrás del carrusel de una fila.",
       "show_folders": "Mostrar dentro de las carpetas",

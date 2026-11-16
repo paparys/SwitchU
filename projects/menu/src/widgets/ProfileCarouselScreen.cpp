@@ -39,9 +39,15 @@ ProfileCarouselScreen::ProfileCarouselScreen() {
     setFrameworkTouchEnabled(false);
     setVisible(false);
     setFocusable(true);
-    setLiquidGlassEnabled(false);
     setBlurEnabled(false);
     setRect({0.f, 0.f, kScreenW, kScreenH});
+}
+
+void ProfileCarouselScreen::setMode(Mode mode) {
+    if (m_mode == mode)
+        return;
+    m_mode = mode;
+    m_selected = 0;
 }
 
 void ProfileCarouselScreen::setProfiles(std::vector<HomeProfile> profiles, bool addUserAvailable) {
@@ -52,8 +58,15 @@ void ProfileCarouselScreen::setProfiles(std::vector<HomeProfile> profiles, bool 
     m_profiles = std::move(profiles);
     m_addUserAvailable = addUserAvailable;
 
+    if (m_mode == Mode::LockSelect) {
+        m_selected = m_profiles.empty()
+            ? 0 : std::clamp(m_selected, 0, (int)m_profiles.size() - 1);
+        m_rowScroll.setImmediate(rowScrollTarget(m_selected));
+        return;
+    }
+
     // Keep the highlighted tile stable while avatars stream in.
-    int index = std::clamp(m_selected, 0, tileCount() - 1);
+    int index = std::clamp(m_selected, 0, std::max(0, tileCount() - 1));
     if (selectedUid) {
         for (int i = 0; i < (int)m_profiles.size(); ++i)
             if (sameUid(m_profiles[(size_t)i].uid, *selectedUid))
@@ -64,22 +77,36 @@ void ProfileCarouselScreen::setProfiles(std::vector<HomeProfile> profiles, bool 
 }
 
 const HomeProfile* ProfileCarouselScreen::tileProfile(int index) const {
-    if (tileKind(index) != CardKind::Profile || index > (int)m_profiles.size())
+    if (tileKind(index) != CardKind::Profile)
         return nullptr;
-    return &m_profiles[(size_t)(index - 1)];
+    const int profileIndex = m_mode == Mode::LockSelect ? index : index - 1;
+    if (profileIndex < 0 || profileIndex >= (int)m_profiles.size())
+        return nullptr;
+    return &m_profiles[(size_t)profileIndex];
+}
+
+bool ProfileCarouselScreen::tileNeedsCode(int index) const {
+    const HomeProfile* profile = tileProfile(index);
+    if (!profile)
+        return false;
+    return std::any_of(m_lockProtectedProfiles.begin(), m_lockProtectedProfiles.end(),
+                       [profile](const AccountUid& uid) {
+                           return sameUid(profile->uid, uid);
+                       });
 }
 
 bool ProfileCarouselScreen::isLockedTile(int index) const {
-    return index == lockedTileIndex();
+    return m_mode == Mode::DefaultProfile && index == lockedTileIndex();
 }
 
 int ProfileCarouselScreen::lockedTileIndex() const {
     if (m_lockedUid) {
-        for (int i = 0; i < (int)m_profiles.size(); ++i)
+        for (int i = 0; i < (int)m_profiles.size(); ++i) {
             if (sameUid(m_profiles[(size_t)i].uid, *m_lockedUid))
-                return i + 1;
+                return m_mode == Mode::LockSelect ? i : i + 1;
+        }
     }
-    // A locked profile that no longer exists behaves like "nobody".
+    // A locked profile that no longer exists behaves like the first entry.
     return 0;
 }
 
@@ -88,6 +115,8 @@ std::string ProfileCarouselScreen::tileName(int index) const {
         return p->nickname;
     if (tileKind(index) == CardKind::AddUser)
         return nxui::I18n::instance().tr("userselect.add_user", "Add user");
+    if (m_mode == Mode::LockSelect)
+        return nxui::I18n::instance().tr("lockselect.user", "User");
     return nxui::I18n::instance().tr("profilelock.none", "Ask each time");
 }
 
@@ -120,6 +149,8 @@ void ProfileCarouselScreen::show() {
     m_animatingOut = false;
     m_touchHitTile = -1;
     m_selected = lockedTileIndex();
+    if (m_mode == Mode::LockSelect && !m_profiles.empty())
+        m_selected = std::clamp(m_selected, 0, (int)m_profiles.size() - 1);
     m_rowScroll.setImmediate(rowScrollTarget(m_selected));
     m_focusPop.setImmediate(1.f);
     m_alpha.setImmediate(0.f);
@@ -129,9 +160,15 @@ void ProfileCarouselScreen::show() {
 
     if (m_accessibilityCb) {
         auto& i18n = nxui::I18n::instance();
-        m_accessibilityCb(i18n.tr("profilelock.title", "Default profile") + ". " +
-                          i18n.tr("profilelock.opened_hint",
-                                  "Left and right to browse. X sets the default profile."));
+        if (m_mode == Mode::LockSelect) {
+            m_accessibilityCb(i18n.tr("lockselect.title", "Who's unlocking?") + ". " +
+                              i18n.tr("lockselect.hint",
+                                      "Profiles with a lock require a code. Left and right to browse. A to continue."));
+        } else {
+            m_accessibilityCb(i18n.tr("profilelock.title", "Default profile") + ". " +
+                              i18n.tr("profilelock.opened_hint",
+                                      "Left and right to browse. X sets the default profile."));
+        }
     }
     announceSelection();
 }
@@ -145,6 +182,20 @@ void ProfileCarouselScreen::hide() {
     clearActions();
 }
 
+void ProfileCarouselScreen::hideInstantly() {
+    if (!m_active && !m_animatingOut)
+        return;
+    // A lock entry follows this close. Fading here would reveal HOME for the
+    // 0.18 s fade and keep it on screen while a boot-profile restart rebuilds
+    // the activity; closing now lets the Lock view own the next painted frame.
+    m_animatingOut = false;
+    m_alpha.setImmediate(0.f);
+    m_active = false;
+    setVisible(false);
+    clearActions();
+    if (m_closedCb) m_closedCb();
+}
+
 void ProfileCarouselScreen::setupActions() {
     clearActions();
     addDirectionAction(nxui::FocusDirection::LEFT, [this]() { moveHorizontal(-1); });
@@ -152,15 +203,19 @@ void ProfileCarouselScreen::setupActions() {
     addAction(static_cast<uint64_t>(nxui::Button::A), [this]() {
         if (isOpen()) activateSelected();
     });
-    addAction(static_cast<uint64_t>(nxui::Button::X), [this]() {
-        if (isOpen()) lockSelected();
-    });
-    addAction(static_cast<uint64_t>(nxui::Button::B), [this]() {
-        if (isOpen()) hide();
-    });
+    if (m_mode == Mode::DefaultProfile) {
+        addAction(static_cast<uint64_t>(nxui::Button::X), [this]() {
+            if (isOpen()) lockSelected();
+        });
+        addAction(static_cast<uint64_t>(nxui::Button::B), [this]() {
+            if (isOpen()) hide();
+        });
+    }
 }
 
 void ProfileCarouselScreen::selectTile(int index, bool announce) {
+    if (tileCount() <= 0)
+        return;
     index = std::clamp(index, 0, tileCount() - 1);
     if (index == m_selected)
         return;
@@ -180,6 +235,11 @@ void ProfileCarouselScreen::moveHorizontal(int direction) {
 }
 
 void ProfileCarouselScreen::activateSelected() {
+    if (m_mode == Mode::LockSelect) {
+        if (const HomeProfile* p = tileProfile(m_selected))
+            if (m_selectProfileCb) m_selectProfileCb(p->uid);
+        return;
+    }
     if (onAddUserTile()) {
         if (m_addUserCb) m_addUserCb();
         return;
@@ -189,7 +249,7 @@ void ProfileCarouselScreen::activateSelected() {
 }
 
 void ProfileCarouselScreen::lockSelected() {
-    if (onAddUserTile() || isLockedTile(m_selected))
+    if (m_mode == Mode::LockSelect || onAddUserTile() || isLockedTile(m_selected))
         return;
     std::optional<AccountUid> uid;
     if (const HomeProfile* p = tileProfile(m_selected))
@@ -210,6 +270,16 @@ void ProfileCarouselScreen::announceSelection() {
     if (!m_accessibilityCb)
         return;
     auto& i18n = nxui::I18n::instance();
+    if (m_mode == Mode::LockSelect) {
+        if (const HomeProfile* p = tileProfile(m_selected)) {
+            m_accessibilityCb(p->nickname + ", " +
+                              (tileNeedsCode(m_selected)
+                                   ? i18n.tr("lockselect.code_required", "Code required")
+                                   : i18n.tr("lockselect.no_code", "No code")) + ". " +
+                              i18n.tr("lockselect.select_hint", "A to continue."));
+        }
+        return;
+    }
     if (onAddUserTile()) {
         m_accessibilityCb(i18n.tr("userselect.add_user", "Add user") + ". " +
                           i18n.tr("userselect.add_user_hint", "A to create a new user."));
@@ -279,6 +349,24 @@ void ProfileCarouselScreen::render(nxui::Renderer& ren) {
                          m_theme->background.withAlpha(0.97f * alpha),
                          m_theme->backgroundAccent.withAlpha(0.98f * alpha));
 
+    if (m_mode == Mode::LockSelect && m_font) {
+        auto& i18n = nxui::I18n::instance();
+        nxui::Font* small = m_smallFont ? m_smallFont : m_font;
+        ren.drawText(i18n.tr("lockselect.title", "Who's unlocking?"),
+                     {kRowMarginX, 94.f}, m_font,
+                     m_theme->textPrimary.withAlpha(alpha), 1.45f);
+        ren.drawText(i18n.tr("lockselect.hint",
+                             "Choose your profile. A lock badge means that user needs a code."),
+                     {kRowMarginX, 150.f}, small,
+                     m_theme->textSecondary.withAlpha(0.88f * alpha), 0.90f);
+        if (m_profiles.empty()) {
+            ren.drawText(i18n.tr("lockselect.loading", "Loading users..."),
+                         {kRowMarginX, kRowY + 52.f}, m_font,
+                         m_theme->textPrimary.withAlpha(alpha), 1.0f);
+            return;
+        }
+    }
+
     ren.pushClipRect({0.f, kRowY - 40.f, kScreenW, kTileSize + 80.f});
     for (int i = 0; i < tileCount(); ++i)
         if (i != m_selected)
@@ -332,8 +420,10 @@ void ProfileCarouselScreen::drawTile(nxui::Renderer& ren, int index, float alpha
         ren.drawRoundedRectOutline(tile.expanded(4.f), m_theme->cursorNormal.withAlpha(alpha),
                                    radius + 4.f, 7.f);
     }
-    if (!addUser && isLockedTile(index))
+    if (m_mode == Mode::DefaultProfile && !addUser && isLockedTile(index))
         drawCheckBadge(ren, tile, alpha);
+    else if (m_mode == Mode::LockSelect && !addUser && tileNeedsCode(index))
+        drawLockBadge(ren, tile, alpha);
 }
 
 void ProfileCarouselScreen::drawCheckBadge(nxui::Renderer& ren, const nxui::Rect& tile, float alpha) {
@@ -345,13 +435,47 @@ void ProfileCarouselScreen::drawCheckBadge(nxui::Renderer& ren, const nxui::Rect
                                nxui::Color::white().withAlpha(alpha));
 }
 
+void ProfileCarouselScreen::drawLockBadge(nxui::Renderer& ren, const nxui::Rect& tile, float alpha) {
+    const float radius = 18.f;
+    const nxui::Vec2 center{tile.x + tile.width - 6.f, tile.y + 6.f};
+    ren.drawCircle(center, radius + 3.f, m_theme->panelBase.withAlpha(alpha), 32);
+    ren.drawCircle(center, radius, m_theme->cursorNormal.withAlpha(alpha), 32);
+    // Padlock: shackle behind, body in front, keyhole punched in the body.
+    const nxui::Color white = nxui::Color::white().withAlpha(alpha);
+    ren.drawRoundedRectOutline({center.x - 4.5f, center.y - 9.f, 9.f, 10.f},
+                               white, 4.5f, 1.8f);
+    ren.drawRoundedRect({center.x - 6.f, center.y - 2.5f, 12.f, 9.5f}, white, 2.4f);
+    ren.drawCircle({center.x, center.y + 1.3f}, 1.4f,
+                   m_theme->cursorNormal.withAlpha(alpha), 12);
+}
+
+nxui::Vec2 ProfileCarouselScreen::cachedTextSize(nxui::Font* font,
+                                                const std::string& text) {
+    if (!font)
+        return {0.f, 0.f};
+    auto& cache = m_measureCache[font];
+    const auto it = cache.find(text);
+    if (it != cache.end())
+        return it->second;
+
+    if (m_measureCacheEntries >= 256) {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+    }
+    auto& fresh = m_measureCache[font];
+    const auto inserted = fresh.emplace(text, font->measure(text));
+    if (inserted.second)
+        ++m_measureCacheEntries;
+    return inserted.first->second;
+}
+
 void ProfileCarouselScreen::drawBubble(nxui::Renderer& ren, float alpha) {
     // Wii U style name tag above the highlighted tile.
     const std::string text = tileName(m_selected);
 
     const nxui::Rect tile = tileRect(m_selected).expanded(kSelectedGrow * m_focusPop.value());
     const float textScale = 1.f;
-    const nxui::Vec2 size = m_font->measure(text);
+    const nxui::Vec2 size = cachedTextSize(m_font, text);
     const float padX = 24.f;
     const float padY = 12.f;
     const float w = size.x * textScale + padX * 2.f;
@@ -389,14 +513,44 @@ void ProfileCarouselScreen::drawDetails(nxui::Renderer& ren, float alpha) {
     ren.drawText(profile->nickname, {kDetailColumnX, nameY}, m_font,
                  m_theme->textPrimary.withAlpha(alpha), nameScale);
 
+    if (m_mode == Mode::LockSelect) {
+        nxui::Font* small = m_smallFont ? m_smallFont : m_font;
+        const bool needsCode = tileNeedsCode(m_selected);
+        const std::string tag = needsCode
+            ? nxui::I18n::instance().tr("lockselect.code_required", "Code required")
+            : nxui::I18n::instance().tr("lockselect.no_code", "No code");
+        const nxui::Vec2 tagSize = cachedTextSize(small, tag);
+        const float padX = 16.f;
+        const float padY = 6.f;
+        const nxui::Rect pill{
+            kDetailColumnX,
+            nameY + cachedTextSize(m_font, profile->nickname).y * nameScale + 18.f,
+            tagSize.x + padX * 2.f, tagSize.y + padY * 2.f};
+        if (needsCode) {
+            ren.drawRoundedRect(pill, m_theme->cursorNormal.withAlpha(alpha),
+                                pill.height * 0.5f);
+            ren.drawText(tag, {pill.x + padX, pill.y + padY}, small,
+                         nxui::Color::white().withAlpha(alpha));
+        } else {
+            ren.drawRoundedRect(pill, m_theme->panelBase.withAlpha(0.72f * alpha),
+                                pill.height * 0.5f);
+            ren.drawRoundedRectOutline(pill,
+                                       m_theme->panelBorder.withAlpha(0.35f * alpha),
+                                       pill.height * 0.5f, 1.2f);
+            ren.drawText(tag, {pill.x + padX, pill.y + padY}, small,
+                         m_theme->textSecondary.withAlpha(alpha));
+        }
+        return;
+    }
+
     if (!isLockedTile(m_selected))
         return;
     nxui::Font* small = m_smallFont ? m_smallFont : m_font;
     const std::string tag = nxui::I18n::instance().tr("profilelock.default_badge", "Default");
-    const nxui::Vec2 tagSize = small->measure(tag);
+    const nxui::Vec2 tagSize = cachedTextSize(small, tag);
     const float padX = 16.f;
     const float padY = 6.f;
-    const nxui::Rect pill{kDetailColumnX, nameY + m_font->measure(profile->nickname).y * nameScale + 18.f,
+    const nxui::Rect pill{kDetailColumnX, nameY + cachedTextSize(m_font, profile->nickname).y * nameScale + 18.f,
                           tagSize.x + padX * 2.f, tagSize.y + padY * 2.f};
     ren.drawRoundedRect(pill, m_theme->cursorNormal.withAlpha(alpha), pill.height * 0.5f);
     ren.drawText(tag, {pill.x + padX, pill.y + padY}, small, nxui::Color::white().withAlpha(alpha));

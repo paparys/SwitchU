@@ -75,6 +75,9 @@ std::uint64_t suspendedTitleId();
 SessionSnapshot snapshot();
 Event* stateChangedEvent();
 Result launch(std::uint64_t titleId, AccountUid uid);
+// Runs the metadata/save-data provisioning that launch() needs ahead of time,
+// so the fs work overlaps the menu's teardown instead of delaying the launch.
+Result prefetchLaunchData(std::uint64_t titleId, AccountUid uid);
 Result resume();
 Result terminate();
 Result areLibraryAppletsLeft(bool* out);

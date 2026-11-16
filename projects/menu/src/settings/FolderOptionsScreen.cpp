@@ -5,6 +5,7 @@
 #include <nxui/core/I18n.hpp>
 #include <nxui/core/Renderer.hpp>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -236,7 +237,15 @@ void FolderOptionsScreen::drawOverlayHeader(nxui::Renderer& ren,
 
     const float textX = shell.right() + 24.f;
     const float textW = std::max(0.f, panel.right() - 30.f - textX);
-    ren.drawText(ellipsize(m_font, m_folder.name, textW),
+    if (m_cachedHeaderNameFont != m_font
+        || std::abs(m_cachedHeaderNameWidth - textW) > 0.25f
+        || m_cachedHeaderNameSource != m_folder.name) {
+        m_cachedHeaderNameFont = m_font;
+        m_cachedHeaderNameWidth = textW;
+        m_cachedHeaderNameSource = m_folder.name;
+        m_cachedHeaderName = ellipsize(m_font, m_folder.name, textW);
+    }
+    ren.drawText(m_cachedHeaderName,
                  {textX, panel.y + 38.f}, m_font,
                  m_theme->textPrimary.withAlpha(opacity), 1.f);
     const std::string count = std::to_string(m_folder.itemCount) + " " +

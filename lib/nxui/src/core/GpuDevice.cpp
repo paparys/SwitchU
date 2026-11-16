@@ -72,24 +72,26 @@ bool GpuDevice::initialize() {
 
     m_stagingPool.create(m_dev, 256 * 1024, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
 
-    createFramebuffers();
-    createDepthStencil();
+    if (!createFramebuffers()) {
+        logGpu("[GpuDevice] framebuffer allocation failed");
+        return false;
+    }
     createOffscreenTargets();
 
-    std::array<DkImage const*, NUM_FB> fbArray;
-    for (int i = 0; i < NUM_FB; ++i) fbArray[i] = &m_fbImages[i];
-    m_swapchain = dk::SwapchainMaker{m_dev, nwindowGetDefault(), fbArray}.create();
-
+    if (!rebuildSwapchain()) {
+        logGpu("[GpuDevice] swapchain creation failed");
+        return false;
+    }
     return true;
 }
 
-void GpuDevice::createFramebuffers() {
+bool GpuDevice::createFramebuffers() {
     dk::ImageLayout fbLayout;
     dk::ImageLayoutMaker{m_dev}
         .setFlags(DkImageFlags_UsageRender | DkImageFlags_UsagePresent |
                   DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression)
         .setFormat(DkImageFormat_RGBA8_Unorm)
-        .setDimensions(FB_WIDTH, FB_HEIGHT)
+        .setDimensions((uint32_t)m_fbWidth, (uint32_t)m_fbHeight)
         .initialize(fbLayout);
 
     uint64_t fbSize  = fbLayout.getSize();
@@ -100,6 +102,10 @@ void GpuDevice::createFramebuffers() {
         totalFb += fbSize;
     }
     m_fbPool.create(m_dev, totalFb, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
+    if (!m_fbPool.block) {
+        logGpu("[GpuDevice] framebuffer pool allocation failed (%u bytes)", totalFb);
+        return false;
+    }
 
     uint32_t off = 0;
     for (int i = 0; i < NUM_FB; ++i) {
@@ -107,26 +113,13 @@ void GpuDevice::createFramebuffers() {
         m_fbImages[i].initialize(fbLayout, m_fbPool.block, off);
         off += fbSize;
     }
-}
-
-void GpuDevice::createDepthStencil() {
-    dk::ImageLayout dsLayout;
-    dk::ImageLayoutMaker{m_dev}
-        .setFlags(DkImageFlags_UsageRender | DkImageFlags_HwCompression)
-        .setFormat(DkImageFormat_S8)
-        .setDimensions(FB_WIDTH, FB_HEIGHT)
-        .initialize(dsLayout);
-
-    uint32_t dsSize = dsLayout.getSize();
-    dsSize = (dsSize + kGpuAlign - 1) & ~(kGpuAlign - 1);
-    m_dsPool.create(m_dev, dsSize, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
-    m_dsImage.initialize(dsLayout, m_dsPool.block, 0);
+    return true;
 }
 
 void GpuDevice::createOffscreenTargets() {
     // Half-resolution offscreen targets for blur (640x360)
-    constexpr uint32_t offW = FB_WIDTH / 2;
-    constexpr uint32_t offH = FB_HEIGHT / 2;
+    constexpr uint32_t offW = OFFSCREEN_WIDTH;
+    constexpr uint32_t offH = OFFSCREEN_HEIGHT;
 
     dk::ImageLayout offLayout;
     dk::ImageLayoutMaker{m_dev}
@@ -153,12 +146,59 @@ void GpuDevice::createOffscreenTargets() {
     m_offscreenReady = true;
 }
 
+bool GpuDevice::rebuildSwapchain() {
+    std::array<DkImage const*, NUM_FB> fbArray;
+    for (int i = 0; i < NUM_FB; ++i)
+        fbArray[i] = &m_fbImages[i];
+    // deko3d applies the NWindow dimensions from the images while creating
+    // the chain; the old chain has already released its registrations here.
+    m_swapchain = dk::SwapchainMaker{m_dev, nwindowGetDefault(), fbArray}.create();
+    if (!m_swapchain) {
+        logGpu("[GpuDevice] swapchain creation failed for %dx%d", m_fbWidth, m_fbHeight);
+        return false;
+    }
+    u32 winW = 0, winH = 0;
+    if (R_SUCCEEDED(nwindowGetDimensions(nwindowGetDefault(), &winW, &winH))) {
+        logGpu("[GpuDevice] swapchain %dx%d (window %ux%u)",
+               m_fbWidth, m_fbHeight, winW, winH);
+    }
+    return true;
+}
+
+void GpuDevice::retireImageMemory(dk::UniqueMemBlock block, uint32_t size) {
+    if (!block || size == 0)
+        return;
+    // Two full swapchain cycles of margin, so no queued command list and no
+    // descriptor still waiting on its delayed slot release can reach it.
+    m_retiredImages.emplace_back();
+    RetiredImage& retired = m_retiredImages.back();
+    retired.block = static_cast<dk::MemBlock&&>(block);
+    retired.size = size;
+    retired.framesLeft = 6;
+}
+
 int GpuDevice::beginFrame() {
     m_slot = m_queue.acquireImage(m_swapchain);
 
     // Wait for the GPU to finish the PREVIOUS frame that used this slot's
     // command memory / vertex buffer before we overwrite them.
     m_frameFences[m_slot].wait();
+
+    // Release image memory whose texture was destroyed while the GPU could
+    // still reference it. This fence has just signalled, so freeing here cannot
+    // stall a frame in flight.
+    for (std::size_t i = 0; i < m_retiredImages.size();) {
+        if (--m_retiredImages[i].framesLeft <= 0) {
+            const uint32_t size = m_retiredImages[i].size;
+            m_retiredImages[i].block = nullptr;
+            freeImageMemory(size);
+            if (i + 1 < m_retiredImages.size())
+                m_retiredImages[i] = std::move(m_retiredImages.back());
+            m_retiredImages.pop_back();
+        } else {
+            ++i;
+        }
+    }
 
     // Reset command buffer and re-feed its memory (clear invalidates memory
     // tracking — following the deko3d sample framework pattern).
@@ -186,11 +226,11 @@ bool GpuDevice::downloadFramebufferRgba(std::vector<uint8_t>& outRgba,
     waitForTextureUploads();
     waitIdle();
 
-    const int fullW = FB_WIDTH;
-    const int fullH = FB_HEIGHT;
+    const int fullW = m_fbWidth;
+    const int fullH = m_fbHeight;
     const bool useHalf = halfRes && m_offscreenReady;
-    outW = useHalf ? fullW / 2 : fullW;
-    outH = useHalf ? fullH / 2 : fullH;
+    outW = useHalf ? OFFSCREEN_WIDTH : fullW;
+    outH = useHalf ? OFFSCREEN_HEIGHT : fullH;
     if (outW <= 0 || outH <= 0)
         return false;
 
@@ -288,11 +328,7 @@ void GpuDevice::recreateSwapchain() {
     m_queue.waitIdle();
 
     m_swapchain = {};
-
-    std::array<DkImage const*, NUM_FB> fbArray;
-    for (int i = 0; i < NUM_FB; ++i)
-        fbArray[i] = &m_fbImages[i];
-    m_swapchain = dk::SwapchainMaker{m_dev, nwindowGetDefault(), fbArray}.create();
+    rebuildSwapchain();
 
     // Immediately present the pre-sleep framebuffer so the vi layer never
     // flashes black/garbage during the wake transition. The framebuffers still
@@ -305,7 +341,7 @@ void GpuDevice::recreateSwapchain() {
 
     // Force the next beginFrame() to re-acquire a slot from the fresh swapchain.
     m_slot = -1;
-    logGpu("[GpuDevice] swapchain re-created after sleep (valid=%d)", (bool)m_swapchain);
+    logGpu("[GpuDevice] swapchain re-created (valid=%d)", (bool)m_swapchain);
 #endif
 }
 
@@ -328,10 +364,9 @@ void GpuDevice::remountDisplayForCaptureMitm() {
         ::__nx_vi_layer_id = newLayer;
     ::__nx_win_init();
 
-    std::array<DkImage const*, NUM_FB> fbArray;
-    for (int i = 0; i < NUM_FB; ++i)
-        fbArray[i] = &m_fbImages[i];
-    m_swapchain = dk::SwapchainMaker{m_dev, nwindowGetDefault(), fbArray}.create();
+    // The remounted window starts at its default size; rebuild the chain so
+    // the NWindow dimensions are applied to the new managed layer.
+    rebuildSwapchain();
 
     if (m_swapchain) {
         const int slot = m_queue.acquireImage(m_swapchain);
@@ -362,7 +397,7 @@ dk::UniqueMemBlock GpuDevice::allocImageMemory(uint32_t size) {
         total > used) {
         // Keep a process free-memory cushion so concurrent sysmodules
         // (Frame Tap, Ultrahand, etc.) do not push the menu into soft-locks.
-        // Default 2 MiB; Frame Tap viewer light path raises this temporarily.
+        // Default 2 MiB; the Frame Tap headroom handshake raises this temporarily.
         const u64 headroom = m_allocationHeadroom;
         const u64 freeMemory = total - used;
         if (freeMemory < static_cast<u64>(size) + headroom) {
@@ -582,6 +617,9 @@ void GpuDevice::endTextureUploadBatch() {
 }
 
 void GpuDevice::shutdown() {
+    // Members are released before the device goes away: a UniqueMemBlock must
+    // never outlive the deko3d device that allocated it.
+    m_retiredImages.clear();
     if (m_uploadBatchActive)
         endTextureUploadBatch();
     if (m_queue) m_queue.waitIdle();
@@ -594,7 +632,6 @@ void GpuDevice::shutdown() {
     m_imageMemUsed = 0;
     m_poolMemUsed  = 0;
     m_fbPool      = {};
-    m_dsPool      = {};
     m_offPool     = {};
     m_offscreenReady = false;
     for (int i = 0; i < NUM_FB; ++i)

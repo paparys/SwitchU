@@ -1,4 +1,6 @@
 #include "OverlayDialog.hpp"
+#include <cmath>
+#include "../ui/DrawChrome.hpp"
 #include <nxui/core/I18n.hpp>
 #include <nxui/core/Renderer.hpp>
 #include <algorithm>
@@ -86,13 +88,13 @@ void OverlayDialog::buildWidgetTree() {
     }
 
     int  btnCount = std::max(1, (int)m_buttons.size());
-    constexpr float kLabelScale = 0.94f;
+    constexpr float kLabelScale = switchu::ui::chrome::kTypeTitle;
     constexpr float kLabelMinScale = 0.85f;
     float rowBtnW = (contentW - kButtonGap * (btnCount - 1)) / (float)btnCount;
     bool stackButtons = false;
     if (bodyFont && btnCount > 1) {
         for (int i = 0; i < btnCount; ++i) {
-            const float textW = bodyFont->measure(m_buttons[i].label).x;
+            const float textW = cachedTextSize(bodyFont, m_buttons[i].label).x;
             if (textW <= 0.f)
                 continue;
             const float needed = (rowBtnW - 16.f) / textW;
@@ -118,7 +120,6 @@ void OverlayDialog::buildWidgetTree() {
     setPadding(kPanelPadY, kPanelPadX, kPanelPadY, kPanelPadX);
     setAlignItems(nxui::AlignItems::STRETCH);
     setBackingEnabled(false);
-    setLiquidGlassEnabled(false);
     setBlurEnabled(false);
     setWireframeEnabled(false);
     setPanelOpacity(0.94f);
@@ -176,9 +177,10 @@ void OverlayDialog::buildWidgetTree() {
         lbl->setFont(bodyFont ? bodyFont : titleFont);
         lbl->setTextColor(textPrimary);
         float labelScale = kLabelScale;
-        if (!stackButtons && bodyFont && bodyFont->measure(m_buttons[i].label).x > 0.f)
-            labelScale = std::clamp((btnW - 16.f) /
-                                    bodyFont->measure(m_buttons[i].label).x,
+        const float labelWidth = bodyFont
+            ? cachedTextSize(bodyFont, m_buttons[i].label).x : 0.f;
+        if (!stackButtons && labelWidth > 0.f)
+            labelScale = std::clamp((btnW - 16.f) / labelWidth,
                                     kLabelMinScale, kLabelScale);
         lbl->setScale(labelScale);
         lbl->setHAlign(nxui::Label::HAlign::Center);
@@ -254,8 +256,9 @@ void OverlayDialog::buildUserSelect() {
     m_buttonRow.reset();
 
     int count = std::max(1, (int)m_users.size());
-    float titleH = m_font ? m_font->measure("A").y * 1.1f : 28.f;
-    float nameH = m_smallFont ? m_smallFont->measure("Ag").y : (m_font ? m_font->measure("Ag").y : 20.f);
+    float titleH = userTitleHeight();
+    float nameH = m_smallFont ? cachedTextSize(m_smallFont, "Ag").y
+        : (m_font ? cachedTextSize(m_font, "Ag").y : 20.f);
     float totalUsersW = count * kUserAvatarSize + (count - 1) * kUserAvatarGap;
 
     m_panelW = totalUsersW + kPanelPadX * 2.f;
@@ -267,7 +270,6 @@ void OverlayDialog::buildUserSelect() {
     setPadding(0.f);
     setAlignItems(nxui::AlignItems::STRETCH);
     setBackingEnabled(false);
-    setLiquidGlassEnabled(false);
     setBlurEnabled(false);
     setWireframeEnabled(false);
     setPanelOpacity(0.94f);
@@ -296,7 +298,6 @@ void OverlayDialog::buildDateTimeEditor() {
     setCornerRadius(kPanelRadius);
     setPadding(0.f);
     setBackingEnabled(false);
-    setLiquidGlassEnabled(false);
     setBlurEnabled(false);
     setWireframeEnabled(false);
     setPanelOpacity(0.94f);
@@ -595,7 +596,6 @@ void OverlayDialog::buildTimezonePicker() {
     setCornerRadius(kPanelRadius);
     setPadding(0.f);
     setBackingEnabled(false);
-    setLiquidGlassEnabled(false);
     setBlurEnabled(false);
     setWireframeEnabled(false);
     setPanelOpacity(0.94f);
@@ -1145,7 +1145,9 @@ void OverlayDialog::syncCursor() {
 
     if (m_selected >= 0 && m_selected < (int)m_btnWidgets.size()) {
         nxui::Rect br = scaledRect(m_btnWidgets[m_selected]->rect(), m_panelScale.value());
-        m_cursor.moveTo(br.expanded(3.f), kButtonRadius, 0.16f);
+        m_cursor.moveTo(br.expanded(switchu::ui::chrome::kFocusExpansion),
+                        kButtonRadius + switchu::ui::chrome::kFocusExpansion,
+                        switchu::ui::chrome::kDurBase);
     }
     if (m_theme)
         m_cursor.setColor(m_theme->cursorNormal);
@@ -1258,7 +1260,7 @@ void OverlayDialog::renderTimezoneContent(nxui::Renderer& ren, float alpha) {
     if (bodyFont) {
         const std::string searchLabel = i18n.tr(
             "settings.system.timezone_filter_option", "Search");
-        const nxui::Vec2 tsz = bodyFont->measure(searchLabel);
+        const nxui::Vec2 tsz = cachedTextSize(bodyFont, searchLabel);
         ren.drawText(
             searchLabel,
             {search.x + (search.width - tsz.x * 0.84f * sc) * 0.5f,
@@ -1293,13 +1295,10 @@ void OverlayDialog::renderTimezoneContent(nxui::Renderer& ren, float alpha) {
                 row, accent.withAlpha(0.45f * contentAlpha), 12.f * sc, 1.2f);
         }
         if (bodyFont) {
-            std::string text = m_timezoneOptions[(size_t)idx];
             const float maxW = std::max(0.f, row.width - 20.f * sc);
-            while (!text.empty() && bodyFont->measure(text).x * 0.82f * sc > maxW)
-                text.pop_back();
-            if (text.size() < m_timezoneOptions[(size_t)idx].size() && text.size() > 3)
-                text = text.substr(0, text.size() - 3) + "...";
-            const nxui::Vec2 tsz = bodyFont->measure(text);
+            const std::string text = fittedTimezoneLabel(
+                bodyFont, m_timezoneOptions[(size_t)idx], maxW, 0.82f * sc);
+            const nxui::Vec2 tsz = cachedTextSize(bodyFont, text);
             ren.drawText(
                 text,
                 {row.x + 12.f * sc,
@@ -1392,7 +1391,7 @@ nxui::Rect OverlayDialog::userAvatarRect(int index) const {
 
     nxui::Rect panel = scaledRect(panelRect(), m_panelScale.value());
     float sc = m_panelScale.value();
-    float titleH = m_font ? m_font->measure("A").y * 1.1f : 28.f;
+    float titleH = userTitleHeight();
     float totalUsersW = n * kUserAvatarSize + (n - 1) * kUserAvatarGap;
     float startX = panel.x + (panel.width - totalUsersW * sc) * 0.5f;
     float startY = panel.y + (kPanelPadY + titleH + kUserTitleGap) * sc;
@@ -1418,6 +1417,72 @@ nxui::Rect OverlayDialog::dateTimeFieldRect(int index) const {
     return {x, panel.y + 112.f * sc, widths[index] * sc, 72.f * sc};
 }
 
+float OverlayDialog::userTitleHeight() const {
+    if (m_cachedUserTitleFont != m_font || m_cachedUserTitleHeight < 0.f) {
+        m_cachedUserTitleFont = m_font;
+        m_cachedUserTitleHeight = m_font ? m_font->measure("A").y * 1.1f : 28.f;
+    }
+    return m_cachedUserTitleHeight;
+}
+
+nxui::Vec2 OverlayDialog::cachedTextSize(nxui::Font* font, const std::string& text) {
+    if (!font)
+        return {0.f, 0.f};
+    auto& cache = m_measureCache[font];
+    const auto it = cache.find(text);
+    if (it != cache.end())
+        return it->second;
+
+    if (m_measureCacheEntries >= 1024) {
+        m_measureCache.clear();
+        m_measureCacheEntries = 0;
+    }
+    auto& fresh = m_measureCache[font];
+    const auto inserted = fresh.emplace(text, font->measure(text));
+    if (inserted.second)
+        ++m_measureCacheEntries;
+    return inserted.first->second;
+}
+
+std::string OverlayDialog::fittedTimezoneLabel(nxui::Font* font, const std::string& text,
+                                                float maxWidth, float scale) {
+    if (!font || text.empty())
+        return text;
+    if (font != m_timezoneFitFont) {
+        m_timezoneFitFont = font;
+        m_timezoneFitCache.clear();
+        m_timezoneFitEntries = 0;
+    }
+    const int widthKey = (int)std::lround(maxWidth * 4.f);
+    const int scaleKey = (int)std::lround(scale * 1000.f);
+    const auto it = m_timezoneFitCache.find(text);
+    if (it != m_timezoneFitCache.end()) {
+        for (const auto& entry : it->second) {
+            if (entry.widthKey == widthKey && entry.scaleKey == scaleKey)
+                return entry.text;
+        }
+    }
+
+    // Match the previous truncation exactly: drop characters until the raw
+    // string fits, then replace the final three with an ellipsis.
+    std::string shown = text;
+    while (!shown.empty() && cachedTextSize(font, shown).x * scale > maxWidth)
+        shown.pop_back();
+    if (shown.size() < text.size() && shown.size() > 3)
+        shown = shown.substr(0, shown.size() - 3) + "...";
+
+    if (m_timezoneFitEntries >= 512) {
+        m_timezoneFitCache.clear();
+        m_timezoneFitEntries = 0;
+    }
+    auto& variants = m_timezoneFitCache[text];
+    if (variants.size() >= 4)
+        variants.clear();
+    variants.push_back({widthKey, scaleKey, shown});
+    ++m_timezoneFitEntries;
+    return shown;
+}
+
 void OverlayDialog::renderDateTimeContent(nxui::Renderer& ren, float alpha) {
     if (alpha <= 0.01f) return;
     const nxui::Rect panel = scaledRect(panelRect(), m_panelScale.value());
@@ -1431,14 +1496,14 @@ void OverlayDialog::renderDateTimeContent(nxui::Renderer& ren, float alpha) {
     auto& i18n = nxui::I18n::instance();
 
     if (m_font) {
-        const nxui::Vec2 titleSize = m_font->measure(m_title);
+        const nxui::Vec2 titleSize = cachedTextSize(m_font, m_title);
         ren.drawText(m_title,
             {panel.x + (panel.width - titleSize.x * 0.92f * sc) * 0.5f,
              panel.y + 28.f * sc},
             m_font, primary.withAlpha(contentAlpha), 0.92f * sc);
     }
     if (bodyFont) {
-        const nxui::Vec2 hintSize = bodyFont->measure(m_message);
+        const nxui::Vec2 hintSize = cachedTextSize(bodyFont, m_message);
         const float hintScale = std::min(0.72f * sc,
             hintSize.x > 0.f ? (panel.width - 80.f * sc) / hintSize.x : 0.72f * sc);
         ren.drawText(m_message,
@@ -1473,7 +1538,7 @@ void OverlayDialog::renderDateTimeContent(nxui::Renderer& ren, float alpha) {
                             primary.withAlpha(selected ? 0.14f : 0.06f),
                             17.f * sc, contentAlpha);
         if (bodyFont) {
-            const nxui::Vec2 labelSize = bodyFont->measure(labels[i]);
+            const nxui::Vec2 labelSize = cachedTextSize(bodyFont, labels[i]);
             const float labelScale = 0.60f * sc;
             ren.drawText(labels[i],
                 {field.x + (field.width - labelSize.x * labelScale) * 0.5f,
@@ -1481,7 +1546,7 @@ void OverlayDialog::renderDateTimeContent(nxui::Renderer& ren, float alpha) {
                 secondary.withAlpha(contentAlpha), labelScale);
         }
         if (m_font) {
-            const nxui::Vec2 valueSize = m_font->measure(values[i]);
+            const nxui::Vec2 valueSize = cachedTextSize(m_font, values[i]);
             const float valueScale = 1.05f * sc;
             ren.drawText(values[i],
                 {field.x + (field.width - valueSize.x * valueScale) * 0.5f,
@@ -1505,7 +1570,7 @@ void OverlayDialog::renderDateTimeContent(nxui::Renderer& ren, float alpha) {
     if (bodyFont) {
         const std::string footer = i18n.tr(
             "settings.system.manual_time_footer", "A Confirm   ·   B Cancel");
-        const nxui::Vec2 footerSize = bodyFont->measure(footer);
+        const nxui::Vec2 footerSize = cachedTextSize(bodyFont, footer);
         const float footerScale = 0.68f * sc;
         ren.drawText(footer,
             {panel.x + (panel.width - footerSize.x * footerScale) * 0.5f,
@@ -1527,7 +1592,7 @@ void OverlayDialog::renderUserContent(nxui::Renderer& ren, float alpha) {
     nxui::Color textSecondary = m_theme ? m_theme->textSecondary : nxui::Color(0.82f, 0.82f, 0.9f, 1.f);
 
     if (m_font && !m_title.empty()) {
-        nxui::Vec2 titleSz = m_font->measure(m_title);
+        nxui::Vec2 titleSz = cachedTextSize(m_font, m_title);
         float tx = panel.x + (panel.width - titleSz.x * sc) * 0.5f;
         float ty = panel.y + kPanelPadY * sc;
         ren.drawText(m_title, {tx, ty}, m_font, textPrimary.withAlpha(contentAlpha), sc);
@@ -1568,7 +1633,7 @@ void OverlayDialog::renderUserContent(nxui::Renderer& ren, float alpha) {
 
         if (nameFont && !m_users[(size_t)i].nickname.empty()) {
             float nameScale = 0.85f * sc;
-            nxui::Vec2 nameSz = nameFont->measure(m_users[(size_t)i].nickname);
+            nxui::Vec2 nameSz = cachedTextSize(nameFont, m_users[(size_t)i].nickname);
             float maxW = avatar.width;
             float tx = avatar.x + (maxW - std::min(nameSz.x * nameScale, maxW)) * 0.5f;
             float ty = avatar.bottom() + 8.f * sc;
@@ -1622,15 +1687,14 @@ void OverlayDialog::renderGlassPanel(nxui::Renderer& ren,
         return;
 
     const nxui::Color panelBase = theme ? theme->panelBase : base;
-    ren.drawRoundedRect({panel.x, panel.y + 7.f, panel.width, panel.height},
-                        nxui::Color(0.f, 0.f, 0.f, 0.22f * alpha), radius);
-    ren.drawRoundedRect(panel, panelBase.withAlpha(0.98f * alpha), radius);
+    switchu::ui::chrome::drawPanelShadow(ren, panel, radius, alpha);
+    ren.drawRoundedRect(panel, panelBase.withAlpha(switchu::ui::chrome::kModalAlpha * alpha), radius);
     ren.drawRoundedRectOutline(panel.shrunk(1.f),
                                highlight.withAlpha(0.24f * alpha),
                                std::max(0.f, radius - 1.f), 1.f);
     ren.drawRoundedRectOutline(panel,
-                               border.withAlpha(0.70f * alpha),
-                               radius, 1.5f);
+                               border.withAlpha(switchu::ui::chrome::kModalRim * alpha),
+                               radius, 1.f);
 }
 
 void OverlayDialog::render(nxui::Renderer& ren) {

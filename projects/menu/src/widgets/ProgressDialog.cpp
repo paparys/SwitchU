@@ -1,4 +1,6 @@
 #include "ProgressDialog.hpp"
+#include "../ui/ChromeTokens.hpp"
+#include "../ui/DrawChrome.hpp"
 #include <nxui/core/I18n.hpp>
 #include <nxui/core/Input.hpp>
 #include <nxui/core/Renderer.hpp>
@@ -38,9 +40,6 @@ ProgressDialog::ProgressDialog() {
     setVisible(false);
     setFocusable(true);
     setCornerRadius(kPanelRadius);
-    setLiquidGlassEnabled(false);
-    setForceLiquidGlass(false);
-    setLiquidGlassShaderEnabled(false);
     setBlurEnabled(false);
     setPanelOpacity(0.90f);
     setFrameworkTouchEnabled(false);
@@ -156,9 +155,10 @@ void ProgressDialog::render(nxui::Renderer& ren) {
     ren.drawRect({0.f, 0.f, 1280.f, 720.f}, nxui::Color(0.f, 0.f, 0.f, 0.50f * alpha));
 
     nxui::Rect panel = scaledRect(panelRect(), m_panelScale.value());
-    nxui::Color panelFill = m_theme->panelBase.withAlpha((m_theme->mode == nxui::ThemeMode::Dark ? 0.95f : 0.96f) * alpha);
+    switchu::ui::chrome::drawPanelShadow(ren, panel, kPanelRadius, alpha);
+    nxui::Color panelFill = m_theme->panelBase.withAlpha(switchu::ui::chrome::kModalAlpha * alpha);
     ren.drawRoundedRect(panel, panelFill, kPanelRadius);
-    ren.drawRoundedRectOutline(panel, m_theme->panelBorder.withAlpha(0.34f * alpha), kPanelRadius, 1.2f);
+    ren.drawRoundedRectOutline(panel, m_theme->panelBorder.withAlpha(switchu::ui::chrome::kModalRim * alpha), kPanelRadius, 1.2f);
     ren.drawRoundedRectOutline(panel.shrunk(1.5f), m_theme->panelHighlight.withAlpha(0.08f * alpha), kPanelRadius - 1.5f, 1.f);
 
     float pad = 38.f;
@@ -168,9 +168,9 @@ void ProgressDialog::render(nxui::Renderer& ren) {
                      m_theme->textPrimary.withAlpha(alpha), 1.f);
     }
     if (m_smallFont) {
-        ren.drawText(ellipsize(m_smallFont, m_message, panel.width - pad * 2.f, 0.80f),
+        ren.drawText(ellipsize(m_smallFont, m_message, panel.width - pad * 2.f, switchu::ui::chrome::kTypeRow),
                      {panel.x + pad, panel.y + 86.f}, m_smallFont,
-                     m_theme->textSecondary.withAlpha(0.94f * alpha), 0.80f);
+                     m_theme->textSecondary.withAlpha(0.94f * alpha), switchu::ui::chrome::kTypeRow);
     }
 
     nxui::Rect track = {panel.x + pad, panel.y + 140.f, panel.width - pad * 2.f, 18.f};

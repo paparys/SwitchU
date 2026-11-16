@@ -3,9 +3,12 @@
 #include "Texture.hpp"
 #include <SDL2/SDL_ttf.h>
 #include <cstdint>
+#include <array>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <list>
+#include <vector>
 
 namespace nxui {
 
@@ -29,6 +32,9 @@ public:
 
     // Clear all cached glyph textures (call before GPU descriptor reset)
     void clearCache();
+    // Shared ASCII atlas budget for this font. Non-ASCII text still uses the
+    // whole-string cache below.
+    std::size_t atlasBytes() const { return m_atlasBytes; }
 
     bool maintenanceRequested() const { return m_maintenanceRequested; }
     std::size_t cacheBytes() const { return m_cacheBytes; }
@@ -37,6 +43,7 @@ public:
                    std::size_t maxBytes = 2u * 1024u * 1024u);
 
     int ptSize() const { return m_ptSize; }
+
     std::uint64_t revision() const { return m_revision; }
 
 private:
@@ -45,6 +52,28 @@ private:
     Texture* getOrRender(GpuDevice& gpu, Renderer& ren, const std::string& text,
                          float scale);
     TTF_Font* fontForPixels(int pixelSize);
+
+    struct AtlasGlyph {
+        int page = -1;
+        int sx = 0, sy = 0;
+        int w = 0, h = 0;
+        int minX = 0;
+        int maxY = 0;
+        int advance = 0;
+        bool present = false;
+    };
+    struct Atlas {
+        int pixelSize = 0;
+        int ascent = 0;
+        std::array<AtlasGlyph, 95> glyphs{};
+        std::vector<std::unique_ptr<Texture>> pages;
+        std::size_t bytes = 0;
+        bool ready = false;
+    };
+    bool drawWithAtlas(Renderer& ren, const std::string& text,
+                       const Vec2& pos, const Color& color, float scale);
+    Atlas* atlasForSize(int pixelSize);
+    void clearAtlases();
 
     TTF_Font* m_font = nullptr;
     std::string m_path;
@@ -60,6 +89,12 @@ private:
     static constexpr std::size_t kMaxCacheEntries = 144;
     static constexpr std::size_t kMaxCacheBytes = 4u * 1024u * 1024u;
     static constexpr std::size_t kGpuHeadroom = 768u * 1024u;
+    static constexpr int kAtlasPageSize = 512;
+    static constexpr int kAtlasMaxPages = 6;
+    static constexpr std::size_t kAtlasMaxBytes = 6u * 1024u * 1024u;
+
+    std::unordered_map<int, std::unique_ptr<Atlas>> m_atlases;
+    std::size_t m_atlasBytes = 0;
 
     struct CacheEntry {
         std::string key;

@@ -67,13 +67,12 @@ void configureTutorialGlass(const std::shared_ptr<nxui::GlassPanel>& panel,
     panel->setBorderColor(theme.panelBorder.withAlpha(0.30f));
     panel->setHighlightColor(theme.panelHighlight.withAlpha(0.45f));
     panel->setBorderWidth(1.2f);
-    panel->setLiquidGlassEnabled(true);
-    panel->setForceLiquidGlass(true);
+    // Flat card: the theme colours, alpha and the panel's own rim stay, but
+    // the tutorial never captures the scene for a glass backdrop.
     panel->setBlurEnabled(false);
     panel->setPanelOpacity(opacity);
     panel->setMaterialTextureEnabled(true);
     panel->setMaterialTextureIntensity(0.28f);
-    panel->setLiquidGlassShade(0.025f);
 }
 
 void configureFlatPanel(const std::shared_ptr<nxui::GlassPanel>& panel,
@@ -85,8 +84,6 @@ void configureFlatPanel(const std::shared_ptr<nxui::GlassPanel>& panel,
     panel->setBorderColor(theme.panelBorder.withAlpha(0.36f));
     panel->setHighlightColor(theme.panelHighlight.withAlpha(0.35f));
     panel->setBorderWidth(1.2f);
-    panel->setLiquidGlassEnabled(false);
-    panel->setForceLiquidGlass(false);
     panel->setBlurEnabled(false);
     panel->setPanelOpacity(opacity);
     panel->setMaterialTextureEnabled(false);

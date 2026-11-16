@@ -15,102 +15,42 @@ ThemeShopScreen::Tab themeshop::tabs::InterfaceTab::build(ThemeShopScreen& scree
 
     {
         SettingItem it;
-        const bool ft = screen.m_frameTapLiteEngaged;
-        it.label = ft
-            ? i18n.tr("themeshop.options.frame_tap_engaged", "Frame Tap Engaged")
-            : i18n.tr("themeshop.options.battery_saver", "Battery Saver");
-        it.description = ft
-            ? i18n.tr("themeshop.options.frame_tap_engaged_desc",
-                      "Lite mode is held while Frame Tap is streaming. "
-                      "Disconnect the viewer to change Battery Saver.")
-            : i18n.tr("themeshop.options.battery_saver_desc",
-                      "Lighten HOME memory and GPU use. Also available in Quick Settings.");
-        it.type = ItemType::Toggle;
-        it.enabled = !ft;
-        it.boolVal = screen.m_batterySaver || ft;
-        it.anim01 = it.boolVal ? 1.f : 0.f;
-        it.onChange = [&screen](SettingItem& self) {
-            if (screen.m_frameTapLiteEngaged)
-                return;
-            screen.m_batterySaver = self.boolVal;
-            if (screen.m_batterySaverCb) screen.m_batterySaverCb(self.boolVal);
-        };
-        t.items.push_back(std::move(it));
-    }
-
-    t.onUpdate = [&screen](Tab& tab, TabbedOverlayScreen&) {
-        if (tab.items.empty())
-            return;
-        auto& it = tab.items[0];
-        auto& i18n = nxui::I18n::instance();
-        const bool ft = screen.m_frameTapLiteEngaged;
-        const bool wantOn = screen.m_batterySaver || ft;
-        it.enabled = !ft;
-        it.boolVal = wantOn;
-        it.anim01 = wantOn ? 1.f : 0.f;
-        it.label = ft
-            ? i18n.tr("themeshop.options.frame_tap_engaged", "Frame Tap Engaged")
-            : i18n.tr("themeshop.options.battery_saver", "Battery Saver");
-        it.description = ft
-            ? i18n.tr("themeshop.options.frame_tap_engaged_desc",
-                      "Lite mode is held while Frame Tap is streaming. "
-                      "Disconnect the viewer to change Battery Saver.")
-            : i18n.tr("themeshop.options.battery_saver_desc",
-                      "Lighten HOME memory and GPU use. Also available in Quick Settings.");
-    };
-
-    {
-        SettingItem it;
-        it.label = i18n.tr("settings.display.grid_columns", "Home Grid Columns");
-        it.type = ItemType::Slider;
-        it.sliderSteps = 7;
-        int cols = std::clamp(screen.m_gridColumns, 1, 8);
-        it.floatVal = (float)(cols - 1) / 7.f;
-        it.anim01 = it.floatVal;
-        it.infoText = std::to_string(cols);
-        it.onChange = [&screen](SettingItem& self) {
-            int cols = std::clamp(1 + (int)std::round(std::clamp(self.floatVal, 0.f, 1.f) * 7.f), 1, 8);
-            self.floatVal = (float)(cols - 1) / 7.f;
-            self.anim01 = self.floatVal;
-            self.infoText = std::to_string(cols);
-            screen.m_gridColumns = cols;
-            if (screen.m_gridColumnsCb) screen.m_gridColumnsCb(cols);
-        };
-        t.items.push_back(std::move(it));
-    }
-
-    {
-        SettingItem it;
-        it.label = i18n.tr("settings.display.grid_rows", "Home Grid Rows");
-        it.type = ItemType::Slider;
-        it.sliderSteps = 4;
-        int rows = std::clamp(screen.m_gridRows, 1, 5);
-        it.floatVal = (float)(rows - 1) / 4.f;
-        it.anim01 = it.floatVal;
-        it.infoText = std::to_string(rows);
-        it.onChange = [&screen](SettingItem& self) {
-            int rows = std::clamp(1 + (int)std::round(std::clamp(self.floatVal, 0.f, 1.f) * 4.f), 1, 5);
-            self.floatVal = (float)(rows - 1) / 4.f;
-            self.anim01 = self.floatVal;
-            self.infoText = std::to_string(rows);
-            screen.m_gridRows = rows;
-            if (screen.m_gridRowsCb) screen.m_gridRowsCb(rows);
-        };
+        it.label = i18n.tr("themeshop.interface.section_home", "HOME layout");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
     {
         SettingItem it;
         it.label = i18n.tr("themeshop.options.sort_large_tiles", "Sort Large Tiles Too");
-        it.description = i18n.tr("themeshop.options.sort_large_tiles_desc",
-                                 "A-Z and Recent also move applications that use a larger tile size.");
-        it.type = ItemType::Toggle;
-        it.boolVal = screen.m_sortLargeTiles;
-        it.anim01 = it.boolVal ? 1.f : 0.f;
-        it.onChange = [&screen](SettingItem& self) {
-            screen.m_sortLargeTiles = self.boolVal;
-            if (screen.m_sortLargeTilesCb) screen.m_sortLargeTilesCb(self.boolVal);
-        };
+        if (screen.m_sortLargeTilesAvailable) {
+            it.description = i18n.tr("themeshop.options.sort_large_tiles_desc",
+                                     "A-Z and Recent also move applications that use a larger tile size.");
+            it.type = ItemType::Toggle;
+            it.boolVal = screen.m_sortLargeTiles;
+            it.anim01 = it.boolVal ? 1.f : 0.f;
+            it.onChange = [&screen](SettingItem& self) {
+                screen.m_sortLargeTiles = self.boolVal;
+                if (screen.m_sortLargeTilesCb) screen.m_sortLargeTilesCb(self.boolVal);
+            };
+        } else {
+            // Carousel and Poster Wall cannot produce a larger tile, so leave a
+            // read-only explanation instead of a toggle that silently no-ops.
+            it.label = i18n.tr("themeshop.options.sort_large_tiles_unavailable",
+                               "Sort Large Tiles Too (unavailable)");
+            it.description = i18n.tr("themeshop.options.sort_large_tiles_unavailable_desc",
+                "This HOME layout uses equal-size tiles. Switch to Shelf or Showcase "
+                "to enable larger tiles and this sorting option.");
+            it.type = ItemType::Info;
+            it.infoText = i18n.tr("common.unavailable", "Unavailable");
+        }
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("themeshop.interface.section_icons", "Icons");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 
@@ -151,6 +91,13 @@ ThemeShopScreen::Tab themeshop::tabs::InterfaceTab::build(ThemeShopScreen& scree
 
     {
         SettingItem it;
+        it.label = i18n.tr("themeshop.interface.section_controller", "Controller hints");
+        it.type = ItemType::Section;
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("themeshop.options.action_hints", "Action Hints");
         it.description = i18n.tr("themeshop.options.action_hints_desc",
                                  "Choose how contextual controls appear in the bottom-right corner.");
@@ -165,6 +112,13 @@ ThemeShopScreen::Tab themeshop::tabs::InterfaceTab::build(ThemeShopScreen& scree
             if (screen.m_actionHintStyleCb)
                 screen.m_actionHintStyleCb(screen.m_actionHintStyle);
         };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("themeshop.interface.section_themes", "Themes");
+        it.type = ItemType::Section;
         t.items.push_back(std::move(it));
     }
 

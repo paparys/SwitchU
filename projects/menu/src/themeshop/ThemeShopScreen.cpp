@@ -164,7 +164,9 @@ bool matchesSearch(const ThemeCatalogClient::Entry& entry, const std::string& ne
 } // namespace
 
 ThemeShopScreen::ThemeShopScreen()
-    : TabbedOverlayScreen(ScreenMode::ThemeShop) {
+    // Same full-bleed panel as Settings: the theme editor is a first-class
+    // screen, not a floating sheet over HOME.
+    : TabbedOverlayScreen(ScreenMode::ThemeShop, true) {
 }
 
 void ThemeShopScreen::setThreadPool(nxui::ThreadPool* pool) {
@@ -209,6 +211,10 @@ void ThemeShopScreen::show() {
     m_lastCustomTabIndex = -1;
     m_shopBranchFocused = false;
     m_shopBranchReveal.setImmediate(0.f);
+    if (m_sortLargeTilesTabDirty) {
+        buildTabs();
+        m_sortLargeTilesTabDirty = false;
+    }
     TabbedOverlayScreen::show();
 }
 
